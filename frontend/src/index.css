@@ -1,0 +1,901 @@
+/* ===== MeatBiz V6.19.1 UI Layout Fix ===== */
+*{box-sizing:border-box}
+html,body,#root{margin:0;min-height:100%;font-family:Inter,Arial,'Segoe UI',sans-serif;color:#0f172a}
+body{background:#f4f7fb}
+
+.app-shell{
+  display:flex;
+  min-height:100vh;
+  width:100%;
+  background:#f4f7fb;
+}
+
+.sidebar{
+  width:272px;
+  min-width:272px;
+  background:#101827;
+  color:#fff;
+  display:flex;
+  flex-direction:column;
+  padding:18px 14px;
+  position:sticky;
+  top:0;
+  height:100vh;
+  overflow-y:auto;
+  box-shadow:10px 0 30px rgba(15,23,42,.12);
+  z-index:5;
+}
+
+.brand{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  color:#991b1b;
+  font-weight:900;
+  font-size:30px;
+  letter-spacing:-1px;
+  padding:12px 8px 22px;
+}
+
+.menu{
+  display:flex;
+  flex-direction:column;
+  gap:7px;
+  width:100%;
+}
+
+.menu-item{
+  width:100%;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  border:0;
+  background:transparent;
+  color:#dbeafe;
+  padding:11px 12px;
+  border-radius:14px;
+  font-size:15px;
+  font-weight:700;
+  text-align:left;
+  cursor:pointer;
+  transition:background .15s ease, color .15s ease, transform .08s ease;
+}
+
+.menu-item:hover{
+  background:rgba(255,255,255,.09);
+  color:#fff;
+}
+
+.menu-item.active{
+  background:#8f1d1d;
+  color:#fff;
+  box-shadow:0 8px 18px rgba(143,29,29,.28);
+}
+
+.menu-item svg{
+  flex:0 0 auto;
+}
+
+.sidebar-footer{
+  margin-top:auto;
+  padding-top:14px;
+  border-top:1px solid rgba(255,255,255,.10);
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+}
+
+.menu-item.logout{
+  color:#fecaca;
+}
+
+.menu-item.logout:hover{
+  background:rgba(239,68,68,.18);
+  color:#fff;
+}
+
+.main{
+  flex:1;
+  min-width:0;
+  min-height:100vh;
+  padding:28px;
+  background:linear-gradient(180deg,#f8fafc 0%,#eef2f7 100%);
+  overflow:auto;
+}
+
+.card{
+  background:#fff;
+  border-radius:22px;
+  padding:24px;
+  box-shadow:0 18px 45px rgba(15,23,42,.08);
+  margin-bottom:18px;
+}
+
+.grid{display:grid;gap:20px}
+.grid.cols-2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+
+.input,.select,textarea{
+  width:100%;
+  border:1px solid #d8dee8;
+  border-radius:14px;
+  padding:12px 14px;
+  font-size:15px;
+  outline:none;
+  background:#fff;
+}
+
+.input:focus,.select:focus,textarea:focus{
+  border-color:#fb923c;
+  box-shadow:0 0 0 4px rgba(251,146,60,.18);
+}
+
+.btn{
+  border:0;
+  border-radius:14px;
+  background:#8f1d1d;
+  color:#fff;
+  padding:12px 18px;
+  font-weight:800;
+  cursor:pointer;
+  box-shadow:0 8px 18px rgba(143,29,29,.20);
+}
+
+.btn.secondary{
+  background:#fff;
+  color:#8f1d1d;
+  border:1px solid #fecaca;
+  box-shadow:none;
+}
+
+.btn.danger{
+  background:#dc2626;
+  color:#fff;
+}
+
+.btn:disabled{
+  opacity:.55;
+  cursor:not-allowed;
+}
+
+.table{
+  width:100%;
+  border-collapse:collapse;
+  margin-top:12px;
+  background:#fff;
+  border-radius:14px;
+  overflow:hidden;
+}
+
+.table th,.table td{
+  padding:12px 14px;
+  border-bottom:1px solid #eef2f7;
+  vertical-align:top;
+  text-align:left;
+}
+
+.table th{
+  color:#0f172a;
+  font-weight:900;
+  background:#f8fafc;
+}
+
+.muted{color:#64748b}
+.success{color:#15803d;font-weight:800}
+
+h1,h2,h3{color:#061633}
+h3{margin-top:0}
+
+@media(max-width:980px){
+  .app-shell{flex-direction:column}
+  .sidebar{
+    width:100%;
+    min-width:0;
+    height:auto;
+    position:relative;
+  }
+  .menu{
+    display:grid;
+    grid-template-columns:repeat(2,minmax(0,1fr));
+  }
+  .sidebar-footer{margin-top:12px}
+  .grid.cols-2,.form-grid{grid-template-columns:1fr}
+  .main{padding:16px}
+}
+
+@media print{
+  .sidebar{display:none}
+  .main{padding:0;background:#fff}
+  .card{box-shadow:none}
+}
+
+/* V6.23 POS Compact UX */
+.pos-table th,.pos-table td{padding:8px 10px;vertical-align:middle}
+.pos-table .pos-product-cell{min-width:90px;max-width:150px}
+.pos-table .pos-product-cell b{display:block;font-size:15px;line-height:1.25}
+.pos-table .muted{display:none}
+.pos-table input.input{height:42px;padding:8px 10px}
+.card{overflow-x:auto}
+.table{table-layout:auto}
+.table td,.table th{word-break:normal}
+@media(max-width:1100px){.grid.cols-2{grid-template-columns:1fr}.pos-table{font-size:14px}}
+
+/* V6.28 compact dashboard + portal */
+.dashboard-compact{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:18px}
+.mini-card{background:#fff;border-radius:18px;padding:18px;box-shadow:0 14px 35px rgba(15,23,42,.08)}
+.mini-label{color:#64748b;font-weight:700}
+.mini-value{font-size:24px;font-weight:900;color:#8f1d1d;margin-top:8px}
+.portal-hero{background:linear-gradient(135deg,#fff7ed,#fee2e2)}
+.portal-hero h1{margin-bottom:6px}
+.portal-list{display:grid;gap:10px;margin-top:14px}
+.portal-item{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;border:1px solid #eef2f7;border-radius:14px;padding:12px}
+.portal-item span{color:#64748b;font-size:13px}
+@media(max-width:1100px){.dashboard-compact{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:640px){.dashboard-compact{grid-template-columns:1fr}}
+
+/* V6.29 sponsor video */
+video{background:#0f172a}
+pre{font-family:inherit}
+
+/* V6.36 UI upgrades */
+.payment-summary-grid{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:14px}
+.payment-summary-grid .card{min-height:120px}
+@media(max-width:900px){.payment-summary-grid{grid-template-columns:1fr!important}}
+.login-shell{min-height:100vh;display:grid;grid-template-columns:1.1fr .9fr;background:linear-gradient(135deg,#0f172a,#7f1d1d);padding:42px;gap:32px;align-items:center}
+.login-brand-panel{color:white;padding:48px}.brand-mark{font-size:56px}.login-brand-panel h1{font-size:56px;margin:12px 0}.login-brand-panel p{font-size:20px;line-height:1.6;color:#fee2e2}
+.login-points{display:flex;flex-wrap:wrap;gap:10px;margin-top:28px}.login-points span{background:rgba(255,255,255,.12);padding:10px 14px;border-radius:999px}
+.login-card-pro{background:white;border-radius:28px;padding:36px;box-shadow:0 30px 80px rgba(0,0,0,.35);display:grid;gap:12px}.login-card-pro h2{font-size:30px;margin:0}.login-btn{width:100%;margin-top:12px}.alert-error{background:#fee2e2;color:#991b1b;padding:12px;border-radius:14px;font-weight:700}
+@media(max-width:900px){.login-shell{grid-template-columns:1fr;padding:18px}.login-brand-panel{padding:18px}.login-brand-panel h1{font-size:40px}}
+.landing-pro{min-height:100vh;background:#f8fafc;color:#0f172a}.landing-header{display:flex;justify-content:space-between;align-items:center;padding:22px 48px;background:white;box-shadow:0 8px 30px rgba(15,23,42,.06);position:sticky;top:0;z-index:5}
+.landing-logo{font-size:28px;color:#991b1b}.landing-hero{display:grid;grid-template-columns:1.15fr .85fr;gap:28px;padding:70px 56px;background:linear-gradient(135deg,#fff7ed,#fee2e2)}
+.eyebrow{font-weight:900;color:#991b1b;letter-spacing:.08em;text-transform:uppercase}.landing-hero h1{font-size:52px;line-height:1.05;margin:14px 0}.landing-hero p{font-size:20px;color:#475569;line-height:1.6}
+.hero-actions{display:flex;gap:18px;align-items:center;margin-top:24px}.hero-card,.landing-section{background:white;border-radius:28px;padding:30px;box-shadow:0 18px 45px rgba(15,23,42,.08)}
+.hero-card li{margin:12px 0}.landing-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px;padding:32px 56px}.landing-section{margin:32px 56px}.sponsor-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}.sponsor-card{border:1px solid #e2e8f0;border-radius:20px;padding:18px}.sponsor-card img{max-width:100%;height:80px;object-fit:contain}
+@media(max-width:900px){.landing-hero,.landing-grid{grid-template-columns:1fr;padding:28px}.landing-section{margin:20px}.landing-hero h1{font-size:36px}.sponsor-grid{grid-template-columns:1fr}}
+
+/* V6.36.1 POS keyboard focus */
+input[data-pos-qty="1"]:focus{
+  outline:3px solid rgba(249,115,22,.35);
+  border-color:#f97316!important;
+  box-shadow:0 0 0 4px rgba(249,115,22,.12);
+}
+
+/* V6.36.2 lunar + POS */
+.lunar-date-box{margin:12px 0;padding:12px;border:1px dashed #fed7aa;border-radius:16px;background:#fff7ed}
+input[data-pos-qty="1"]:focus{outline:3px solid rgba(249,115,22,.35);border-color:#f97316!important;box-shadow:0 0 0 4px rgba(249,115,22,.12)}
+
+/* V6.37 UI polish + lunar selector + registration */
+.login-shell{background:linear-gradient(135deg,#fff7ed,#fee2e2)!important;color:#0f172a}
+.login-brand-panel{color:#7f1d1d!important;background:rgba(255,255,255,.55);border-radius:30px}
+.login-brand-panel p{color:#334155!important}
+.login-points span{background:#fff!important;color:#7f1d1d!important;border:1px solid #fecaca}
+.login-card-pro{border:1px solid #fecaca}
+.landing-hero{background:linear-gradient(135deg,#fffaf0,#fff1f2)!important}
+.lunar-picker{margin:12px 0;padding:14px;border:1px solid #fed7aa;border-radius:18px;background:#fff7ed}
+.lunar-tabs{display:flex;gap:8px;margin-bottom:12px}
+.lunar-tabs button{border:1px solid #fed7aa;background:white;padding:10px 14px;border-radius:999px;font-weight:800;cursor:pointer}
+.lunar-tabs button.active{background:#9f1239;color:white;border-color:#9f1239}
+.register-shell{min-height:100vh;background:linear-gradient(135deg,#fff7ed,#fee2e2);display:grid;place-items:center;padding:28px}
+.register-card{background:white;border-radius:28px;box-shadow:0 20px 60px rgba(15,23,42,.14);padding:32px;max-width:920px;width:100%;border:1px solid #fecaca}
+.alert-success{background:#dcfce7;color:#166534;padding:12px;border-radius:14px;font-weight:700}
+
+/* V6.37.1 force visible lunar selector in POS */
+.lunar-pos-card{border:2px solid #fed7aa!important;background:#fff7ed!important;margin:14px 0!important}
+.lunar-picker{display:block!important;margin:12px 0;padding:14px;border:1px solid #fed7aa;border-radius:18px;background:#fffaf0}
+.lunar-tabs{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.lunar-tabs button{border:1px solid #fed7aa;background:white;padding:10px 14px;border-radius:999px;font-weight:800;cursor:pointer}
+.lunar-tabs button.active{background:#9f1239;color:white;border-color:#9f1239}
+
+/* V6.37.2 force lunar POS visible */
+.lunar-pos-card{
+  display:block!important;
+  border:3px solid #fb923c!important;
+  background:#fff7ed!important;
+  margin:16px 0!important;
+  padding:18px!important;
+  border-radius:20px!important;
+  box-shadow:0 12px 35px rgba(249,115,22,.18)!important;
+}
+.lunar-pos-card h3{margin:0 0 10px 0!important;color:#9a3412!important}
+.lunar-picker-force{display:block!important}
+.lunar-title-row{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:12px}
+.lunar-title-row span{background:#ffedd5;color:#9a3412;border-radius:999px;padding:6px 10px;font-weight:800}
+.lunar-tabs{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.lunar-tabs button{border:1px solid #fed7aa;background:white;padding:10px 14px;border-radius:999px;font-weight:800;cursor:pointer}
+.lunar-tabs button.active{background:#9f1239;color:white;border-color:#9f1239}
+
+/* V6.38 POS UX sticky + collapsed lunar + PriceMatrix sticky toolbar */
+.pos-main-grid{align-items:start}
+.collapsed-lunar-card{
+  padding:14px 18px!important;
+  border:1px solid #fed7aa!important;
+  background:#fffaf0!important;
+  margin:12px 0!important;
+}
+.lunar-card-head{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:12px;
+}
+.lunar-picker.compact{
+  margin-top:10px!important;
+  padding:10px!important;
+  border:1px dashed #fed7aa!important;
+  border-radius:14px!important;
+  background:#fff7ed!important;
+}
+.sticky-payment-card{
+  position:sticky!important;
+  top:14px!important;
+  align-self:start!important;
+  z-index:20!important;
+  box-shadow:0 20px 50px rgba(15,23,42,.12)!important;
+}
+.price-matrix-toolbar-sticky{
+  position:sticky!important;
+  top:0!important;
+  z-index:30!important;
+  border-bottom:1px solid #e2e8f0!important;
+}
+.price-matrix-table-card{
+  max-height:calc(100vh - 220px);
+  overflow:auto;
+}
+.price-matrix-table-card table thead th{
+  position:sticky;
+  top:0;
+  background:#f8fafc;
+  z-index:5;
+}
+@media(max-width:900px){
+  .sticky-payment-card{position:static!important}
+  .price-matrix-toolbar-sticky{position:static!important}
+}
+
+/* V6.38.1 POS sticky freeze fix */
+.pos-freeze-date-bar{
+  position:sticky!important;
+  top:0!important;
+  z-index:80!important;
+  box-shadow:0 8px 24px rgba(15,23,42,.10)!important;
+  backdrop-filter:blur(8px);
+}
+
+.pos-bill-layout{
+  align-items:start!important;
+}
+
+.pos-payment-sticky{
+  position:sticky!important;
+  top:110px!important;
+  max-height:calc(100vh - 130px)!important;
+  overflow:auto!important;
+  align-self:start!important;
+  z-index:70!important;
+}
+
+/* Make payment action buttons visible at the bottom of the sticky payment card */
+.pos-payment-sticky .actions{
+  position:sticky;
+  bottom:0;
+  background:linear-gradient(to top,#fff 80%,rgba(255,255,255,.7));
+  padding-top:12px;
+  margin-top:14px;
+}
+
+/* Left POS catalog area can scroll normally while right payment follows */
+.pos-main-grid > .card:first-child{
+  min-width:0;
+}
+
+@media(max-width:900px){
+  .pos-freeze-date-bar{
+    position:sticky!important;
+    top:0!important;
+  }
+  .pos-payment-sticky{
+    position:static!important;
+    max-height:none!important;
+  }
+}
+
+
+/* V6.38.2 REAL POS FIXED LAYOUT */
+.pos-topbar-fixed{
+  position:sticky;
+  top:0;
+  z-index:100;
+  background:#f8fafc;
+  padding-bottom:10px;
+}
+
+.pos-layout-fixed{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) 360px;
+  gap:18px;
+  align-items:start;
+}
+
+.pos-left-scroll{
+  min-width:0;
+}
+
+.pos-right-fixed{
+  position:sticky;
+  top:110px;
+  align-self:start;
+}
+
+.pos-right-fixed .card{
+  max-height:calc(100vh - 130px);
+  overflow:auto;
+}
+
+.pos-right-fixed .actions{
+  position:sticky;
+  bottom:0;
+  background:#fff;
+  padding-top:10px;
+}
+
+@media(max-width:900px){
+  .pos-layout-fixed{
+    grid-template-columns:1fr;
+  }
+
+  .pos-right-fixed{
+    position:static;
+  }
+
+  .pos-right-fixed .card{
+    max-height:none;
+  }
+}
+
+/* V6.38.3 POS headerbar like landing */
+.pos-headerbar-like-landing{
+  position:sticky;
+  top:0;
+  z-index:200;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:18px;
+  padding:18px 24px;
+  margin:0 0 18px 0;
+  background:#fff;
+  border-bottom:1px solid #e5e7eb;
+  box-shadow:0 8px 28px rgba(15,23,42,.08);
+  border-radius:0 0 22px 22px;
+}
+
+.pos-header-title{
+  font-size:20px;
+  font-weight:900;
+  color:#7f1d1d;
+}
+
+.pos-header-sub{
+  margin-top:4px;
+  color:#64748b;
+  font-weight:700;
+}
+
+.pos-date-dropdown{
+  position:absolute;
+  left:24px;
+  right:24px;
+  top:78px;
+  background:#fff7ed;
+  border:1px solid #fed7aa;
+  border-radius:18px;
+  padding:14px;
+  box-shadow:0 22px 45px rgba(15,23,42,.16);
+}
+
+.pos-content-layout{
+  align-items:start;
+}
+
+.pos-payment-follow{
+  position:sticky!important;
+  top:112px!important;
+  align-self:start!important;
+  z-index:150!important;
+  max-height:calc(100vh - 130px);
+  overflow:auto;
+  box-shadow:0 18px 45px rgba(15,23,42,.12)!important;
+}
+
+.pos-payment-follow .actions{
+  position:sticky;
+  bottom:0;
+  background:#fff;
+  padding-top:12px;
+  margin-top:14px;
+}
+
+@media(max-width:900px){
+  .pos-headerbar-like-landing{
+    position:sticky;
+    top:0;
+    flex-wrap:wrap;
+  }
+  .pos-date-dropdown{
+    position:static;
+    width:100%;
+  }
+  .pos-payment-follow{
+    position:static!important;
+    max-height:none;
+  }
+}
+
+
+/* V6.39 POS Agent Refactor */
+.pos-agent-shell{
+  min-height:100vh;
+}
+
+.pos-agent-header{
+  position:sticky;
+  top:0;
+  z-index:200;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:18px;
+  padding:18px 24px;
+  margin:0 0 18px 0;
+  background:#fff;
+  border-bottom:1px solid #e5e7eb;
+  box-shadow:0 8px 28px rgba(15,23,42,.08);
+  border-radius:0 0 22px 22px;
+}
+
+.pos-agent-logo{
+  font-size:20px;
+  font-weight:900;
+  color:#7f1d1d;
+}
+
+.pos-agent-date-summary{
+  margin-top:4px;
+  color:#64748b;
+  font-weight:700;
+}
+
+.pos-agent-date-dropdown{
+  position:absolute;
+  left:24px;
+  right:24px;
+  top:78px;
+  background:#fff7ed;
+  border:1px solid #fed7aa;
+  border-radius:18px;
+  padding:14px;
+  box-shadow:0 22px 45px rgba(15,23,42,.16);
+}
+
+.pos-agent-layout{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) 360px;
+  gap:18px;
+  align-items:start;
+}
+
+.pos-agent-main{
+  min-width:0;
+  display:grid;
+  gap:18px;
+}
+
+.pos-agent-payment{
+  position:sticky;
+  top:112px;
+  z-index:120;
+  align-self:start;
+}
+
+.pos-agent-payment-card{
+  max-height:calc(100vh - 130px);
+  overflow:auto;
+  box-shadow:0 18px 45px rgba(15,23,42,.12)!important;
+}
+
+.pos-agent-payment-actions{
+  position:sticky;
+  bottom:0;
+  background:#fff;
+  padding-top:12px;
+  margin-top:14px;
+}
+
+.pos-agent-money-row{
+  display:flex;
+  justify-content:space-between;
+  gap:12px;
+  padding:12px 0;
+  border-bottom:1px solid #e5e7eb;
+}
+
+.pos-agent-products-toolbar{
+  margin-bottom:12px;
+}
+
+.pos-agent-table-scroll{
+  max-height:calc(100vh - 270px);
+  overflow:auto;
+  border-radius:18px;
+}
+
+.pos-agent-table thead th{
+  position:sticky;
+  top:0;
+  background:#f8fafc;
+  z-index:5;
+}
+
+.pos-agent-qty-input{
+  min-width:120px;
+}
+
+.inner-card{
+  box-shadow:none!important;
+  border-style:dashed!important;
+  margin-top:12px;
+}
+
+@media(max-width:900px){
+  .pos-agent-layout{
+    grid-template-columns:1fr;
+  }
+  .pos-agent-payment{
+    position:static;
+  }
+  .pos-agent-payment-card{
+    max-height:none;
+  }
+  .pos-agent-date-dropdown{
+    position:static;
+    width:100%;
+  }
+}
+
+/* POS customer section collapse - safe append */
+.pos-customer-collapse-card{
+  padding:16px 18px!important;
+}
+
+.pos-customer-collapse-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:14px;
+}
+
+.pos-customer-collapse-head h3{
+  margin:0;
+}
+
+.pos-customer-summary{
+  margin-top:6px;
+  font-weight:700;
+}
+
+.pos-customer-collapse-body{
+  margin-top:14px;
+}
+
+.pos-customer-collapse-body > h3:first-child{
+  display:none;
+}
+
+/* Auth/Register UI refinements */
+.login-tabs{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:8px;
+  background:#f8fafc;
+  padding:6px;
+  border-radius:16px;
+  margin:10px 0 14px;
+}
+
+.login-tabs button{
+  border:0;
+  border-radius:12px;
+  background:transparent;
+  padding:10px 12px;
+  font-weight:900;
+  color:#64748b;
+  cursor:pointer;
+}
+
+.login-tabs button.active{
+  background:#8f1d1d;
+  color:#fff;
+}
+
+.login-form-stack{
+  display:grid;
+  gap:10px;
+}
+
+.login-inline{
+  display:grid;
+  grid-template-columns:1fr auto;
+  gap:8px;
+  align-items:center;
+}
+
+.remember-row{
+  display:flex!important;
+  gap:8px;
+  align-items:center;
+  font-weight:700;
+  color:#475569;
+}
+
+.link-btn{
+  border:0;
+  background:transparent;
+  color:#8f1d1d;
+  font-weight:900;
+  cursor:pointer;
+  text-align:left;
+  padding:4px 0;
+}
+
+.login-register-row{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:12px;
+  border-top:1px solid #eef2f7;
+  padding-top:14px;
+  margin-top:14px;
+}
+
+.landing-actions{
+  display:flex;
+  gap:12px;
+  align-items:center;
+}
+
+/* ===== MeatBiz Toast - top right notification ===== */
+.meatbiz-toast-container{
+  position:fixed;
+  top:16px;
+  right:16px;
+  z-index:99999;
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  width:min(390px,calc(100vw - 32px));
+  pointer-events:none;
+}
+
+.meatbiz-toast{
+  pointer-events:auto;
+  display:grid;
+  grid-template-columns:auto 1fr auto;
+  gap:12px;
+  align-items:flex-start;
+  background:#fff;
+  border:1px solid #e5e7eb;
+  border-left:6px solid #2563eb;
+  border-radius:16px;
+  padding:13px 12px;
+  box-shadow:0 18px 45px rgba(15,23,42,.18);
+  animation:meatbizToastIn .22s ease-out;
+}
+
+.meatbiz-toast-success{border-left-color:#16a34a}
+.meatbiz-toast-error{border-left-color:#dc2626}
+.meatbiz-toast-warning{border-left-color:#f59e0b}
+.meatbiz-toast-info{border-left-color:#2563eb}
+
+.meatbiz-toast-icon{
+  font-size:20px;
+  line-height:1.2;
+}
+
+.meatbiz-toast-title{
+  font-weight:900;
+  color:#0f172a;
+  margin-bottom:3px;
+}
+
+.meatbiz-toast-message{
+  color:#334155;
+  font-weight:700;
+  line-height:1.4;
+  word-break:break-word;
+}
+
+.meatbiz-toast-close{
+  border:0;
+  background:transparent;
+  color:#64748b;
+  cursor:pointer;
+  font-size:20px;
+  line-height:1;
+  padding:0 2px;
+}
+
+.meatbiz-toast-close:hover{
+  color:#0f172a;
+}
+
+@keyframes meatbizToastIn{
+  from{opacity:0;transform:translateX(28px) translateY(-4px)}
+  to{opacity:1;transform:translateX(0) translateY(0)}
+}
+
+@media(max-width:640px){
+  .meatbiz-toast-container{
+    top:10px;
+    right:10px;
+    width:calc(100vw - 20px);
+  }
+}
+
+/* V6.41 Lots/NCC deduction mode */
+.lots-agent-page label{
+  display:block;
+  font-weight:800;
+}
+
+.lots-agent-page label .muted{
+  display:block;
+  margin-bottom:6px;
+  font-size:13px;
+  font-weight:800;
+}
+
+.lots-calc-card{
+  border:1px solid #fed7aa;
+}
+
+.lots-price-split{
+  display:grid;
+  gap:6px;
+  margin:8px 0 4px;
+  color:#475569;
+  font-weight:800;
+}
+
+.lots-stat-grid{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:10px;
+  margin-bottom:18px;
+}
+
+.lots-stat-grid>div{
+  background:#fff7ed;
+  border:1px solid #fed7aa;
+  border-radius:16px;
+  padding:12px;
+}
+
+.lots-stat-grid span{
+  display:block;
+  color:#64748b;
+  font-size:13px;
+  font-weight:800;
+}
+
+.lots-stat-grid b{
+  display:block;
+  margin-top:4px;
+  color:#7f1d1d;
+  font-size:18px;
+}
+
+@media(max-width:900px){
+  .lots-stat-grid{grid-template-columns:1fr}
+}

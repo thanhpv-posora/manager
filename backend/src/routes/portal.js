@@ -1,0 +1,13 @@
+const express=require('express');
+const {auth}=require('../middleware/auth');
+const BusinessPortalAgent=require('../agents/BusinessPortalAgent');
+const router=express.Router();
+router.get('/public/pages',async(req,res,next)=>{try{res.json(await BusinessPortalAgent.pages(true))}catch(e){next(e)}});
+router.get('/public/sponsors',async(req,res,next)=>{try{res.json(await BusinessPortalAgent.sponsors(true))}catch(e){next(e)}});
+router.get('/pages',auth(['ADMIN','STAFF']),async(req,res,next)=>{try{res.json(await BusinessPortalAgent.pages(false))}catch(e){next(e)}});
+router.post('/pages',auth(['ADMIN','STAFF']),async(req,res,next)=>{try{res.json(await BusinessPortalAgent.savePage(req.body,req.user))}catch(e){next(e)}});
+router.get('/sponsors',auth(['ADMIN','STAFF']),async(req,res,next)=>{try{res.json(await BusinessPortalAgent.sponsors(false))}catch(e){next(e)}});
+router.post('/sponsors',auth(['ADMIN','STAFF']),async(req,res,next)=>{try{res.json(await BusinessPortalAgent.saveSponsor(req.body))}catch(e){next(e)}});
+router.get('/ads',auth(['ADMIN','STAFF']),async(req,res,next)=>{try{res.json(await BusinessPortalAgent.ads())}catch(e){next(e)}});
+router.post('/ads/daily',auth(['ADMIN','STAFF']),async(req,res,next)=>{try{res.json(await BusinessPortalAgent.createDailyAd(req.body))}catch(e){next(e)}});
+module.exports=router;

@@ -1,0 +1,8 @@
+const express=require('express');
+const { auth }=require('../middleware/auth');
+const PaymentAgent=require('../agents/PaymentAgent');
+const router=express.Router();
+router.get('/', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await PaymentAgent.list(req.user))}catch(e){next(e)}});
+router.get('/customer/:customerId/summary', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await PaymentAgent.summary(req.params.customerId,req.user))}catch(e){next(e)}});
+router.post('/', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await PaymentAgent.create(req.body,req.user))}catch(e){next(e)}});
+module.exports=router;

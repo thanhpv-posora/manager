@@ -1,0 +1,8 @@
+{
+  "CreateOrder_has_POSHeaderAgent": true,
+  "CreateOrder_has_POSProductTableAgent": true,
+  "CreateOrder_has_POSPaymentPanelAgent": true,
+  "SafePage_balanced": true,
+  "No_Ma_header": true,
+  "No_DVT_header": true
+}

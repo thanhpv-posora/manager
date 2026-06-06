@@ -1,0 +1,3 @@
+79:         `INSERT INTO orders(order_code,customer_id,order_date,delivery_date,status,payment_status,total_amount,paid_amount,debt_amount,private_token,note,created_by)
+80:          VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+84:     // SAFE_LUNAR_UPDATE_V6366: optional calendar fields updated separately.

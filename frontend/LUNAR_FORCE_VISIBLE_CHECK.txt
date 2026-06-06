@@ -1,0 +1,7 @@
+V6.37.2 CHECK:
+Open frontend/src/pages/CreateOrder.jsx and search:
+- lunar-pos-card
+- billCalendarType
+- LunarDateSelector
+
+The card is injected immediately after <SafePage ...>, so it should appear at top of POS page.

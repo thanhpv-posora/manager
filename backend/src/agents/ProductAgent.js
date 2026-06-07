@@ -24,7 +24,28 @@ class ProductAgent {
     return `${prefix}${String(n).padStart(4,'0')}`;
   }
 
-  constructor(){this.version='6.8.0';this.responsibility='Product/category CRUD, inventory mode, carcass/non-stock option, del_flg soft delete, prices';}
+  constructor(){this.version='6.43.0';this.responsibility='Product/category CRUD, inventory mode, carcass/non-stock option, duplicate name check, del_flg soft delete warning, prices';}
+
+  normalizeName(name){
+    return String(name||'').trim().toLowerCase();
+  }
+
+  async assertUniqueProductName(name, excludeId=null){
+    const normalized=this.normalizeName(name);
+    if(!normalized) throw new Error('Thiếu tên hàng');
+    const params=[normalized];
+    let sql=`SELECT id,name FROM products WHERE del_flg=0 AND LOWER(TRIM(name))=?`;
+    if(excludeId){
+      sql+=` AND id<>?`;
+      params.push(excludeId);
+    }
+    sql+=` LIMIT 1`;
+    const [rows]=await pool.query(sql,params);
+    if(rows.length){
+      throw new Error(`Tên mặt hàng đã tồn tại: ${rows[0].name}. Không được nhập trùng dù khác chữ hoa/thường.`);
+    }
+  }
+
 
   async categories() {
     const [rows] = await pool.query(`SELECT * FROM product_categories WHERE del_flg=0 AND is_active=1 ORDER BY sort_order,id`);
@@ -62,6 +83,7 @@ class ProductAgent {
 
   async addProduct(data) {
     if(!data.name) throw new Error('Thiếu tên hàng');
+    await this.assertUniqueProductName(data.name);
     if(!data.product_code) data.product_code = await this.nextProductCode(data.category_id);
     await pool.query(
       `INSERT INTO products(category_id,product_code,name,unit,default_sale_price,default_purchase_price,stock_quantity,low_stock_threshold,note,is_active,del_flg,inventory_mode,parent_product_id,carcass_group,allow_negative_stock)
@@ -72,6 +94,8 @@ class ProductAgent {
   }
 
   async updateProduct(id,data) {
+    if(!data.name) throw new Error('Thiếu tên hàng');
+    await this.assertUniqueProductName(data.name,id);
     await pool.query(
       `UPDATE products SET category_id=?,name=?,unit=?,default_sale_price=?,default_purchase_price=?,stock_quantity=?,low_stock_threshold=?,note=?,is_active=?,inventory_mode=?,parent_product_id=?,carcass_group=?,allow_negative_stock=? WHERE id=? AND del_flg=0`,
       [data.category_id||null,data.name,data.unit||'kg',data.default_sale_price||0,data.default_purchase_price||0,data.stock_quantity||0,data.low_stock_threshold||5,data.note||'',data.is_active?1:0,data.inventory_mode||'STOCK',data.parent_product_id||null,data.carcass_group||null,data.allow_negative_stock?1:0,id]
@@ -145,6 +169,7 @@ class ProductAgent {
 
   async quickProduct(data) {
     if(!data.name) throw new Error('Thiếu tên hàng');
+    await this.assertUniqueProductName(data.name);
     const code = data.product_code || await this.nextProductCode(data.category_id);
     const conn = await pool.getConnection();
     try {

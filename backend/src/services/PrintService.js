@@ -86,6 +86,6 @@ table{width:100%;border-collapse:collapse;margin-top:18px}td,th{border:1px solid
 </tbody></table>
 <div class="total">Thành tiền: ${money(lot.total_cost)}</div></body></html>`;
   }
-  }
+  
 }
 module.exports = new PrintService();

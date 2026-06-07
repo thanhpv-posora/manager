@@ -49,5 +49,43 @@ export default function LandingPage({onLoginClick,onRegisterClick}){
     <h2>Nhà tài trợ / Đối tác</h2>
     <div className="sponsor-grid">{sponsors.map(s=><div className="sponsor-card" key={s.id}>{s.logo_url&&<img src={s.logo_url}/>}<b>{s.name}</b><p>{s.description}</p></div>)}</div>
   </section>
+
+  <section className="landing-section landing-contact-section">
+    <div className="landing-contact-title">
+      <div>
+        <div className="eyebrow">Support Center</div>
+        <h2>Thông tin liên hệ</h2>
+        <p className="muted">Cần tư vấn, hỗ trợ triển khai hoặc đăng ký sử dụng MeatBiz, vui lòng liên hệ:</p>
+      </div>
+    </div>
+
+    <div className="landing-contact-grid">
+      <div className="landing-contact-card">
+        <div className="landing-contact-icon">✉️</div>
+        <div>
+          <b>Email hỗ trợ</b>
+          <p>support@posora.vn</p>
+        </div>
+      </div>
+
+      <div className="landing-contact-card">
+        <div className="landing-contact-icon">☎️</div>
+        <div>
+          <b>Điện thoại liên hệ</b>
+          <p>0848 778 222</p>
+          <p>0935 363 468</p>
+          <p>0935 695 006</p>
+        </div>
+      </div>
+
+      <div className="landing-contact-card">
+        <div className="landing-contact-icon">💬</div>
+        <div>
+          <b>Zalo hỗ trợ</b>
+          <p>0935 363 468</p>
+        </div>
+      </div>
+    </div>
+  </section>
  </div>
 }

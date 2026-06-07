@@ -7,6 +7,8 @@ export default function RegisterAccount({onBack}){
  const[done,setDone]=useState('');
  const[error,setError]=useState('');
  const[loading,setLoading]=useState(false);
+ const[showPassword,setShowPassword]=useState(false);
+ const[showConfirmPassword,setShowConfirmPassword]=useState(false);
 
  const set=(k,v)=>setForm(prev=>({...prev,[k]:v}));
 
@@ -15,12 +17,12 @@ export default function RegisterAccount({onBack}){
   setError('');
   setDone('');
 
-  if(!form.full_name?.trim()) showWarning('Nhập Full name');return setError('Nhập Full name');
-  if(!form.username?.trim()) showWarning('Nhập tên đăng nhập');return setError('Nhập tên đăng nhập');
-  if(!form.phone?.trim()) showWarning('Nhập số điện thoại');return setError('Nhập số điện thoại');
-  if(!form.email?.trim()) showWarning('Nhập email');return setError('Nhập email');
-  if(!form.password) showWarning('Nhập mật khẩu');return setError('Nhập mật khẩu');
-  if(form.password!==form.confirm_password) showWarning('Mật khẩu xác nhận không khớp');return setError('Mật khẩu xác nhận không khớp');
+  if(!form.full_name?.trim()){showWarning('Nhập Full name');return setError('Nhập Full name');}
+  if(!form.username?.trim()){showWarning('Nhập tên đăng nhập');return setError('Nhập tên đăng nhập');}
+  if(!form.phone?.trim()){showWarning('Nhập số điện thoại');return setError('Nhập số điện thoại');}
+  if(!form.email?.trim()){showWarning('Nhập email');return setError('Nhập email');}
+  if(!form.password){showWarning('Nhập mật khẩu');return setError('Nhập mật khẩu');}
+  if(form.password!==form.confirm_password){showWarning('Mật khẩu xác nhận không khớp');return setError('Mật khẩu xác nhận không khớp');}
 
   setLoading(true);
   try{
@@ -63,8 +65,14 @@ export default function RegisterAccount({onBack}){
     <input className="input" placeholder="Tên đăng nhập *" value={form.username||''} onChange={e=>set('username',e.target.value)}/>
     <input className="input" placeholder="Số điện thoại *" value={form.phone||''} onChange={e=>set('phone',e.target.value)}/>
     <input className="input" placeholder="Email *" value={form.email||''} onChange={e=>set('email',e.target.value)}/>
-    <input className="input" type="password" placeholder="Mật khẩu *" value={form.password||''} onChange={e=>set('password',e.target.value)}/>
-    <input className="input" type="password" placeholder="Xác nhận mật khẩu *" value={form.confirm_password||''} onChange={e=>set('confirm_password',e.target.value)}/>
+    <div className="password-field">
+      <input className="input" type={showPassword?'text':'password'} placeholder="Mật khẩu *" value={form.password||''} onChange={e=>set('password',e.target.value)}/>
+      <button type="button" onClick={()=>setShowPassword(!showPassword)}>{showPassword?'Ẩn':'Hiện'}</button>
+    </div>
+    <div className="password-field">
+      <input className="input" type={showConfirmPassword?'text':'password'} placeholder="Xác nhận mật khẩu *" value={form.confirm_password||''} onChange={e=>set('confirm_password',e.target.value)}/>
+      <button type="button" onClick={()=>setShowConfirmPassword(!showConfirmPassword)}>{showConfirmPassword?'Ẩn':'Hiện'}</button>
+    </div>
     <textarea className="input" style={{gridColumn:'1 / -1',minHeight:110}} placeholder="Mô tả / nhu cầu sử dụng" value={form.description||''} onChange={e=>set('description',e.target.value)}/>
    </div>
 

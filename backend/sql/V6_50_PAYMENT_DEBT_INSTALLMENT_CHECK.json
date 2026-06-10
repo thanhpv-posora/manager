@@ -1,0 +1,7 @@
+{
+  "PaymentAgent_one_row_cash_bank": true,
+  "Payments_ui_current_bill": true,
+  "Payments_ui_installment": true,
+  "DebtInstallment_cash_bank": true,
+  "Bootstrap_cash_amount": true
+}

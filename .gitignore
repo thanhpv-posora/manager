@@ -2,3 +2,7 @@
 *service-account*.json
 .env
 node_modules/
+./frontend/package-lock.json
+./backend/package-lock.json
+*.zip
+*package-lock.json

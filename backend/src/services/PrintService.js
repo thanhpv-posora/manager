@@ -19,12 +19,40 @@ class PrintService {
     const app = process.env.PUBLIC_APP_URL || 'http://localhost:5173';
     const url = `${app}/bill/${order.private_token || order.order_code}`;
     const qr = await QRCode.toDataURL(url);
-    const installmentRows = order.installment && order.installment.plans ? order.installment.plans.map(p=>`
-      <tr><td>${p.plan_name}</td><td class="right">${money(p.daily_amount)}</td><td>${p.start_date}</td><td class="right">${money(p.paid_amount)}</td></tr>
-    `).join('') : '';
-    const installmentRecentRows = order.installment && order.installment.recent_payments ? order.installment.recent_payments.map(p=>`
-      <tr><td>${p.payment_date}</td><td class="right">${money(p.amount)}</td><td>${p.payment_method}</td></tr>
-    `).join('') : '';
+    const pay=order.payment||{};
+    // V6.51: total_amount is the payable total (today's bill + configured daily installment).
+    // current_bill_amount keeps only today's product bill; installment_amount keeps the configured contribution for the bill.
+    const configuredInstallment=Number(order.installment_amount || order.monthly_installment?.installment_amount || 0);
+    const monthlyInstallment=configuredInstallment;
+    const storedTotal=Number(order.total_amount||0);
+    const rawCurrentBill=Number(order.current_bill_amount||0);
+    const itemTotal=(order.items||[]).reduce((sum,i)=>sum+Number(i.total_price || (Number(i.quantity||0)*Number(i.sale_price||0)) || 0),0);
+    // V6.51 FINAL PRINT RULE:
+    // order.total_amount đã là TỔNG CUỐI CÙNG phải thanh toán.
+    // Nếu có góp nợ/ngày thì total_amount đã bao gồm khoản góp này.
+    // Không được cộng installment_amount thêm lần nữa.
+    //
+    // Ví dụ:
+    // total_amount = 3.075.000
+    // installment_amount = 2.000.000
+    // => Bill hôm nay = 1.075.000
+    // => Góp nợ/ngày = 2.000.000
+    // => Tổng cần thanh toán = 3.075.000
+    const payableTotal = storedTotal > 0
+      ? storedTotal
+      : (rawCurrentBill > 0
+          ? rawCurrentBill
+          : (itemTotal + monthlyInstallment));
+
+    const todayBillTotal = monthlyInstallment > 0
+      ? Math.max(0, payableTotal - monthlyInstallment)
+      : (rawCurrentBill || itemTotal || payableTotal);
+    const cashAmount=Number(pay.cash_amount||0);
+    const bankAmount=Number(pay.bank_amount||0);
+    const paidTotal=Number(order.paid_amount || (cashAmount+bankAmount));
+    const remainingDebt=Number(order.debt_amount ?? Math.max(0,payableTotal-paidTotal));
+    const billDate = order.calendar_type==='LUNAR' && order.lunar_date_text ? order.lunar_date_text : (order.order_date || pay.payment_date || '');
+    const showInstallment = monthlyInstallment > 0;
     const oldDebtRows = (order.old_debts||[]).map(d=>`
       <tr><td>${d.order_date}</td><td>${d.order_code}</td><td class="right">${money(d.total_amount)}</td><td class="right">${money(d.paid_amount)}</td><td class="right"><b>${money(d.debt_amount)}</b></td></tr>
     `).join('');
@@ -38,14 +66,90 @@ table{width:100%;border-collapse:collapse;margin-top:10px}th{background:#7f1d1d;
 .total{margin-top:15px;text-align:right;font-size:20px;font-weight:900}.print-btn{position:fixed;right:20px;top:20px;padding:12px 18px;background:#7f1d1d;color:#fff;border:0;border-radius:10px;font-weight:700}
 .sign{display:flex;justify-content:space-between;margin-top:45px;text-align:center}@media print{.print-btn{display:none}body{margin:10px}}</style></head><body>
 <button class="print-btn" onclick="window.print()">IN BILL</button>
-<div class="header"><div><div class="logo">${settings.shop_name||"MEATBIZ FOOD"}</div><div class="sub">${settings.shop_address||""} ${settings.shop_phone? " - " + settings.shop_phone : ""}</div><div class="sub">Phiếu giao hàng / Bill bán hàng</div><div>Mã bill: <b>${order.order_code}</b></div><div>Ngày: ${order.order_date}</div></div><div><img class="qr" src="${qr}"><div class="sub">Quét QR xem bill</div></div></div>
+<div class="header"><div><div class="logo">${settings.shop_name||"MEATBIZ FOOD"}</div><div class="sub">${settings.shop_address||""} ${settings.shop_phone? " - " + settings.shop_phone : ""}</div><div class="sub">Phiếu giao hàng / Bill bán hàng</div><div>Mã bill: <b>${order.order_code}</b></div><div>Ngày bill: ${billDate}</div></div><div><img class="qr" src="${qr}"><div class="sub">Quét QR xem bill</div></div></div>
 <div class="info"><div><b>Khách hàng:</b> ${order.customer_name}<br><b>SĐT:</b> ${order.phone || ''}<br><b>Địa chỉ:</b> ${order.address || ''}</div><div><b>Trạng thái:</b> ${order.payment_status}<br><b>Ghi chú:</b> ${order.note || ''}</div></div>
 <table><thead><tr><th>STT</th><th>Mặt hàng</th><th>SL</th><th>Đơn giá</th><th>Thành tiền</th></tr></thead><tbody>${rows}</tbody></table>
-<div class="total">Tổng bill này: ${money(order.total_amount)}</div><div class="total">Đã thu bill này: ${money(order.paid_amount)} | Còn nợ bill này: ${money(order.debt_amount)}</div>
-${oldDebtRows ? `<h3>Nợ cũ chưa thanh toán</h3><table><thead><tr><th>Ngày</th><th>Bill</th><th>Tổng</th><th>Đã thu</th><th>Còn nợ</th></tr></thead><tbody>${oldDebtRows}</tbody></table><div class="total">Tổng nợ cũ: ${money(order.old_debt_total)}</div><div class="total">Tổng cần thu gồm nợ cũ: ${money(Number(order.old_debt_total||0)+Number(order.debt_amount||0))}</div>` : ''}
-${installmentRows ? `<h3>Kế hoạch trả góp công nợ</h3><table><thead><tr><th>Kế hoạch</th><th>Số tiền/ngày</th><th>Bắt đầu</th><th>Đã góp</th></tr></thead><tbody>${installmentRows}</tbody></table><div class="total">Mức góp/ngày: ${money(order.installment.daily_total)}</div><div class="total">Góp cần thu hôm nay: ${money(order.installment.due_today_total)}</div><div class="total">Tổng khách cần thanh toán: ${money(Number(order.total_amount||0)+Number(order.installment.due_today_total||0))}</div>${installmentRecentRows ? `<h4>Lịch sử góp gần đây</h4><table><thead><tr><th>Ngày</th><th>Số tiền</th><th>Hình thức</th></tr></thead><tbody>${installmentRecentRows}</tbody></table>` : ''}` : ''}
+<div class="total">Bill hôm nay: ${money(todayBillTotal)}</div>
+${showInstallment ? `<div class="total">Góp nợ/ngày: ${money(monthlyInstallment)}</div>` : ''}
+<div class="total">Tổng cần thanh toán: ${money(payableTotal)}</div>
+<div class="total">Tiền mặt: ${money(cashAmount)} | Chuyển khoản: ${money(bankAmount)}</div>
+<div class="total">Còn nợ: ${money(remainingDebt)}</div>
+${oldDebtRows ? `<h3>Những bill chưa thanh toán</h3><table><thead><tr><th>Ngày</th><th>Bill</th><th>Tổng</th><th>Đã thu</th><th>Còn nợ</th></tr></thead><tbody>${oldDebtRows}</tbody></table><div class="total">Tổng nợ cũ: ${money(order.old_debt_total)}</div>` : ''}
 <div class="sign"><div>Người giao<br><br><br>____________</div><div>Khách nhận<br><br><br>____________</div></div></body></html>`;
   }
+
+  async billK80Html(order) {
+    const settings = await this.settings();
+    const pay=order.payment||{};
+
+    const monthlyInstallment=Number(order.installment_amount || order.monthly_installment?.installment_amount || 0);
+    const storedTotal=Number(order.total_amount||0);
+    const rawCurrentBill=Number(order.current_bill_amount||0);
+    const itemTotal=(order.items||[]).reduce((sum,i)=>sum+Number(i.total_price || (Number(i.quantity||0)*Number(i.sale_price||0)) || 0),0);
+
+    // K80 dùng cùng rule với A4:
+    // total_amount đã là tổng cuối cùng, đã bao gồm góp nợ/ngày.
+    // Không cộng installment_amount thêm lần nữa.
+    const payableTotal = storedTotal > 0
+      ? storedTotal
+      : (rawCurrentBill > 0
+          ? rawCurrentBill
+          : (itemTotal + monthlyInstallment));
+
+    const todayBillTotal = monthlyInstallment > 0
+      ? Math.max(0, payableTotal - monthlyInstallment)
+      : (rawCurrentBill || itemTotal || payableTotal);
+
+    const cashAmount=Number(pay.cash_amount||0);
+    const bankAmount=Number(pay.bank_amount||0);
+    const paidTotal=Number(order.paid_amount || (cashAmount+bankAmount));
+    const remainingDebt=Number(order.debt_amount ?? Math.max(0,payableTotal-paidTotal));
+    const billDate = order.calendar_type==='LUNAR' && order.lunar_date_text ? order.lunar_date_text : (order.order_date || pay.payment_date || '');
+    const showInstallment = monthlyInstallment > 0;
+
+    const rows = (order.items||[]).map((i,idx)=>`
+      <tr>
+        <td>${idx+1}. ${i.product_name}<br>
+          ${i.quantity} ${i.unit} x ${money(i.sale_price)}
+        </td>
+        <td class="right">${money(i.total_price)}</td>
+      </tr>
+    `).join('');
+
+    return `<!doctype html><html><head><meta charset="utf-8"><title>${order.order_code}</title><style>
+body{font-family:Arial,sans-serif;margin:0;padding:6px;color:#111;width:78mm;font-size:12px}
+.center{text-align:center}.shop{font-size:16px;font-weight:900}.muted{font-size:11px;color:#555}
+hr{border:0;border-top:1px dashed #333;margin:6px 0}
+table{width:100%;border-collapse:collapse}td{padding:3px 0;vertical-align:top}.right{text-align:right}
+.total{font-size:13px;font-weight:900;margin-top:4px}.print-btn{position:fixed;right:10px;top:10px;padding:8px;background:#111;color:#fff;border:0;border-radius:6px}
+@media print{.print-btn{display:none}body{width:78mm;margin:0}}
+</style></head><body>
+<button class="print-btn" onclick="window.print()">IN K80</button>
+<div class="center">
+  <div class="shop">${settings.shop_name||"MEATBIZ FOOD"}</div>
+  <div class="muted">${settings.shop_address||""}</div>
+  <div class="muted">${settings.shop_phone||""}</div>
+  <div><b>PHIẾU BÁN HÀNG</b></div>
+</div>
+<hr>
+<div>Mã bill: <b>${order.order_code}</b></div>
+<div>Ngày bill: ${billDate}</div>
+<div>Khách: ${order.customer_name||''}</div>
+<div>SĐT: ${order.phone||''}</div>
+<hr>
+<table>${rows}</table>
+<hr>
+<div class="right total">Bill hôm nay: ${money(todayBillTotal)}</div>
+${showInstallment ? `<div class="right total">Góp nợ/ngày: ${money(monthlyInstallment)}</div>` : ''}
+<div class="right total">Tổng cần thanh toán: ${money(payableTotal)}</div>
+<div class="right">Tiền mặt: ${money(cashAmount)}</div>
+<div class="right">Chuyển khoản: ${money(bankAmount)}</div>
+<div class="right total">Còn nợ: ${money(remainingDebt)}</div>
+<hr>
+<div class="center muted">${settings.bill_footer||'Cảm ơn quý khách!'}</div>
+</body></html>`;
+  }
+
 
   async lotHtml(lot) {
     const expr = (v, fallback) => v && String(v).trim() ? v : fallback;

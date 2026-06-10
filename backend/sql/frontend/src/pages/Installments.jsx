@@ -1,0 +1,317 @@
+import React,{useEffect,useMemo,useState}from'react';
+import api from'../api/api';
+import SafePage from'../components/SafePage';
+import MoneyInput from'../components/MoneyInput';
+import LunarDateSelector from'../components/LunarDateSelector';
+import {formatLunarDate,solarToLunar}from'../utils/lunarDate';
+
+const money=n=>Number(n||0).toLocaleString('en-US')+'đ';
+
+function parseLunarText(text){
+ const m=String(text||'').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+ if(!m)return null;
+ return {day:Number(m[1]),month:Number(m[2]),year:Number(m[3])};
+}
+function solarDateParts(dateText){
+ const m=String(dateText||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+ if(m)return {day:Number(m[3]),month:Number(m[2]),year:Number(m[1])};
+ const d=dateText?new Date(dateText):new Date();
+ return {day:d.getDate(),month:d.getMonth()+1,year:d.getFullYear()};
+}
+function toIsoDate(d){
+ const y=d.getFullYear();
+ const m=String(d.getMonth()+1).padStart(2,'0');
+ const day=String(d.getDate()).padStart(2,'0');
+ return `${y}-${m}-${day}`;
+}
+function lunarToSolarDate(lunar){
+ if(!lunar)return '';
+ const start=new Date(lunar.year-1,0,1);
+ const end=new Date(lunar.year+1,11,31);
+ for(let d=new Date(start);d<=end;d.setDate(d.getDate()+1)){
+  const iso=toIsoDate(d);
+  const l=solarToLunar(iso);
+  if(l.day===lunar.day&&l.month===lunar.month&&l.year===lunar.year)return iso;
+ }
+ return '';
+}
+
+export default function Installments(){
+ const today=new Date().toISOString().slice(0,10);
+ const[customers,setCustomers]=useState([]);
+ const[rows,setRows]=useState([]);
+ const[configDate,setConfigDate]=useState(today);
+ const[calendarType,setCalendarType]=useState('SOLAR');
+ const[lunarDateText,setLunarDateText]=useState(formatLunarDate(today).replace(/^ÂL\s*/,''));
+ const[customerId,setCustomerId]=useState('');
+ const[statsCustomerId,setStatsCustomerId]=useState('');
+ const[amount,setAmount]=useState('');
+ const[active,setActive]=useState(true);
+ const[editing,setEditing]=useState({});
+ const[loading,setLoading]=useState(true);
+ const[error,setError]=useState('');
+ const[msg,setMsg]=useState('');
+ const[stats,setStats]=useState({day_total:0,month_total:0,year_total:0});
+ const[statsFrom,setStatsFrom]=useState(today);
+ const[statsTo,setStatsTo]=useState(today);
+ const[statsCalendarType,setStatsCalendarType]=useState('SOLAR');
+ const[statsFromLunar,setStatsFromLunar]=useState(formatLunarDate(today).replace(/^ÂL\s*/,''));
+ const[statsToLunar,setStatsToLunar]=useState(formatLunarDate(today).replace(/^ÂL\s*/,''));
+ const[rangeStats,setRangeStats]=useState({total:0,rows:[]});
+
+ const selectedPeriod=useMemo(()=>{
+  if(calendarType==='LUNAR'){
+   const parsed=parseLunarText(lunarDateText);
+   const l=parsed||solarToLunar(configDate||today);
+   return {day:l.day,month:l.month,year:l.year,calendar_type:'LUNAR',label:`${String(l.day).padStart(2,'0')}/${String(l.month).padStart(2,'0')}/${l.year} âm lịch`,periodLabel:`Tháng ${String(l.month).padStart(2,'0')}/${l.year} âm lịch`,shortLabel:`${String(l.month).padStart(2,'0')}/${l.year} ÂL`};
+  }
+  const d=solarDateParts(configDate||today);
+  return {day:d.day,month:d.month,year:d.year,calendar_type:'SOLAR',label:`${String(d.day).padStart(2,'0')}/${String(d.month).padStart(2,'0')}/${d.year} dương lịch`,periodLabel:`Tháng ${String(d.month).padStart(2,'0')}/${d.year} dương lịch`,shortLabel:`${String(d.month).padStart(2,'0')}/${d.year} DL`};
+ },[calendarType,lunarDateText,configDate,today]);
+
+ const selectedStatsCustomer=useMemo(()=>customers.find(c=>String(c.id)===String(statsCustomerId))||null,[customers,statsCustomerId]);
+ const statsCalendarLabel=statsCalendarType==='LUNAR'?'Âm lịch':'Dương lịch';
+ const statsFromLabel=statsCalendarType==='LUNAR'?'Từ ngày âm lịch':'Từ ngày dương lịch';
+ const statsToLabel=statsCalendarType==='LUNAR'?'Đến ngày âm lịch':'Đến ngày dương lịch';
+ const statsFromValue=statsCalendarType==='LUNAR'?statsFromLunar:statsFrom;
+ const statsToValue=statsCalendarType==='LUNAR'?statsToLunar:statsTo;
+
+ useEffect(()=>{
+  if(!statsCustomerId){
+   setStatsCalendarType('SOLAR');
+   return;
+  }
+  const c=customers.find(x=>String(x.id)===String(statsCustomerId));
+  const ct=String(c?.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
+  setStatsCalendarType(ct);
+  if(ct==='LUNAR'){
+   setStatsFromLunar(formatLunarDate(statsFrom||today).replace(/^ÂL\s*/,''));
+   setStatsToLunar(formatLunarDate(statsTo||today).replace(/^ÂL\s*/,''));
+  }
+ },[statsCustomerId,customers]);
+
+ const changeStatsFrom=v=>{
+  setStatsFrom(v);
+  if(statsCalendarType==='LUNAR')setStatsFromLunar(formatLunarDate(v||today).replace(/^ÂL\s*/,''));
+ };
+ const changeStatsTo=v=>{
+  setStatsTo(v);
+  if(statsCalendarType==='LUNAR')setStatsToLunar(formatLunarDate(v||today).replace(/^ÂL\s*/,''));
+ };
+ const changeStatsFromLunar=v=>{
+  setStatsFromLunar(v);
+  const solar=lunarToSolarDate(parseLunarText(v));
+  if(solar)setStatsFrom(solar);
+ };
+ const changeStatsToLunar=v=>{
+  setStatsToLunar(v);
+  const solar=lunarToSolarDate(parseLunarText(v));
+  if(solar)setStatsTo(solar);
+ };
+
+ const load=async(period=selectedPeriod,ct=calendarType)=>{
+  try{
+   setLoading(true);
+   const [c,r,st]=await Promise.all([
+    api.get('/customers'),
+    api.get('/installments/monthly'),
+    api.get('/installments/monthly/stats',{params:{date:statsFrom||configDate,calendar_type:statsCalendarType,lunar_date_text:statsCalendarType==='LUNAR'?statsFromLunar:'',customer_id:statsCustomerId||undefined}})
+   ]);
+   const cs=c.data||[];
+   setCustomers(cs);
+   setRows(r.data||[]);
+   setStats(st.data||{day_total:0,month_total:0,year_total:0});
+      setEditing({});
+  }catch(e){setError(e.response?.data?.message||e.message)}
+  finally{setLoading(false)}
+ };
+ useEffect(()=>{load(selectedPeriod,calendarType)},[selectedPeriod.day,selectedPeriod.month,selectedPeriod.year,calendarType,configDate,lunarDateText]);
+
+ // Không auto reload khi đang nhập ngày thống kê.
+ // Nếu reload ở mỗi ký tự nhập ngày, SafePage sẽ chuyển loading và làm trang nhảy lên top.
+ // Thống kê chỉ chạy khi bấm nút "Thống kê".
+
+ const runRangeStats=async()=>{
+  try{
+   const params={from_date:statsFrom,to_date:statsTo,calendar_type:statsCalendarType,from_lunar_date_text:statsCalendarType==='LUNAR'?statsFromLunar:'',to_lunar_date_text:statsCalendarType==='LUNAR'?statsToLunar:'',customer_id:statsCustomerId||undefined};
+   const [r,st]=await Promise.all([
+    api.get('/installments/monthly/stats-range',{params}),
+    api.get('/installments/monthly/stats',{params:{date:statsFrom,calendar_type:statsCalendarType,lunar_date_text:statsCalendarType==='LUNAR'?statsFromLunar:'',customer_id:statsCustomerId||undefined}})
+   ]);
+   setRangeStats(r.data||{total:0,rows:[]});
+   setStats(st.data||{day_total:0,month_total:0,year_total:0});
+  }catch(e){
+   alert(e.response?.data?.message||e.message||'Không thống kê được');
+  }
+ };
+ const printRangeStats=()=>{
+  const html=`<!doctype html><html><head><meta charset="utf-8"><title>Thống kê góp nợ</title><style>body{font-family:Arial;margin:24px}table{width:100%;border-collapse:collapse}td,th{border:1px solid #ddd;padding:8px}th{background:#7f1d1d;color:white}.right{text-align:right}.total{text-align:right;font-size:20px;font-weight:900;margin-top:14px}@media print{button{display:none}}</style></head><body><button onclick="window.print()">In phiếu</button><h2>Thống kê tổng tiền góp nợ thực tế</h2><p>Khách hàng: ${selectedStatsCustomer?.name||'Tất cả khách hàng'} - Loại lịch: ${statsCalendarLabel}</p><p>Từ ngày ${statsCalendarType==='LUNAR'?statsFromLunar:statsFrom} đến ${statsCalendarType==='LUNAR'?statsToLunar:statsTo}</p><table><thead><tr><th>Ngày</th><th>Số phiếu</th><th>Tổng góp nợ</th><th>Tiền mặt</th><th>Chuyển khoản</th></tr></thead><tbody>${(rangeStats.rows||[]).map(x=>`<tr><td>${String(x.payment_date||'')}</td><td class="right">${x.payment_count||0}</td><td class="right"><b>${money(x.installment_total)}</b></td><td class="right">${money(x.cash_total)}</td><td class="right">${money(x.bank_total)}</td></tr>`).join('')}</tbody></table><div class="total">Tổng góp nợ: ${money(rangeStats.total)}</div></body></html>`;
+  const w=window.open('','_blank');
+  w.document.write(html);
+  w.document.close();
+ };
+
+
+ const totalPlan=rows.filter(r=>r.status==='ACTIVE').reduce((s,r)=>s+Number(r.installment_amount||0),0);
+ const totalPaid=rows.filter(r=>r.status==='ACTIVE').reduce((s,r)=>s+Number(r.paid_amount||r.monthly_paid_amount||0),0);
+
+ const changeCalendarType=ct=>{
+  setCalendarType(ct);
+  if(ct==='LUNAR')setLunarDateText(formatLunarDate(configDate||today).replace(/^ÂL\s*/,''));
+ };
+ const changeConfigDate=v=>{
+  setConfigDate(v);
+  if(calendarType==='LUNAR')setLunarDateText(formatLunarDate(v||today).replace(/^ÂL\s*/,''));
+ };
+ const changeLunarDateText=v=>{
+  setLunarDateText(v);
+  const parsed=parseLunarText(v);
+  const solar=lunarToSolarDate(parsed);
+  if(solar)setConfigDate(solar);
+ };
+
+ const save=async()=>{
+  if(!customerId)return alert('Chọn khách hàng');
+  if(Number(amount||0)<=0)return alert('Nhập số tiền góp/ngày');
+  await api.post('/installments/monthly/apply',{
+   customer_id:customerId,
+   config_date:configDate,
+   lunar_date_text:calendarType==='LUNAR'?lunarDateText:'',
+   day:selectedPeriod.day,
+   month:selectedPeriod.month,
+   year:selectedPeriod.year,
+   calendar_type:calendarType,
+   installment_amount:Number(amount||0),
+   status:active?'ACTIVE':'INACTIVE'
+  });
+  setMsg(`Đã lưu góp nợ/ngày cho ${selectedPeriod.label}`);
+  setAmount('');
+  setActive(true);
+  await load(selectedPeriod,calendarType);
+ };
+ const startEdit=row=>setEditing(prev=>({...prev,[row.id]:{amount:Number(row.installment_amount||0),active:row.status==='ACTIVE'}}));
+ const cancelEdit=id=>setEditing(prev=>{const n={...prev};delete n[id];return n;});
+ const saveEdit=async(row)=>{
+  const e=editing[row.id]||{};
+  await api.put(`/installments/monthly/${row.id}`,{installment_amount:Number(e.amount||0),status:e.active?'ACTIVE':'INACTIVE'});
+  await load(selectedPeriod,calendarType);
+ };
+ const softDelete=async(row)=>{
+  if(!window.confirm(`Xóa mềm cấu hình góp nợ của ${row.customer_name}?`))return;
+  await api.delete(`/installments/monthly/${row.id}`);
+  await load(selectedPeriod,calendarType);
+ };
+
+ return <SafePage loading={loading} error={error}>
+  <div className="card">
+   <div className="installment-head">
+    <div>
+     <h3>Cấu hình góp nợ theo ngày</h3>
+     <p className="muted">Chọn ngày Âm/Dương, chọn khách hàng, nhập số tiền góp/ngày rồi lưu. Danh sách bên dưới hiển thị tất cả cấu hình các tháng.</p>
+    </div>
+    <div className="installment-period-badge">{selectedPeriod.shortLabel}</div>
+   </div>
+
+   <div className="installment-date-panel">
+    <div className="installment-date-left">
+     <label className="field-label">
+      <span>Ngày dương lịch</span>
+      <input className="input" type="date" value={configDate} onChange={e=>changeConfigDate(e.target.value)}/>
+     </label>
+     <LunarDateSelector
+      solarDate={configDate}
+      calendarType={calendarType}
+      onCalendarTypeChange={changeCalendarType}
+      value={lunarDateText}
+      onChange={changeLunarDateText}
+     />
+    </div>
+    <div className="installment-summary-box">
+     <div><span>Ngày đang chọn</span><b>{selectedPeriod.label}</b></div>
+     <div><span>Kỳ áp dụng</span><b>{selectedPeriod.periodLabel}</b></div>
+         </div>
+   </div>
+  </div>
+
+  <div className="card">
+   <h3>Lưu cấu hình</h3>
+   {msg&&<div className="toast success" style={{position:'static',marginBottom:12}}>{msg}</div>}
+   <div className="form-grid">
+    <label className="field-label">
+     <span>Khách hàng</span>
+     <select className="input" value={customerId} onChange={e=>setCustomerId(e.target.value)}>
+      <option value="">-- Chọn khách hàng --</option>
+      {customers.map(c=><option key={c.id} value={c.id}>{c.name}{c.phone?` - ${c.phone}`:''}</option>)}
+     </select>
+    </label>
+    <label className="field-label">
+     <span>Số tiền góp/ngày</span>
+     <MoneyInput placeholder="3,000,000" value={amount} onChange={setAmount}/>
+    </label>
+    <label className="check-line" style={{alignSelf:'end'}}>
+     <input type="checkbox" checked={active} onChange={e=>setActive(e.target.checked)}/>
+     <span>Active</span>
+    </label>
+    <div style={{alignSelf:'end'}}>
+     <button type="button" className="btn" onClick={save}>Lưu lại</button>
+    </div>
+   </div>
+  </div>
+
+  <div className="card">
+   <h3>Thống kê tổng tiền góp nợ thực tế</h3>
+   <p className="muted">Chọn khách hàng trước. Khoảng thời gian sẽ tự chạy theo loại lịch tính bill của khách; không hiển thị lẫn lộn âm/dương.</p>
+   <div className="form-grid" style={{gridTemplateColumns:'1.3fr 1fr 1fr auto auto',alignItems:'end'}}>
+    <label className="field-label"><span>Khách hàng thống kê</span><select className="input" value={statsCustomerId} onChange={e=>setStatsCustomerId(e.target.value)}><option value="">Tất cả khách hàng - Dương lịch</option>{customers.map(c=><option key={c.id} value={c.id}>{c.name} • {String(c.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'Âm lịch':'Dương lịch'}{c.phone?` - ${c.phone}`:''}</option>)}</select></label>
+    {statsCalendarType==='LUNAR'?<>
+     <label className="field-label"><span>{statsFromLabel}</span><input className="input" value={statsFromLunar} onChange={e=>changeStatsFromLunar(e.target.value)} placeholder="VD: 01/03/2026"/></label>
+     <label className="field-label"><span>{statsToLabel}</span><input className="input" value={statsToLunar} onChange={e=>changeStatsToLunar(e.target.value)} placeholder="VD: 30/03/2026"/></label>
+    </>:<>
+     <label className="field-label"><span>{statsFromLabel}</span><input className="input" type="date" value={statsFrom} onChange={e=>changeStatsFrom(e.target.value)}/></label>
+     <label className="field-label"><span>{statsToLabel}</span><input className="input" type="date" value={statsTo} onChange={e=>changeStatsTo(e.target.value)}/></label>
+    </>}
+    <button type="button" className="btn" onClick={runRangeStats}>Thống kê</button>
+    <button type="button" className="btn secondary" onClick={printRangeStats}>In phiếu</button>
+   </div>
+   <div className="muted" style={{marginTop:8}}>Loại lịch thống kê: <b>{statsCalendarLabel}</b>{selectedStatsCustomer?` theo khách ${selectedStatsCustomer.name}`:' (tất cả khách hàng)'}. Khoảng đang chọn: <b>{statsFromValue}</b> đến <b>{statsToValue}</b>.</div>
+   <div className="installment-summary-box" style={{maxWidth:720,marginTop:12}}>
+    <div><span>Theo ngày tổng hợp</span><b>{money(stats.day_total)}</b></div>
+    <div><span>Theo tháng tổng hợp</span><b>{money(stats.month_total)}</b></div>
+    <div><span>Theo năm tổng hợp</span><b>{money(stats.year_total)}</b></div>
+    <div><span>Theo khoảng thời gian</span><b>{money(rangeStats.total)}</b></div>
+   </div>
+   {(rangeStats.rows||[]).length>0&&<table className="table" style={{marginTop:12}}><thead><tr><th>Ngày</th><th>Số phiếu</th><th>Tổng góp nợ</th><th>Tiền mặt</th><th>Chuyển khoản</th></tr></thead><tbody>{rangeStats.rows.map((r,i)=><tr key={i}><td>{String(r.payment_date||'')}</td><td>{r.payment_count}</td><td><b>{money(r.installment_total)}</b></td><td>{money(r.cash_total)}</td><td>{money(r.bank_total)}</td></tr>)}</tbody></table>}
+  </div>
+
+  <div className="card">
+   <h3>Danh sách cấu hình tất cả các ngày áp dụng</h3>
+   <div className="installment-table-wrap">
+    <table className="table installment-table">
+     <thead><tr><th>Khách hàng</th><th>Ngày áp dụng</th><th>Loại lịch</th><th>Số tiền góp/ngày</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
+     <tbody>{rows.map(r=>{
+      const e=editing[r.id];
+      const isEditing=!!e;
+      const day=String(r.installment_day||1).padStart(2,'0');
+      const month=String(r.installment_month).padStart(2,'0');
+      return <tr key={r.id} className={r.status==='INACTIVE'?'muted-row':''}>
+       <td><b>{r.customer_name}</b><br/><span className="muted">{r.phone||''}</span></td>
+       <td>{day}/{month}/{r.installment_year}</td>
+       <td>{r.calendar_type==='LUNAR'?'Âm lịch':'Dương lịch'}</td>
+       <td>{isEditing?<MoneyInput value={e.amount} onChange={v=>setEditing(prev=>({...prev,[r.id]:{...prev[r.id],amount:v}}))}/>:<b>{money(r.installment_amount)}</b>}</td>
+       <td>{isEditing?<label className="check-line"><input type="checkbox" checked={!!e.active} onChange={ev=>setEditing(prev=>({...prev,[r.id]:{...prev[r.id],active:ev.target.checked}}))}/><span>Active</span></label>:<span className={r.status==='ACTIVE'?'status active':'status inactive'}>{r.status==='ACTIVE'?'Active':'Inactive'}</span>}</td>
+       <td><div className="row-actions">
+        {isEditing?<>
+         <button type="button" className="btn small" onClick={()=>saveEdit(r)}>Lưu</button>
+         <button type="button" className="btn secondary small" onClick={()=>cancelEdit(r.id)}>Hủy</button>
+        </>:<>
+         <button type="button" className="btn secondary small" onClick={()=>startEdit(r)}>Sửa</button>
+         <button type="button" className="btn danger small" onClick={()=>softDelete(r)}>Xóa mềm</button>
+        </>}
+       </div></td>
+      </tr>
+     })}</tbody>
+    </table>
+   </div>
+  </div>
+ </SafePage>
+}

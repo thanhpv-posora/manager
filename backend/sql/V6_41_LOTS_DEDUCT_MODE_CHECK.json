@@ -1,0 +1,8 @@
+{
+  "Lots_no_or_zero_for_total_animals": true,
+  "Lots_has_deduct_mode": true,
+  "Supplier_has_deduct_mode": true,
+  "Print_has_deduct_mode": true,
+  "Bootstrap_has_deduct_mode": true,
+  "CSS_has_lots": true
+}

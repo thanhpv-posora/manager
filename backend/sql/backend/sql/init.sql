@@ -1,0 +1,2 @@
+-- V6.6 auto-creates schema on backend startup via src/config/bootstrap.js.
+-- You can simply run backend. This file is informational.

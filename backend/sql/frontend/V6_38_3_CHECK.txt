@@ -1,0 +1,7 @@
+{
+  "headerbar": true,
+  "payment_follow": true,
+  "no_code": true,
+  "no_unit": true,
+  "safe_tags": true
+}

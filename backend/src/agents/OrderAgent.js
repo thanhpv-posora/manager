@@ -3,7 +3,7 @@ const { nanoid } = require('nanoid');
 const { nextCode } = require('../utils/code');
 const InventoryService = require('../services/InventoryService');
 const PrintService = require('../services/PrintService');
-const DebtInstallmentAgent=require('./DebtInstallmentAgent');
+const DebtMonthlyInstallmentAgent=require('./DebtMonthlyInstallmentAgent');
 
 function customerScopeFilterV625(user, baseWhere, params) {
   if(user && user.role==='CUSTOMER') {
@@ -12,11 +12,37 @@ function customerScopeFilterV625(user, baseWhere, params) {
   return {where:baseWhere, params};
 }
 
+
+function parseLunarDateParts(text){
+  const m=String(text||'').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if(!m)return null;
+  return {day:Number(m[1]),month:Number(m[2]),year:Number(m[3])};
+}
+
+function solarDateParts(dateText){
+  const m=String(dateText||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(m)return {day:Number(m[3]),month:Number(m[2]),year:Number(m[1])};
+  const d=dateText?new Date(dateText):new Date();
+  return {day:d.getDate(),month:d.getMonth()+1,year:d.getFullYear()};
+}
+
+async function monthlyInstallmentForOrder(order){
+  const calendarType=String(order.calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
+  let period;
+  if(calendarType==='LUNAR') period=parseLunarDateParts(order.lunar_date_text)||solarDateParts(order.order_date);
+  else period=solarDateParts(order.order_date);
+  const row=await DebtMonthlyInstallmentAgent.getActiveInstallment(order.customer_id,period.month,period.year,calendarType,period.day);
+  return {...row, bill_day:period.day, installment_month:period.month, installment_year:period.year, calendar_type:calendarType};
+}
+
 class OrderAgent {
   constructor(){this.version='6.8.0';this.responsibility='Order POS, inventory-aware bill, QR, A4 print, thermal K80 print';}
-  async list(user) {
+  async list(user, query={}) {
     const where=[], params=[];
     if (user.role==='CUSTOMER') { where.push('o.customer_id=?'); params.push(user.customer_id); }
+    if (query.from_date || query.from) { where.push('DATE(o.order_date)>=?'); params.push(String(query.from_date||query.from).slice(0,10)); }
+    if (query.to_date || query.to) { where.push('DATE(o.order_date)<=?'); params.push(String(query.to_date||query.to).slice(0,10)); }
+    if (query.customer_name || query.customer) { where.push('c.name LIKE ?'); params.push('%'+String(query.customer_name||query.customer).trim()+'%'); }
     const [rows] = await pool.query(
       `SELECT o.*,c.name customer_name FROM orders o JOIN customers c ON c.id=o.customer_id
        ${where.length?'WHERE '+where.join(' AND '):''} ORDER BY o.order_date DESC,o.id DESC`,
@@ -41,8 +67,15 @@ class OrderAgent {
        ORDER BY order_date ASC,id ASC`,
       [order.customer_id, order.order_date, order.order_date, order.id]
     );
-    const installment=await DebtInstallmentAgent.summaryForBill(order.customer_id,order.order_date);
-    return {...order, items, old_debts:oldDebts, old_debt_total:oldDebts.reduce((s,x)=>s+Number(x.debt_amount||0),0), installment};
+    const [payRows]=await pool.query(`SELECT * FROM payments WHERE order_id=? ORDER BY id DESC LIMIT 1`,[id]);
+    let monthly_installment=await monthlyInstallmentForOrder(order);
+    if(payRows[0]?.monthly_installment_id){
+      try{
+        const [used]=await pool.query(`SELECT * FROM debt_monthly_installments WHERE id=? LIMIT 1`,[payRows[0].monthly_installment_id]);
+        if(used[0]) monthly_installment=used[0];
+      }catch(e){}
+    }
+    return {...order, items, old_debts:oldDebts, old_debt_total:oldDebts.reduce((s,x)=>s+Number(x.debt_amount||0),0), monthly_installment, payment:payRows[0]||null};
   }
 
   async getByToken(token) {
@@ -61,8 +94,15 @@ class OrderAgent {
        ORDER BY order_date ASC,id ASC`,
       [order.customer_id, order.order_date, order.order_date, order.id]
     );
-    const installment=await DebtInstallmentAgent.summaryForBill(order.customer_id,order.order_date);
-    return {...order, items, old_debts:oldDebts, old_debt_total:oldDebts.reduce((s,x)=>s+Number(x.debt_amount||0),0), installment};
+    const [payRows]=await pool.query(`SELECT * FROM payments WHERE order_id=? ORDER BY id DESC LIMIT 1`,[order.id]);
+    let monthly_installment=await monthlyInstallmentForOrder(order);
+    if(payRows[0]?.monthly_installment_id){
+      try{
+        const [used]=await pool.query(`SELECT * FROM debt_monthly_installments WHERE id=? LIMIT 1`,[payRows[0].monthly_installment_id]);
+        if(used[0]) monthly_installment=used[0];
+      }catch(e){}
+    }
+    return {...order, items, old_debts:oldDebts, old_debt_total:oldDebts.reduce((s,x)=>s+Number(x.debt_amount||0),0), monthly_installment, payment:payRows[0]||null};
   }
 
   async create(data, user) {
@@ -71,7 +111,11 @@ class OrderAgent {
     try {
       await conn.beginTransaction();
       const code = await nextCode(conn,'orders','order_code','BILL');
-      const total = data.items.reduce((s,it)=>s+Number(it.quantity||0)*Number(it.sale_price||0),0);
+      const itemTotal = data.items.reduce((s,it)=>s+Number(it.quantity||0)*Number(it.sale_price||0),0);
+      // V6.51 critical fix: order total must include the effective daily installment.
+      // Otherwise a bill paid only for today's items is incorrectly marked PAID and the installment debt disappears.
+      const installmentAmount = Number(data.monthly_installment_amount ?? data.installment_amount ?? 0);
+      const total = itemTotal + installmentAmount;
       const paid = Number(data.paid_amount||0);
       const debt = Math.max(0,total-paid);
       const pstatus = paid<=0?'UNPAID':paid>=total?'PAID':'PARTIAL';
@@ -81,21 +125,19 @@ class OrderAgent {
         [code,data.customer_id,data.order_date,data.delivery_date||null,'DELIVERED',pstatus,total,paid,debt,nanoid(24),data.note||'',user.id]
       );
       
-    // SAFE_LUNAR_UPDATE_V6366: optional calendar fields updated separately.
-    try{
-      const insertedOrderId=(result&&result.insertId)||(orderResult&&orderResult.insertId)||(r&&r.insertId);
-      if(insertedOrderId){
-        const safeCalendarType=data.calendar_type==='LUNAR'?'LUNAR':'SOLAR';
-        const safeLunarDateText=safeCalendarType==='LUNAR'?(data.lunar_date_text||''):'';
-        await conn.query(
-          `UPDATE orders SET calendar_type=?, lunar_date_text=? WHERE id=?`,
-          [safeCalendarType,safeLunarDateText,insertedOrderId]
-        );
-      }
-    }catch(e){
-      // Ignore if DB has not migrated optional lunar columns yet.
-    }
 const orderId = r.insertId;
+    // V6.51: persist bill calendar and installment fields so POS, payment, print, and reports use the same values.
+    try{
+      const safeCalendarType=data.calendar_type==='LUNAR'?'LUNAR':'SOLAR';
+      const safeLunarDateText=safeCalendarType==='LUNAR'?(data.lunar_date_text||''):'';
+      const monthlyInstallmentId=Number(data.monthly_installment_id||0)||null;
+      await conn.query(
+        `UPDATE orders SET calendar_type=?, lunar_date_text=?, current_bill_amount=?, installment_amount=?, monthly_installment_id=? WHERE id=?`,
+        [safeCalendarType,safeLunarDateText,itemTotal,installmentAmount,monthlyInstallmentId,orderId]
+      );
+    }catch(e){
+      // Ignore if DB has not migrated optional V6.51 columns yet.
+    }
       for (const it of data.items) {
         const line = Number(it.quantity||0)*Number(it.sale_price||0);
         const inv = await InventoryService.out(conn,it.product_id,it.quantity,data.order_date,'SALE',orderId,`Xuất bill ${code}`,user.id);
@@ -160,13 +202,28 @@ const orderId = r.insertId;
       if(i.inventory_mode==='NON_STOCK'||i.inventory_mode==='CARCASS_PART') lines.push('  * Hang pha loc/khong tru ton');
     }
     lines.push('--------------------------------');
-    lines.push(`Tong    : ${money(order.total_amount).padStart(14)}`);
-    lines.push(`Da tra  : ${money(order.paid_amount).padStart(14)}`);
-    lines.push(`Con no  : ${money(order.debt_amount).padStart(14)}`);
-    if (order.installment && Number(order.installment.due_today_total||0)>0) {
-      lines.push(`Gop hom nay: ${money(order.installment.due_today_total).padStart(10)}`);
-      lines.push(`Tong can TT: ${money(Number(order.total_amount||0)+Number(order.installment.due_today_total||0)).padStart(10)}`);
-    }
+    const pay=order.payment||{};
+    const monthlyInstallment=Number(order.installment_amount||pay.installment_amount||order.monthly_installment?.installment_amount||0);
+    const storedTotal=Number(order.total_amount||0);
+    const rawCurrentBill=Number(order.current_bill_amount||0);
+    const itemTotal=(order.items||[]).reduce((sum,i)=>sum+Number(i.total_price || (Number(i.quantity||0)*Number(i.sale_price||0)) || 0),0);
+    // V6.51.13 CRITICAL K80 FIX:
+    // Không cộng trùng góp nợ/ngày. Tổng hàng lấy từ items nếu có.
+    const todayBillTotal=itemTotal>0
+      ? itemTotal
+      : (monthlyInstallment>0
+          ? (rawCurrentBill>0 && rawCurrentBill < storedTotal ? rawCurrentBill : Math.max(0,(storedTotal||rawCurrentBill)-monthlyInstallment))
+          : (rawCurrentBill || storedTotal));
+    const payableTotal=monthlyInstallment>0 ? (todayBillTotal+monthlyInstallment) : (storedTotal||todayBillTotal);
+    const cashAmount=Number(pay.cash_amount||0);
+    const bankAmount=Number(pay.bank_amount||0);
+    const remainingDebt=Number(order.debt_amount ?? Math.max(0,payableTotal-cashAmount-bankAmount));
+    lines.push(`Bill hom nay: ${money(todayBillTotal).padStart(10)}`);
+    if(monthlyInstallment>0) lines.push(`Gop no/ngay: ${money(monthlyInstallment).padStart(10)}`);
+    lines.push(`Tong can TT: ${money(payableTotal).padStart(10)}`);
+    lines.push(`Tien mat   : ${money(cashAmount).padStart(10)}`);
+    lines.push(`Chuyen khoan:${money(bankAmount).padStart(9)}`);
+    lines.push(`Con no     : ${money(remainingDebt).padStart(10)}`);
     if ((order.old_debts||[]).length) {
       lines.push('--------------------------------');
       lines.push('NO CU CHUA THANH TOAN');
@@ -178,15 +235,6 @@ const orderId = r.insertId;
       lines.push(`Tong can thu: ${money(Number(order.old_debt_total||0)+Number(order.debt_amount||0)).padStart(10)}`);
     }
     lines.push('--------------------------------');
-    if (order.installment && order.installment.plans && order.installment.plans.length) {
-      lines.push('--------------------------------');
-      lines.push('GOP NO HANG NGAY');
-      for (const p of order.installment.plans) {
-        lines.push(`${p.plan_name}`);
-        lines.push(`  Muc/ngay: ${money(p.daily_amount).padStart(14)}`);
-        lines.push(`  Da gop  : ${money(p.paid_amount).padStart(14)}`);
-      }
-    }
     lines.push('Cam on quy khach!');
     return `<html><head><meta charset="utf-8"><style>@page{size:80mm auto;margin:2mm}body{font-family:Consolas,'Courier New',monospace;font-size:12px;width:76mm;white-space:pre-wrap;line-height:1.25}.print{position:fixed;top:5px;right:5px}@media print{.print{display:none}}</style></head><body><button class="print" onclick="window.print()">IN K80</button>${lines.join('\n')}<script>setTimeout(()=>window.print(),300)</script></body></html>`;
   }

@@ -1,0 +1,12 @@
+MeatBiz V6.51 Final package
+
+Đã kèm SQL:
+backend/sql/v6_51_final_billing_calendar_installment.sql
+
+Nghiệp vụ chính:
+- Customer có billing_calendar_type: SOLAR/LUNAR.
+- POS chọn khách thì tự set âm/dương theo khách.
+- Góp nợ/ngày cấu hình theo ngày áp dụng.
+- Nếu trong cùng tháng có nhiều cấu hình, POS lấy cấu hình gần nhất <= ngày bill.
+- Thu tiền hỗ trợ CASH / BANK_TRANSFER / MIXED.
+- In bill ẩn block góp nợ nếu số tiền = 0.

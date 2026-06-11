@@ -192,7 +192,8 @@ const orderId = r.insertId;
     lines.push('   PHIEU GIAO HANG / K80');
     lines.push('--------------------------------');
     lines.push(`Bill : ${order.order_code}`);
-    lines.push(`Ngay : ${order.order_date}`);
+    const billDateLabel = order.calendar_type==='LUNAR' && order.lunar_date_text ? `${order.lunar_date_text} AL` : order.order_date;
+    lines.push(`Ngay : ${billDateLabel}`);
     lines.push(`Khach: ${order.customer_name}`);
     lines.push('--------------------------------');
     for (const i of order.items) {
@@ -207,14 +208,17 @@ const orderId = r.insertId;
     const storedTotal=Number(order.total_amount||0);
     const rawCurrentBill=Number(order.current_bill_amount||0);
     const itemTotal=(order.items||[]).reduce((sum,i)=>sum+Number(i.total_price || (Number(i.quantity||0)*Number(i.sale_price||0)) || 0),0);
-    // V6.51.13 CRITICAL K80 FIX:
-    // Không cộng trùng góp nợ/ngày. Tổng hàng lấy từ items nếu có.
-    const todayBillTotal=itemTotal>0
-      ? itemTotal
-      : (monthlyInstallment>0
-          ? (rawCurrentBill>0 && rawCurrentBill < storedTotal ? rawCurrentBill : Math.max(0,(storedTotal||rawCurrentBill)-monthlyInstallment))
-          : (rawCurrentBill || storedTotal));
-    const payableTotal=monthlyInstallment>0 ? (todayBillTotal+monthlyInstallment) : (storedTotal||todayBillTotal);
+    // V6.51 FINAL K80 RULE:
+    // order.total_amount đã là tổng cuối cùng, đã bao gồm góp nợ/ngày.
+    // Không cộng installment_amount thêm lần nữa.
+    const payableTotal = storedTotal > 0
+      ? storedTotal
+      : (rawCurrentBill > 0
+          ? rawCurrentBill
+          : (itemTotal + monthlyInstallment));
+    const todayBillTotal = monthlyInstallment > 0
+      ? Math.max(0, payableTotal - monthlyInstallment)
+      : (rawCurrentBill || itemTotal || payableTotal);
     const cashAmount=Number(pay.cash_amount||0);
     const bankAmount=Number(pay.bank_amount||0);
     const remainingDebt=Number(order.debt_amount ?? Math.max(0,payableTotal-cashAmount-bankAmount));

@@ -1883,3 +1883,27 @@ button,.btn,.menu-item,.input,.select,textarea{
     word-break:break-word!important;
   }
 }
+
+
+/* V44 - Mobile/tablet menu polish: show icon + label, compact drawer, no ugly icon-only list */
+@media (max-width: 1180px){
+  .app-shell.sidebar-collapsed .menu-label{display:inline!important;}
+}
+@media (min-width: 761px) and (max-width: 1180px){
+  .sidebar{width:220px!important;min-width:220px!important;}
+  .sidebar .brand span,.sidebar-brand span,.menu-label,.sidebar-toggle span{display:inline!important;}
+  .menu-item,.sidebar-toggle{justify-content:flex-start!important;gap:10px!important;}
+  .main{padding:16px!important;}
+}
+@media (max-width:760px){
+  .sidebar{position:sticky!important;top:0!important;padding:12px!important;border-radius:0 0 22px 22px!important;}
+  .sidebar .brand,.sidebar-brand{padding:12px 128px 12px 14px!important;min-height:64px!important;}
+  .sidebar-toggle{top:18px!important;right:16px!important;min-height:42px!important;padding:10px 12px!important;gap:8px!important;background:rgba(255,255,255,.10)!important;}
+  .sidebar-toggle span{display:inline!important;font-size:13px!important;white-space:nowrap!important;}
+  .app-shell.mobile-menu-open .menu{display:grid!important;grid-template-columns:1fr!important;gap:8px!important;padding-top:12px!important;max-height:62vh!important;overflow:auto!important;-webkit-overflow-scrolling:touch!important;}
+  .app-shell.mobile-menu-open .menu-item{display:flex!important;justify-content:flex-start!important;gap:12px!important;min-height:50px!important;padding:12px 14px!important;border-radius:16px!important;}
+  .app-shell.mobile-menu-open .menu-label{display:inline!important;font-size:14px!important;font-weight:800!important;}
+}
+
+/* V44 - Voice POS mobile production: avoid repeated speech results */
+.ai-live-preview b{word-break:break-word;}

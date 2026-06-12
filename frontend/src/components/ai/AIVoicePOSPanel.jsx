@@ -104,6 +104,44 @@ function dedupeKey(line){
     .trim();
 }
 
+
+function splitVoiceFinal(text){
+  return String(text||'')
+    .replace(/[。！!？?]+/g,'.')
+    .split(/[\n,，.;]+/)
+    .map(x=>x.trim())
+    .filter(Boolean);
+}
+
+function squashRepeatedPhrase(line){
+  let words=String(line||'').trim().split(/\s+/).filter(Boolean);
+  if(words.length>=2 && words.length%2===0){
+    const half=words.length/2;
+    const a=normText(words.slice(0,half).join(' '));
+    const b=normText(words.slice(half).join(' '));
+    if(a && a===b) return words.slice(0,half).join(' ');
+  }
+  // Browser speech can return: "Hong Hien Hong Hien" or "Xuong ong Xuong ong".
+  for(let size=1; size<=Math.floor(words.length/2); size++){
+    const tail=normText(words.slice(-size).join(' '));
+    const beforeTail=normText(words.slice(-(size*2),-size).join(' '));
+    if(tail && tail===beforeTail){
+      words=words.slice(0,-size);
+    }
+  }
+  return words.join(' ');
+}
+
+function shouldAcceptVoiceLine(line, recentRef){
+  const key=dedupeKey(line);
+  if(!key) return false;
+  const now=Date.now();
+  recentRef.current=(recentRef.current||[]).filter(x=>now-x.ts<6500);
+  if(recentRef.current.some(x=>x.key===key)) return false;
+  recentRef.current.push({key,ts:now});
+  return true;
+}
+
 function getLastMeaningfulLine(text){
   const lines=String(text||'').split(/\n+/).map(x=>x.trim()).filter(Boolean);
   return lines[lines.length-1]||'';
@@ -273,20 +311,27 @@ export default function AIVoicePOSPanel({sessionId='POS_VOICE_001'}){
       }
       if(interim)setPartial(interim.trim());
       if(finalText.trim()){
-        const line=finalText.trim();
-        const normalized=normText(line);
-        if(/\b(xong|ket thuc|done)\b/.test(normalized)){
-          stopVoice();
-          send(messageRef.current);
-          return;
+        const lines=splitVoiceFinal(finalText).map(squashRepeatedPhrase).filter(Boolean);
+        for(const rawLine of lines){
+          const line=rawLine.trim();
+          const normalized=normText(line);
+          if(/\b(xong|ket thuc|done)\b/.test(normalized)){
+            stopVoice();
+            send(messageRef.current);
+            return;
+          }
+          if(/\b(huy|cancel)\b/.test(normalized)){
+            stopVoice();
+            setMessage('');messageRef.current='';setResult(null);recentVoiceRef.current=[];return;
+          }
+          if(!shouldAcceptVoiceLine(line,recentVoiceRef)){
+            setPartial('');
+            continue;
+          }
+          const applied=applyVoiceLine(line);
+          if(applied.shouldSend && result) send(applied.shouldSend);
+          if(!keepOpen && !applied.handled)send(messageRef.current);
         }
-        if(/\b(huy|cancel)\b/.test(normalized)){
-          stopVoice();
-          setMessage('');messageRef.current='';setResult(null);return;
-        }
-        const applied=applyVoiceLine(line);
-        if(applied.shouldSend && result) send(applied.shouldSend);
-        if(!keepOpen && !applied.handled)send(messageRef.current);
       }
     };
     recRef.current=rec;

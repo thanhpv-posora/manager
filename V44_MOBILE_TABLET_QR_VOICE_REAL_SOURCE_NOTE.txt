@@ -1,0 +1,1 @@
+V44: mobile/tablet menu labels, QR public URL no localhost, Voice POS duplicate speech guard. Build verified.

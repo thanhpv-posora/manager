@@ -95,6 +95,20 @@ function commandKind(line){
   return {type:'NORMAL'};
 }
 
+
+function dedupeKey(line){
+  return normText(line)
+    .replace(/[,.;:]+/g,' ')
+    .replace(/\b(uh|um|a|la|nhe|nha|di|roi|day)\b/g,' ')
+    .replace(/\s+/g,' ')
+    .trim();
+}
+
+function getLastMeaningfulLine(text){
+  const lines=String(text||'').split(/\n+/).map(x=>x.trim()).filter(Boolean);
+  return lines[lines.length-1]||'';
+}
+
 function removeLineByKeyword(text, keyword){
   const key=normText(keyword);
   if(!key)return text;
@@ -125,6 +139,7 @@ export default function AIVoicePOSPanel({sessionId='POS_VOICE_001'}){
   const recRef=useRef(null);
   const messageRef=useRef('');
   const continuousRef=useRef(false);
+  const recentVoiceRef=useRef([]);
   const previewItems=useMemo(()=>localPreview(message),[message]);
 
   const friendlyError=(value)=>{
@@ -186,6 +201,7 @@ export default function AIVoicePOSPanel({sessionId='POS_VOICE_001'}){
     setMessage('');
     messageRef.current='';
     setPartial('');
+    recentVoiceRef.current=[];
     setResult(null);
     setError('Đã xoá tất cả dòng đang nhập.');
   };
@@ -209,6 +225,11 @@ export default function AIVoicePOSPanel({sessionId='POS_VOICE_001'}){
       setMessage(next);
       setPartial('');
       return {handled:true, shouldSend: line};
+    }
+    const currentLast=getLastMeaningfulLine(messageRef.current);
+    if(dedupeKey(currentLast) && dedupeKey(currentLast)===dedupeKey(line)){
+      setPartial('');
+      return {handled:true, duplicate:true};
     }
     const next=appendLine(messageRef.current,line);
     messageRef.current=next;
@@ -304,7 +325,7 @@ export default function AIVoicePOSPanel({sessionId='POS_VOICE_001'}){
     </div>
 
     {partial&&<div className="ai-live-preview"><span>Đang nghe:</span><b>{partial}</b></div>}
-    <div className="ai-voice-hint">Mẹo: nói từng dòng. Nếu đọc nhầm: <b>xóa dòng cuối</b> hoặc <b>xóa bóp đi</b>. Muốn làm lại: <b>xóa tất cả</b>.</div>
+    <div className="ai-voice-hint">Mẹo: nói từng dòng, hệ thống đã chống nhận trùng trong vài giây. Nếu đọc nhầm: <b>xóa dòng cuối</b> hoặc <b>xóa bóp đi</b>. Muốn làm lại: <b>xóa tất cả</b>.</div>
     {!!previewItems.length&&<div className="ai-live-preview">
       <span>AI đang hiểu:</span>
       {previewItems.map((it,i)=><b key={i}>{it.quantity}kg {it.name}</b>)}

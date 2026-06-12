@@ -235,7 +235,7 @@ export default function Lots(){
     }
   };
 
-  const print=id=>window.open((import.meta.env.VITE_API_URL||'http://localhost:4000/api')+'/lots/public/'+id+'/print','_blank');
+  const print=id=>window.open((import.meta.env.VITE_API_URL||(typeof window !== 'undefined' ? `${window.location.origin}/api` : '/api'))+'/lots/public/'+id+'/print','_blank');
   const payLot=async()=>{
     if(!pay.lot_id||!pay.amount)return alert('Chọn lô và nhập số tiền');
     await api.post('/lots/'+pay.lot_id+'/payments',pay);

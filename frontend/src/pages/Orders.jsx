@@ -33,7 +33,7 @@ export default function Orders(){
  const[rows,setRows]=useState([]),[detail,setDetail]=useState(null),[qr,setQr]=useState(null),[loading,setLoading]=useState(true),[error,setError]=useState('');
  const[filters,setFilters]=useState({from:'',to:'',customer:''});
  const[page,setPage]=useState(1);
- const base=import.meta.env.VITE_API_URL||'http://localhost:4000/api';
+ const base=import.meta.env.VITE_API_URL||(typeof window !== 'undefined' ? `${window.location.origin}/api` : '/api');
  const load=async()=>{try{setRows((await api.get('/orders')).data||[])}catch(e){setError(e.response?.data?.message||e.message)}finally{setLoading(false)}};
  useEffect(()=>{load()},[]);
  const filtered=useMemo(()=>{

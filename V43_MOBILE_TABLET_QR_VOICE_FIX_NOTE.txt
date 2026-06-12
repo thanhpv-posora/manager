@@ -1,0 +1,10 @@
+V43 Mobile/Tablet + QR + Voice POS Fix
+
+- Mobile/tablet menu now opens with icon + text labels, not icon-only.
+- Mobile menu layout polished: readable rows/cards, better toggle placement, auto closes after page choice.
+- Frontend API fallback no longer points to localhost; uses current domain /api when VITE_API_URL is not set.
+- QR code URL no longer defaults to localhost; backend derives PUBLIC_APP_URL or forwarded request host.
+- PrintService default public app URL changed to https://meatbiz.posora.vn when env is not set.
+- AI Voice POS now de-duplicates repeated recognition text within a short time window.
+- AI Voice POS also skips adding the same last line twice.
+- Build verified: npm run build OK.

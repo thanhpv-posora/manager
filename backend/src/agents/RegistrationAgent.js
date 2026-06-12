@@ -10,7 +10,7 @@ function randomCode(){ return String(Math.floor(100000+Math.random()*900000)); }
 function randomToken(){ return crypto.randomBytes(32).toString('hex'); }
 function sha256(v){ return crypto.createHash('sha256').update(String(v||'')).digest('hex'); }
 function appUrl(path){
-  const base=(process.env.PUBLIC_APP_URL||process.env.FRONTEND_URL||'http://localhost:5173').replace(/\/$/,'');
+  const base=(process.env.PUBLIC_APP_URL||process.env.FRONTEND_URL||'https://meatbiz.posora.vn').replace(/\/$/,'');
   return `${base}${path}`;
 }
 function htmlEscape(v){ return String(v||'').replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }

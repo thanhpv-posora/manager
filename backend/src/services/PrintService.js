@@ -16,7 +16,7 @@ class PrintService {
   }
   async billHtml(order) {
     const settings = await this.settings();
-    const app = process.env.PUBLIC_APP_URL || 'http://localhost:5173';
+    const app = process.env.PUBLIC_APP_URL || process.env.FRONTEND_URL || 'https://meatbiz.posora.vn';
     const url = `${app}/bill/${order.private_token || order.order_code}`;
     const qr = await QRCode.toDataURL(url);
     const pay=order.payment||{};

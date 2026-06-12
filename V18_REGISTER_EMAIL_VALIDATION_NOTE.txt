@@ -1,0 +1,1 @@
+V18: Fix đăng ký email không hợp lệ vẫn submit. Backend + frontend validate email format trước khi tạo registration/gửi mail. Phone-only register remains developing.

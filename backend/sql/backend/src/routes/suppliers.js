@@ -1,9 +1,0 @@
-const express=require('express');
-const { auth }=require('../middleware/auth');
-const SupplierAgent=require('../agents/SupplierAgent');
-const router=express.Router();
-router.get('/', auth(['ADMIN','STAFF']), async (req,res,next)=>{try{res.json(await SupplierAgent.suppliers())}catch(e){next(e)}});
-router.post('/', auth(['ADMIN','STAFF']), async (req,res,next)=>{try{res.json(await SupplierAgent.addSupplier(req.body))}catch(e){next(e)}});
-router.put('/:id', auth(['ADMIN','STAFF']), async (req,res,next)=>{try{res.json(await SupplierAgent.updateSupplier(req.params.id,req.body))}catch(e){next(e)}});
-router.delete('/:id', auth(['ADMIN','STAFF']), async (req,res,next)=>{try{res.json(await SupplierAgent.removeSupplier(req.params.id,req.body.reason,req.user.id))}catch(e){next(e)}});
-module.exports=router;

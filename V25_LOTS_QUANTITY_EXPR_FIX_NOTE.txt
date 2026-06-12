@@ -1,0 +1,9 @@
+V25 Lots Quantity Expression Fix
+
+- Xương sườn giữ 1 line như vị trí hiện tại.
+- Tổng kg thịt xô vẫn là nhiều dòng để nhập nhiều số lượng.
+- Các trường số lượng/kg có thể nhập cộng/trừ trực tiếp trên field:
+  90.5 + 75.8 - 2
+  6 + 1
+  3 - 0.5
+- Đã build frontend OK trước khi xoá dist/node_modules.

@@ -1,0 +1,6 @@
+V42 - Mobile/Tablet Layout
+- Tablet: compact sidebar icon rail, content one-column where needed.
+- Phone: top mobile bar with collapsible menu drawer.
+- Forms/tables/cards become one-column and touch-friendly.
+- Lots page disables floating overlay on tablet/phone to avoid covering fields.
+- Build verified before packaging.

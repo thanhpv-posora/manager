@@ -1,14 +1,21 @@
 require('dotenv').config();
+require('dns').setDefaultResultOrder('ipv4first');
 const express=require('express');
 const AutoMigrationAgent=require('./agents/AutoMigrationAgent');
 const SchemaMigrationAgent=require('./agents/SchemaMigrationAgent');
 const cors=require('cors');
 const { ensureSchema }=require('./config/bootstrap');
 const { errorHandler }=require('./middleware/errorHandler');
+const { requestFileLogger } = require('./middleware/requestFileLogger');
+const fileLogger = require('./services/fileLogger.service');
 
 const app=express();
 app.use(cors());
-app.use(express.json({limit:'10mb'}));
+app.use(express.json({ limit: '10mb', type: ['application/json', 'application/*+json'] }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.text({ type: ['text/plain', 'text/*'], limit: '10mb' }));
+app.use(express.static('public'));
+app.use(requestFileLogger);
 
 app.get('/api/health',(req,res)=>res.json({ok:true,name:'meatbiz-api',version:'6.6.0'}));
 
@@ -39,10 +46,23 @@ app.use('/api/product-import',require('./routes/productImport'));
 app.use('/api/ocr-providers',require('./routes/ocrProviders'));
 app.use('/api/preferences',require('./routes/preferences'));
 app.use('/api/permissions',require('./routes/permissions'));
+const aiRoutes = require('./routes/ai.routes');
+app.use('/api/ai', aiRoutes);
+app.use('/api/logs', require('./routes/logs.routes'));
 
 app.use(errorHandler);
 
+process.on('uncaughtException', (err) => {
+  fileLogger.logError('UNCAUGHT_EXCEPTION', { error: err });
+  console.error('[UNCAUGHT_EXCEPTION]', err);
+});
+
+process.on('unhandledRejection', (reason) => {
+  fileLogger.logError('UNHANDLED_REJECTION', { error: reason });
+  console.error('[UNHANDLED_REJECTION]', reason);
+});
+
 const port=Number(process.env.PORT||4000);
 ensureSchema()
-  .then(()=>app.listen(port,()=>console.log(`API running on http://localhost:${port}`)))
-  .catch(e=>{console.error('DB bootstrap failed',e);process.exit(1);});
+  .then(()=>app.listen(port,()=>{ console.log(`API running on http://localhost:${port}`); fileLogger.logSystem('SERVER_STARTED', { port }); }))
+  .catch(e=>{ fileLogger.logError('DB_BOOTSTRAP_FAILED', { error: e }); console.error('DB bootstrap failed',e);process.exit(1);});

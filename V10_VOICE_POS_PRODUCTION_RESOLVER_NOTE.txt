@@ -1,0 +1,14 @@
+V10 Voice POS Production Resolver
+
+Fix chính:
+- Tăng timeout frontend và OpenAI NLU lên 45 giây.
+- AI Voice POS có chọn Khách thường / Khách vãng lai rõ ràng.
+- Khách vãng lai không cần nhập tên khách, backend dùng Khách vãng lai.
+- Khách thường thiếu tên khách sẽ nhắc đẹp, không hiện NEED_CLARIFICATION thô.
+- Parser hiểu ky/ki/ký/kí là kg.
+- Resolver hiểu alias địa phương: búp -> bò bắp, gầu -> gầu bò, nạm/nam -> nạm bò.
+- Frontend có live preview: AI đang hiểu món gì trước khi gửi.
+- Không thay flow POS cũ, chỉ bổ sung AI Voice POS orchestration.
+
+SQL hỗ trợ:
+backend/sql/V10_VOICE_POS_PRODUCTION_RESOLVER.sql

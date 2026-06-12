@@ -1,0 +1,4 @@
+V40 remove lot note field
+- Removed field: Ghi chú / mô tả lô nhập from Lots.jsx
+- Frontend build verified OK with npm run build
+- dist and node_modules removed before packaging

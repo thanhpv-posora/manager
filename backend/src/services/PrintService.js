@@ -159,11 +159,14 @@ ${showInstallment ? `<div class="right total">Góp nợ/ngày: ${money(monthlyIn
     const deductExpr = deductMode === 'TOTAL_KG'
       ? expr(lot.deducted_weight_expr, lot.deducted_weight)
       : `${lot.total_animals||0} con × ${lot.deduct_kg_per_animal||0} kg/con`;
+    const lotDate = lot.calendar_type === 'LUNAR' && lot.lunar_date_text
+      ? `${lot.lunar_date_text} ÂL`
+      : (lot.purchase_date || '');
 
     return `<!doctype html><html><head><meta charset="utf-8"><title>${lot.lot_code}</title><style>
 body{font-family:Arial;margin:28px;color:#111}.header{border-bottom:3px solid #7f1d1d;padding-bottom:12px}.logo{font-size:28px;font-weight:900;color:#7f1d1d}
 table{width:100%;border-collapse:collapse;margin-top:18px}td,th{border:1px solid #ddd;padding:10px}th{background:#7f1d1d;color:white}.right{text-align:right}.total{font-size:22px;font-weight:900;text-align:right;margin-top:18px}.print{position:fixed;right:20px;top:20px;padding:12px 18px;background:#7f1d1d;color:#fff;border:0;border-radius:10px}.note{white-space:pre-wrap}.muted{color:#666}@media print{.print{display:none}}</style></head><body>
-<button class="print" onclick="window.print()">IN PHIẾU</button><div class="header"><div class="logo">PHIẾU NHẬP LÔ / NHÀ CUNG CẤP</div><div>Mã lô: <b>${lot.lot_code}</b></div><div>Ngày: ${lot.purchase_date}</div></div>
+<button class="print" onclick="window.print()">IN PHIẾU</button><div class="header"><div class="logo">PHIẾU NHẬP LÔ / NHÀ CUNG CẤP</div><div>Mã lô: <b>${lot.lot_code}</b></div><div>Ngày tính bill NCC: ${lotDate}</div><div>Lịch tính bill: ${lot.calendar_type==='LUNAR'?'Âm lịch':'Dương lịch'}</div></div>
 <p><b>Nhà cung cấp:</b> ${lot.supplier_name||''} - ${lot.supplier_phone||''}<br><b>Địa chỉ:</b> ${lot.supplier_address||''}</p>
 <table><tbody>
 <tr><th>Nội dung</th><th>Cách nhập</th><th class="right">Giá trị</th></tr>

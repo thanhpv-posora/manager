@@ -1,0 +1,4 @@
+V36 - Lots field alignment fix
+- Aligns labels and inputs from Xương sườn downward.
+- Keeps inputs/selects same height in two-column grid.
+- Keeps Tổng kg thịt xô multiline behavior unchanged.

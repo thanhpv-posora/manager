@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>MeatBiz AI Voice POS</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      background: #f6f7fb;
+      color: #111827;
+    }
+    .wrap {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .card {
+      background: #fff;
+      border-radius: 18px;
+      padding: 20px;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+      margin-bottom: 16px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+    }
+    .sub {
+      color: #6b7280;
+      margin-bottom: 18px;
+    }
+    .row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    button {
+      border: 0;
+      border-radius: 12px;
+      padding: 12px 16px;
+      cursor: pointer;
+      font-size: 15px;
+      font-weight: 700;
+    }
+    .primary {
+      background: #111827;
+      color: #fff;
+    }
+    .danger {
+      background: #dc2626;
+      color: #fff;
+    }
+    .ghost {
+      background: #e5e7eb;
+      color: #111827;
+    }
+    input, textarea {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid #d1d5db;
+      border-radius: 12px;
+      padding: 12px;
+      font-size: 16px;
+      outline: none;
+    }
+    textarea {
+      min-height: 86px;
+      resize: vertical;
+    }
+    .status {
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: #eef2ff;
+      color: #3730a3;
+      font-weight: 700;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #0f172a;
+      color: #e5e7eb;
+      padding: 14px;
+      border-radius: 12px;
+      min-height: 120px;
+    }
+    .total {
+      font-size: 22px;
+      font-weight: 800;
+    }
+    .items {
+      margin-top: 12px;
+      border-top: 1px solid #e5e7eb;
+      padding-top: 12px;
+    }
+    .item {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 8px 0;
+      border-bottom: 1px dashed #e5e7eb;
+    }
+    .hint {
+      color: #6b7280;
+      font-size: 14px;
+      line-height: 1.55;
+    }
+    @media (max-width: 760px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>MeatBiz AI Voice POS</h1>
+      <div class="sub">Nói hoặc gõ: “HongHien 5 Bon 2 Nam”, “thêm 1 Gau”, “ok lưu”, “doanh thu hôm nay”.</div>
+
+      <div class="row">
+        <button id="btnStart" class="primary">🎙️ Bắt đầu nói</button>
+        <button id="btnStop" class="danger">Dừng</button>
+        <button id="btnSend" class="ghost">Gửi câu lệnh</button>
+        <button id="btnConfirm" class="primary">OK lưu / OK thu</button>
+        <button id="btnCancel" class="ghost">Hủy nháp</button>
+      </div>
+
+      <p class="status" id="status">Sẵn sàng</p>
+
+      <label>Session ID</label>
+      <input id="sessionId" value="VOICE_POS_001" />
+
+      <label style="display:block;margin-top:12px;">Câu lệnh</label>
+      <textarea id="message" placeholder="Ví dụ: HongHien 5 Bon 2 Nam"></textarea>
+
+      <div class="hint">
+        Chrome/Edge hỗ trợ nhận giọng nói tốt nhất. Trên HTTP localhost thường chạy được; nếu deploy server public nên dùng HTTPS.
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Kết quả dễ đọc</h2>
+        <div id="summary">Chưa có dữ liệu.</div>
+      </div>
+
+      <div class="card">
+        <h2>JSON Response</h2>
+        <pre id="json">{}</pre>
+      </div>
+    </div>
+  </div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+const statusEl = $('status');
+const messageEl = $('message');
+const jsonEl = $('json');
+const summaryEl = $('summary');
+const sessionEl = $('sessionId');
+
+function fmtMoney(v) {
+  return Number(v || 0).toLocaleString('vi-VN') + 'đ';
+}
+
+function setStatus(text) {
+  statusEl.textContent = text;
+}
+
+function renderResponse(data) {
+  jsonEl.textContent = JSON.stringify(data, null, 2);
+
+  if (!data || !data.success) {
+    summaryEl.innerHTML = `<div style="color:#dc2626;font-weight:800;">${data && data.message ? data.message : 'Có lỗi'}</div>`;
+    return;
+  }
+
+  const d = data.data || {};
+
+  if (d.text) {
+    summaryEl.innerHTML = `<div style="font-size:18px;line-height:1.6;">${String(d.text).replace(/\n/g, '<br>')}</div>`;
+    return;
+  }
+
+  const draft = d.draft;
+  const confirmed = d.confirmed;
+
+  if (confirmed) {
+    summaryEl.innerHTML = `
+      <div style="color:#059669;font-weight:900;font-size:20px;">✅ Đã lưu thành công</div>
+      <p><b>Mã bill:</b> ${confirmed.order_code || ''}</p>
+      <p><b>Tổng:</b> ${fmtMoney(confirmed.total_amount)}</p>
+      <p><b>Đã thu:</b> ${fmtMoney(confirmed.paid_amount)}</p>
+      <p><b>Còn nợ:</b> ${fmtMoney(confirmed.debt_amount)}</p>
+      ${confirmed.calendar_type ? `<p><b>Lịch:</b> ${confirmed.calendar_type} ${confirmed.lunar_date_text ? '(' + confirmed.lunar_date_text + ')' : ''}</p>` : ''}
+    `;
+    return;
+  }
+
+  if (draft) {
+    const items = (draft.items || []).map(item => `
+      <div class="item">
+        <div><b>${item.product_name}</b><br><span class="hint">${item.quantity} ${item.unit || 'kg'} × ${fmtMoney(item.price)}</span></div>
+        <div><b>${fmtMoney(item.amount)}</b></div>
+      </div>
+    `).join('');
+
+    summaryEl.innerHTML = `
+      <div><b>Khách:</b> ${draft.customer ? draft.customer.name : ''}</div>
+      <div class="items">${items}</div>
+      <p class="total">Tổng: ${fmtMoney(draft.total_amount)}</p>
+      <p>Đã thu: ${fmtMoney(draft.paid_amount)} | Còn nợ: ${fmtMoney(draft.debt_amount)}</p>
+      <p style="color:#b45309;font-weight:800;">${d.confirm_message || 'Xác nhận lưu bill?'}</p>
+    `;
+    return;
+  }
+
+  if (d.preview) {
+    summaryEl.innerHTML = `<div>${JSON.stringify(d.preview)}</div>`;
+    return;
+  }
+
+  summaryEl.textContent = 'Đã nhận response.';
+}
+
+async function sendMessage(message, extra = {}) {
+  const payload = {
+    session_id: sessionEl.value || 'VOICE_POS_001',
+    message,
+    ...extra
+  };
+
+  setStatus('Đang gửi AI...');
+  const res = await fetch('/api/ai/chat', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload)
+  });
+
+  const data = await res.json();
+  renderResponse(data);
+  setStatus(data.success ? 'Hoàn tất' : 'Có lỗi');
+}
+
+$('btnSend').addEventListener('click', () => {
+  const msg = messageEl.value.trim();
+  if (!msg) return setStatus('Chưa có câu lệnh');
+  sendMessage(msg);
+});
+
+$('btnConfirm').addEventListener('click', () => {
+  messageEl.value = 'ok lưu';
+  sendMessage('ok lưu');
+});
+
+$('btnCancel').addEventListener('click', () => {
+  messageEl.value = 'hủy';
+  sendMessage('hủy');
+});
+
+let recognition = null;
+
+function setupSpeech() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  if (!SpeechRecognition) {
+    setStatus('Trình duyệt chưa hỗ trợ SpeechRecognition. Dùng Chrome/Edge nhé.');
+    return null;
+  }
+
+  const r = new SpeechRecognition();
+  r.lang = 'vi-VN';
+  r.continuous = false;
+  r.interimResults = true;
+
+  r.onstart = () => setStatus('Đang nghe...');
+  r.onerror = (e) => setStatus('Lỗi microphone: ' + e.error);
+  r.onend = () => setStatus('Đã dừng nghe');
+
+  r.onresult = (event) => {
+    let finalText = '';
+    let interimText = '';
+
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const text = event.results[i][0].transcript;
+      if (event.results[i].isFinal) finalText += text;
+      else interimText += text;
+    }
+
+    messageEl.value = (finalText || interimText).trim();
+
+    if (finalText) {
+      sendMessage(finalText.trim());
+    }
+  };
+
+  return r;
+}
+
+$('btnStart').addEventListener('click', () => {
+  recognition = recognition || setupSpeech();
+  if (recognition) recognition.start();
+});
+
+$('btnStop').addEventListener('click', () => {
+  if (recognition) recognition.stop();
+});
+</script>
+</body>
+</html>

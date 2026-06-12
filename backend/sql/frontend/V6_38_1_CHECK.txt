@@ -1,7 +1,0 @@
-{
-  "date_bar_class": true,
-  "payment_sticky_class": true,
-  "layout_class": true,
-  "css_date_sticky": true,
-  "css_payment_sticky": true
-}

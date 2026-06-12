@@ -1,0 +1,6 @@
+V21 Collapse Sidebar SOURCE FIXED REAL
+- Added collapse/expand button in MainLayout.jsx
+- Persist state in localStorage key meatbiz_sidebar_collapsed
+- Mobile auto-collapse after selecting menu
+- Added CSS for .app-shell.sidebar-collapsed
+- Package excludes dist, node_modules, .env, service-account.json

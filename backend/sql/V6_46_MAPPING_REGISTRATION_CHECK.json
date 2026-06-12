@@ -1,7 +1,0 @@
-{
-  "mapping_page_has_approve": true,
-  "mapping_route_has_registrations": true,
-  "mapping_agent_calls_registration": true,
-  "registration_creates_user": true,
-  "manual_password_hash": true
-}

@@ -1,0 +1,16 @@
+V8 - AI Voice POS Production Safe Upgrade
+
+Đã bổ sung:
+- AI Voice POS panel trên màn Tạo bill POS.
+- Rule khách vãng lai / khách hàng thường.
+- Khách vãng lai: phải thu đủ tiền ngay tại POS trước khi lưu bill.
+- Khách hàng thường: POS tạo bill công nợ, thu tiền xử lý ở màn Thu tiền.
+- Backend guard trong AI order draft/confirm để tránh AI ghi sai payment.
+- Không đổi API POS cũ, chỉ thêm guard an toàn và AI workflow.
+
+SQL tùy chọn:
+backend/sql/V6_64_AI_VOICE_POS_SAFE_CUSTOMER_PAYMENT_RULE.sql
+
+Gợi ý cấu hình khách:
+- customers.customer_type = 'WALK_IN' cho khách vãng lai
+- customers.customer_type = 'REGULAR' hoặc để trống cho khách hàng thường

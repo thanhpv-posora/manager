@@ -1,0 +1,12 @@
+V38 - Supplier calendar auto bill fix
+
+- Màn Nhập lô không còn dropdown chọn Âm/Dương lịch cho bill NCC.
+- Khi chọn NCC, hệ thống tự lấy billing_calendar_type của NCC:
+  + SOLAR: dùng ngày nhập dương lịch.
+  + LUNAR: tự sinh ngày âm lịch từ ngày nhập, cho phép chỉnh text ngày âm nếu cần.
+- Sửa NCC vẫn có field chọn Âm/Dương lịch và gửi đúng payload lên backend.
+- Thêm bắt lỗi khi lưu/sửa NCC để không im lặng.
+- Frontend build verified OK.
+
+SQL cần chạy nếu chưa chạy từ V37:
+backend/sql/V37_SUPPLIER_BILLING_CALENDAR_TYPE.sql

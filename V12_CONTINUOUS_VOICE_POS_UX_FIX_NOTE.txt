@@ -1,0 +1,15 @@
+V12 Continuous Voice POS UX Fix
+
+Fix theo phản hồi thực tế:
+- AI Voice POS mặc định thu gọn, khi cần mới mở rộng.
+- Bỏ khu nhập giọng nói thủ công trong POS truyền thống để tránh rối.
+- Continuous Voice POS xử lý lệnh:
+  + xóa <tên món>
+  + xóa bóp đi -> normalize bóp/bop về búp/bắp để xóa đúng món đã đọc nhầm.
+  + xóa tất cả / xóa hết -> xóa toàn bộ dòng đang nhập và hủy draft đang chờ nếu có.
+- Backend edit draft hỗ trợ CLEAR_ALL.
+- Fuzzy remove dùng normalize text để khớp búp/bóp/bắp, gầu/gau, xg/xương.
+- Build frontend OK trước khi xóa dist/node_modules.
+
+Lưu ý:
+- Nhận diện giọng nói web phụ thuộc Chrome/Edge và môi trường ồn. V12 giảm lỗi bằng correction dictionary và command handling.

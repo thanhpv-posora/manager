@@ -1,0 +1,20 @@
+V16 Email-only Auth Mail Server
+
+- Registration requires email verification.
+- New registration sends verify email to customer.
+- New registration sends notification email to support@posora.vn.
+- Forgot password sends reset code by email.
+- Phone-only registration / phone OTP shows "đang phát triển".
+- SMS OTP is disabled because no free stable SMS provider is configured.
+
+.env backend:
+MAIL_HOST=mail90168.maychuemail.com
+MAIL_PORT=465
+MAIL_SECURE=true
+MAIL_USER=posor59ee6dd@posora.vn
+MAIL_PASSWORD=CHANGE_ME
+MAIL_FROM=support@posora.vn
+SUPPORT_EMAIL=support@posora.vn
+PUBLIC_APP_URL=https://your-domain
+
+Important: do not commit real MAIL_PASSWORD. Change the mail password after testing.

@@ -1,0 +1,7 @@
+V11 Continuous Voice POS
+
+- Source included: backend + frontend.
+- frontend/dist and frontend/node_modules are intentionally removed.
+- Mic can run continuously; speak each item line by line, say "xong" to send.
+- xg is mapped as xương.
+- Added backend/sql/V11_CONTINUOUS_VOICE_POS.sql for alias seed.

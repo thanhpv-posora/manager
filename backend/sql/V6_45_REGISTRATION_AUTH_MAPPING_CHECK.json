@@ -1,7 +1,0 @@
-{
-  "RegistrationAgent_approve_creates_user": true,
-  "RegistrationAgent_approve_creates_customer": true,
-  "RegistrationAgent_saves_mapping": true,
-  "Register_validation_fixed": true,
-  "Registrations_button": true
-}

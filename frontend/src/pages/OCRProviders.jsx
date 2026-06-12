@@ -56,7 +56,7 @@ export default function OCRProviders(){
    <div className="card">
     <h3>Khuyến nghị theo hạng mục</h3>
     <table className="table"><tbody>{meta.modules.map(m=><tr key={m.key}><td><b>{m.name}</b><br/><span className="muted">{m.key}</span></td><td>{m.recommended}</td></tr>)}</tbody></table>
-    <p className="muted">Production thật nên dùng Google Document AI cho ảnh bảng/giấy/Zalo, còn Tesseract chỉ dùng fallback local.</p>
+    <p className="muted">Production nên dùng Google Document AI cho ảnh bảng/giấy/Zalo, còn Tesseract chỉ dùng fallback local.</p>
    </div>
   </div>
 

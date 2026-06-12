@@ -1,0 +1,13 @@
+MeatBiz AI Operating Center V5
+
+Frontend UI đồng bộ toàn chương trình:
+- Home / Login / Đăng ký cùng style AI-native ERP
+- Main layout có page hero cho từng chức năng
+- Đồng bộ màu, card, form, button, table, action panel
+- POS tạo bill, khách hàng, sản phẩm, công nợ, doanh thu, nhập lô, cấu hình nhìn cùng hệ thiết kế
+- Không đóng gói frontend/dist và frontend/node_modules để file nhẹ
+
+Build kiểm tra:
+cd frontend
+npm ci
+npm run build

@@ -1,5 +1,5 @@
-import React from 'react';
-import {BarChart3,Beef,ClipboardList,CreditCard,Home,LogOut,Package,ShoppingCart,Truck,Users,Bot,Trash2,TableProperties,Settings,CalendarDays,Megaphone} from 'lucide-react';
+import React, {useEffect, useState} from 'react';
+import {BarChart3,Beef,ClipboardList,CreditCard,Home,LogOut,Package,ShoppingCart,Truck,Users,Bot,Trash2,TableProperties,Settings,CalendarDays,Megaphone,PanelLeftClose,PanelLeftOpen} from 'lucide-react';
 
 const menu=[
   ['dashboard','Dashboard',Home],
@@ -26,7 +26,65 @@ const menu=[
   ['user-mapping','Mapping user-KH',Settings],
 ];
 
+const pageMeta={
+  dashboard:['AI Operating Center','Tổng quan điều hành, cảnh báo và hành động AI trong ngày.'],
+  'create-order':['Tạo bill POS','Tạo bill nhanh, kiểm tồn, công nợ và hỗ trợ nhập bằng AI.'],
+  orders:['Bill bán hàng','Theo dõi bill, in phiếu và trạng thái thanh toán.'],
+  payments:['Thu tiền','Ghi nhận tiền mặt, chuyển khoản và lịch sử thu.'],
+  installments:['Góp nợ theo tháng','Cấu hình khoản góp theo ngày, tháng và lịch âm/dương.'],
+  customers:['Khách hàng','Quản lý bạn hàng, lịch tính bill và thông tin công nợ.'],
+  products:['Mặt hàng','Quản lý sản phẩm, tồn kho, giá bán và chế độ kiểm tồn.'],
+  'product-import':['Import mặt hàng từ ảnh','Nhập danh mục nhanh từ hình ảnh hoặc file dữ liệu.'],
+  'ocr-providers':['Cấu hình OCR nâng cao','Thiết lập nhận diện hình ảnh và alias sản phẩm.'],
+  prices:['Giá riêng','Quản lý giá bán riêng cho từng khách.'],
+  'price-matrix':['Bảng giá riêng','Sắp xếp danh mục và bảng giá theo từng bạn hàng.'],
+  lots:['Nhập lô / Nhà cung cấp','Quản lý nhập lô, trọng lượng, thanh toán và nhà cung cấp.'],
+  revenue:['Doanh thu','Xem doanh thu, đã thu và công nợ theo thời gian.'],
+  agents:['Agent AI','Các kỹ năng AI phục vụ vận hành bán sỉ.'],
+  'production-check':['Kiểm tra production','Kiểm tra cấu hình, dữ liệu và trạng thái hệ thống.'],
+  trash:['Đã xóa / lịch sử','Theo dõi dữ liệu đã xóa mềm và audit.'],
+  settings:['Cấu hình cửa hàng','Thông tin cửa hàng, in bill và thiết lập chung.'],
+  portal:['Trang thông tin / tài trợ','Quản lý nội dung giới thiệu và portal.'],
+  'sponsor-videos':['Video nhà tài trợ','Quản lý video và nội dung truyền thông.'],
+  'user-permissions':['Phân quyền user','Thiết lập quyền truy cập chức năng theo user.'],
+  registrations:['Đăng ký khách hàng','Duyệt tài khoản đăng ký mới.'],
+  'user-mapping':['Mapping user-KH','Gắn user với khách hàng được phép thao tác.']
+};
+
 export default function MainLayout({page,setPage,user,children,onLogout,allowedMenus}){
+  const [collapsed, setCollapsed] = useState(() => {
+    if (typeof window !== 'undefined' && window.innerWidth <= 1024) return true;
+    return localStorage.getItem('meatbiz_sidebar_collapsed') === '1';
+  });
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.innerWidth > 1024 && localStorage.getItem('meatbiz_sidebar_collapsed') !== '1';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('meatbiz_sidebar_collapsed', collapsed ? '1' : '0');
+  }, [collapsed]);
+
+  useEffect(() => {
+    const onResize = () => {
+      if (window.innerWidth <= 1024) {
+        setCollapsed(true);
+        setIsMobileMenuOpen(false);
+      }
+    };
+    onResize();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  const choosePage = (key) => {
+    setPage(key);
+    if (window.innerWidth <= 1024) {
+      setCollapsed(true);
+      setIsMobileMenuOpen(false);
+    }
+  };
+
   const logout=()=>{
     if(onLogout){
       onLogout();
@@ -38,12 +96,29 @@ export default function MainLayout({page,setPage,user,children,onLogout,allowedM
   };
 
   return (
-    <div className="app-shell">
+    <div className={'app-shell '+(collapsed?'sidebar-collapsed ':'')+(isMobileMenuOpen?'mobile-menu-open':'')}>
       <aside className="sidebar">
-        <div className="brand">
+        <div className="brand sidebar-brand">
           <Beef size={32}/>
           <span>MeatBiz</span>
         </div>
+        <button
+          type="button"
+          className="sidebar-toggle"
+          onClick={() => {
+            if (window.innerWidth <= 1024) {
+              setIsMobileMenuOpen(v => !v);
+              setCollapsed(true);
+              return;
+            }
+            setCollapsed(v => !v);
+          }}
+          title={collapsed ? 'Mở rộng menu' : 'Thu gọn menu'}
+          aria-label={collapsed ? 'Mở rộng menu' : 'Thu gọn menu'}
+        >
+          {(collapsed || !isMobileMenuOpen) ? <PanelLeftOpen size={18}/> : <PanelLeftClose size={18}/>}
+          <span>{window.innerWidth <= 1024 ? (isMobileMenuOpen ? 'Đóng menu' : 'Mở menu') : (collapsed ? 'Mở menu' : 'Thu gọn')}</span>
+        </button>
 
         <nav className="menu">
           {menu.filter(([key])=>!allowedMenus||allowedMenus.includes(key)).map(([key,label,Icon])=>(
@@ -51,10 +126,10 @@ export default function MainLayout({page,setPage,user,children,onLogout,allowedM
               key={key}
               type="button"
               className={'menu-item '+(page===key?'active':'')}
-              onClick={()=>setPage(key)}
+              onClick={()=>choosePage(key)}
             >
               <Icon size={18}/>
-              <span>{label}</span>
+              <span className="menu-label">{label}</span>
             </button>
           ))}
         </nav>
@@ -63,13 +138,23 @@ export default function MainLayout({page,setPage,user,children,onLogout,allowedM
           <div className="muted">{user?.full_name||user?.username||'ADMIN'}</div>
           <button type="button" className="menu-item logout" onClick={logout}>
             <LogOut size={18}/>
-            <span>Đăng xuất</span>
+            <span className="menu-label">Đăng xuất</span>
           </button>
         </div>
       </aside>
 
       <main className="main">
-        {children}
+        <div className="page-hero">
+          <div>
+            <div className="page-eyebrow">MeatBiz AI-native ERP</div>
+            <h1>{pageMeta[page]?.[0]||'MeatBiz'}</h1>
+            <p>{pageMeta[page]?.[1]||'Quản lý bán sỉ thịt bằng workflow rõ ràng và dễ dùng.'}</p>
+          </div>
+          <div className="page-hero-badge">AI Ready</div>
+        </div>
+        <div className="page-content">
+          {children}
+        </div>
       </main>
     </div>
   );

@@ -21,7 +21,7 @@ export default function Registrations(){
  return <SafePage loading={loading} error={error}>
   <div className="card portal-hero">
     <h1>Đăng ký tài khoản khách hàng</h1>
-    <p>Luồng chuẩn: khách đăng ký → admin duyệt → hệ thống tự tạo khách hàng + user CUSTOMER → admin phân quyền dùng thử tại màn Phân quyền user.</p>
+    <p>Luồng chuẩn: khách đăng ký → verify email/SĐT → admin duyệt → hệ thống tự tạo khách hàng + user CUSTOMER → admin phân quyền dùng thử tại màn Phân quyền user.</p>
   </div>
 
   <div className="card">
@@ -32,6 +32,7 @@ export default function Registrations(){
           <th>Liên hệ</th>
           <th>Tài khoản</th>
           <th>Mapping sau duyệt</th>
+          <th>Verify</th>
           <th>Trạng thái</th>
           <th></th>
         </tr>
@@ -43,6 +44,10 @@ export default function Registrations(){
         <td>
           {x.user_id?<span>user_id: <b>{x.user_id}</b></span>:<span className="muted">Chưa tạo user</span>}<br/>
           {x.customer_id?<span>customer_id: <b>{x.customer_id}</b></span>:<span className="muted">Chưa tạo khách hàng</span>}
+        </td>
+        <td>
+          <div>Email: {x.email_verified_at?<b style={{color:'#16a34a'}}>Đã xác minh</b>:<span className="muted">Chưa</span>}</div>
+          <div>SĐT: {x.phone_verified_at?<b style={{color:'#16a34a'}}>Đã xác minh</b>:<span className="muted">Chưa</span>}</div>
         </td>
         <td><b>{x.status}</b>{x.approved_at&&<><br/><span className="muted">Duyệt: {x.approved_at}</span></>}</td>
         <td>

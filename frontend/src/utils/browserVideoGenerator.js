@@ -30,7 +30,7 @@ export async function generateSponsorVideo({title,script_text,video_idea,sponsor
   const chunks=[]; recorder.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data)};
   const slides=[
     {title:title||('Giới thiệu '+(sponsor_name||'nhà tài trợ')),body:script_text||'Giới thiệu uy tín, sản phẩm và dịch vụ nổi bật.'},
-    {title:'Điểm nổi bật',body:video_idea||'Sản phẩm thật, dịch vụ tốt, đồng hành cùng hộ kinh doanh.'},
+    {title:'Điểm nổi bật',body:video_idea||'Sản phẩm chất lượng, dịch vụ tốt, đồng hành cùng hộ kinh doanh.'},
     {title:'Cảm ơn quý khách',body:'Liên hệ ngay hôm nay để biết thêm thông tin.'}
   ];
   const fps=24,totalFrames=durationSec*fps,framesPerSlide=Math.floor(totalFrames/slides.length);

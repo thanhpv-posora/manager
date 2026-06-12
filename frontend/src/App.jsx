@@ -1,6 +1,7 @@
 import React,{useEffect,useState}from'react';
 import Login from'./pages/Login';
 import RegisterAccount from'./pages/RegisterAccount';
+import VerifyEmail from'./pages/VerifyEmail';
 import Dashboard from'./pages/Dashboard';
 import CreateOrder from'./pages/CreateOrder';
 import Orders from'./pages/Orders';
@@ -75,6 +76,7 @@ export default function App(){
   };
 
   if(!token){
+    if(window.location.pathname==='/verify-email')return <VerifyEmail onBack={()=>{window.history.replaceState({},'', '/');setShowLogin(true)}}/>;
     if(showRegister)return <RegisterAccount onBack={()=>{setShowRegister(false);setShowLogin(true)}}/>;
     if(showLogin)return <Login onLogin={onLoggedIn} onRegister={()=>setShowRegister(true)}/>;
     return <LandingPage onLoginClick={()=>setShowLogin(true)} onRegisterClick={()=>setShowRegister(true)}/>;

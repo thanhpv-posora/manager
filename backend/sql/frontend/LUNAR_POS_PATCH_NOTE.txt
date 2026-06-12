@@ -1,9 +1,0 @@
-V6.37.1:
-CreateOrder.jsx now explicitly renders:
-
-<div className="card lunar-pos-card">
-  <h3>Ngày in bill</h3>
-  <LunarDateSelector ... />
-</div>
-
-If not visible, search CreateOrder.jsx for lunar-pos-card.

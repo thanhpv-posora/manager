@@ -1,0 +1,1 @@
+V35: Fix floating summary top lock; panel starts at Tong kg thit xo and does not cover header/supplier area. CSS important top now uses CSS variables from Lots.jsx.

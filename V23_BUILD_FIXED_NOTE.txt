@@ -1,0 +1,5 @@
+V23 real build fixed.
+- Fixed JSX multiline placeholder in frontend/src/pages/Lots.jsx.
+- Fixed broken multiline comment in frontend/src/utils/expr.js.
+- Verified: npm run build OK before packaging.
+- Removed frontend/dist and frontend/node_modules from final zip.

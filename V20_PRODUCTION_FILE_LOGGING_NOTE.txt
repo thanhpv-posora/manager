@@ -1,0 +1,34 @@
+V20 - AI Production File Logging
+
+Added:
+- backend/src/services/fileLogger.service.js
+- backend/src/middleware/requestFileLogger.js
+- backend/src/routes/logs.routes.js
+- server.js integration
+- errorHandler file logging
+- aiErrorLog.service writes DB + file
+- notification.service writes mail logs
+
+Log folders:
+- backend/logs/ai/YYYY-MM-DD-ai.log
+- backend/logs/orders/YYYY-MM-DD-orders.log
+- backend/logs/errors/YYYY-MM-DD-errors.log
+- backend/logs/system/YYYY-MM-DD-system.log
+- backend/logs/mail/YYYY-MM-DD-mail.log
+
+APIs:
+GET /api/logs/where
+GET /api/logs/tail?category=errors&lines=100
+GET /api/logs/tail?category=ai&lines=100
+GET /api/logs/tail?category=mail&lines=100
+
+Docker/PM2 recommendation:
+- set LOG_DIR=/app/logs
+- mount volume ./logs:/app/logs
+
+Sensitive fields masked:
+- password
+- token
+- authorization
+- cookie
+- secret

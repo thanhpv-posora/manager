@@ -5,6 +5,8 @@ import MoneyInput from'../components/MoneyInput';
 import POSHeaderAgent from'../components/pos/POSHeaderAgent';
 import POSProductTableAgent from'../components/pos/POSProductTableAgent';
 import POSPaymentPanelAgent from'../components/pos/POSPaymentPanelAgent';
+import AIBusinessPanel from'../components/ai/AIBusinessPanel';
+import AIVoicePOSPanel from'../components/ai/AIVoicePOSPanel';
 import {calcQtyExpression}from'../utils/qtyExpression';
 import {formatLunarDate,solarToLunar,parseLunarText,lunarToSolarDate}from'../utils/lunarDate';
 import {createSpeechRecognition,parseVoiceBillCommand,voiceSupported} from'../utils/voiceBillParser';
@@ -84,10 +86,21 @@ export default function CreateOrder(){
     return text.includes('BUSINESS')||text.includes('COMPANY')||text.includes('DOANH')||!!customer.tax_code||!!customer.company_name;
   };
 
+  const normalizeCustomerText=(value)=>String(value||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d');
+  const isWalkInCustomer=(customer)=>{
+    if(!customer)return false;
+    const text=[customer.customer_type,customer.type,customer.group_type,customer.customer_group,customer.name,customer.customer_code,customer.code,customer.note].map(normalizeCustomerText).join(' ');
+    return text.includes('walk')||text.includes('vang lai')||text.includes('khach le')||text.includes('khach vang');
+  };
+
   const currentCustomer=useMemo(()=>customers.find(c=>String(c.id)===String(cid)),[customers,cid]);
   const currentCustomerLabel=currentCustomer
     ? `${currentCustomer.name} • ${String(currentCustomer.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'Âm lịch':'Dương lịch'}`
     : 'Chưa chọn khách';
+  const walkInCustomer=isWalkInCustomer(currentCustomer);
+  const paymentPolicyText=currentCustomer
+    ? (walkInCustomer?'Khách vãng lai: thu tiền ngay tại POS':'Khách thường: tạo bill công nợ, thu tiền ở màn Thu tiền')
+    : 'Chọn khách để áp dụng đúng chính sách thanh toán';
 
   const loadMonthlyInstallment=async(customerId,dateText=orderDate,calendarType=billCalendarType,lunarText=billLunarDateText)=>{
     if(!customerId){setMonthlyInstallment(0);setMonthlyInstallmentId(null);return;}
@@ -266,7 +279,18 @@ export default function CreateOrder(){
       note:i.quantity_expr&&i.quantity_expr!==String(i.quantity)?`SL nhập: ${i.quantity_expr}`:''
     }));
 
-    const actualPaid=Number(cashAmount||0)+Number(bankAmount||0);
+    let actualPaid=Number(cashAmount||0)+Number(bankAmount||0);
+
+    if(walkInCustomer && actualPaid<Number(total||0)){
+      alert('Khách vãng lai phải thu đủ tiền ngay tại POS trước khi lưu bill.');
+      return;
+    }
+
+    if(!walkInCustomer && actualPaid>0){
+      alert('Khách hàng thường chỉ tạo bill công nợ tại POS. Vui lòng thu tiền ở màn Thu tiền.');
+      return;
+    }
+
     const r=await api.post('/orders',{
       customer_id:cid,
       order_date:orderDate,
@@ -548,6 +572,9 @@ export default function CreateOrder(){
           setDateOpen={setDateOpen}
         />
 
+        <AIBusinessPanel compact title="AI nhập hàng / tồn kho"/>
+        <AIVoicePOSPanel sessionId={`POS_${cid||'NO_CUSTOMER'}`}/>
+
         <div className="pos-agent-layout pos-real-layout">
           <main className="pos-agent-main pos-real-main">
             <div className="card pos-customer-card pos-customer-collapse-card">
@@ -567,6 +594,8 @@ export default function CreateOrder(){
                 </button>
               </div>
 
+              {currentCustomer&&(<div className={walkInCustomer?'ai-alert warn':'ai-alert'} style={{marginTop:12}}>{paymentPolicyText}</div>)}
+
               {customerOpen&&(
                 <div className="pos-customer-collapse-body">
 
@@ -582,9 +611,6 @@ export default function CreateOrder(){
               <div className="actions pos-agent-action-row">
                 <button className="btn secondary" onClick={()=>setQuickOpen(!quickOpen)}>
                   {quickOpen?'− Thu gọn thêm nhanh':'+ Thêm nhanh mặt hàng'}
-                </button>
-                <button className="btn secondary" onClick={()=>setVoiceOpen(!voiceOpen)}>
-                  {voiceOpen?'− Thu gọn giọng nói':'+ Nhập bằng giọng nói'}
                 </button>
                 <button className="btn secondary" onClick={()=>setImportOpen(!importOpen)}>
                   {importOpen?'− Thu gọn import':'+ Import Excel/Ảnh'}
@@ -611,28 +637,6 @@ export default function CreateOrder(){
                   <button className="btn secondary" style={{marginTop:10}} onClick={addQuickProduct}>
                     + Thêm vào danh mục khách
                   </button>
-                </div>
-              )}
-
-              {voiceOpen&&(
-                <div className="card inner-card">
-                  <h3>Nhập bằng giọng nói</h3>
-                  <p className="muted">
-                    Ví dụ: <b>Bò búp mười tám chấm năm cộng hai mươi ba trừ một chấm hai</b>.
-                  </p>
-                  <div className="actions">
-                    <select className="select" style={{maxWidth:320}} value={voiceProductId} onChange={e=>setVoiceProductId(e.target.value)}>
-                      <option value="">Chọn mặt hàng trong danh mục khách</option>
-                      {items.map(p=><option key={p.product_id} value={p.product_id}>{p.product_name}</option>)}
-                    </select>
-                    <button className="btn" onClick={startVoice} disabled={listening}>
-                      {listening?'Đang nghe...':'🎙️ Nói món hàng'}
-                    </button>
-                    <input className="input" style={{maxWidth:360}} placeholder="Ví dụ: Đùi mười hai ký hoặc chỉ nói: mười hai ký" value={voiceText} onChange={e=>setVoiceText(e.target.value)}/>
-                    <button className="btn secondary" onClick={applyManualVoiceText}>Áp dụng câu</button>
-                  </div>
-                  <p className="muted" style={{marginTop:8}}>Nếu nói tên hàng không khớp, hệ thống sẽ áp số lượng vào mặt hàng đang chọn bên trái.</p>
-                  {voiceMsg&&<p className={voiceMsg.startsWith('Đã')?'success':'muted'}>{voiceMsg}</p>}
                 </div>
               )}
 
@@ -734,6 +738,8 @@ export default function CreateOrder(){
             setPaid={setPaid}
             onSave={save}
             onClear={clearCurrentBillQty}
+            paymentPolicyText={paymentPolicyText}
+            walkInCustomer={walkInCustomer}
             disabled={!cid||!selected.length}
             message={msg}
           />

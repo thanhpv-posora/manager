@@ -16,6 +16,7 @@ function safeCalcExpression(expr) {
 }
 
 const n=v=>Number(v||0);
+const normalizeCalendarType=v=>String(v||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
 
 class SupplierAgent {
   constructor(){
@@ -90,13 +91,13 @@ class SupplierAgent {
   async addSupplier(data) {
     if (!data.name) throw new Error('Thiếu tên nhà cung cấp');
     const code=data.supplier_code||('NCC'+Date.now());
-    await pool.query(`INSERT INTO suppliers(supplier_code,name,phone,address,note,is_active,del_flg) VALUES(?,?,?,?,?,1,0)`, [code,data.name,data.phone||'',data.address||'',data.note||'']);
+    await pool.query(`INSERT INTO suppliers(supplier_code,name,phone,address,note,billing_calendar_type,is_active,del_flg) VALUES(?,?,?,?,?,?,1,0)`, [code,data.name,data.phone||'',data.address||'',data.note||'',normalizeCalendarType(data.billing_calendar_type)]);
     return {message:'Đã tạo nhà cung cấp', supplier_code:code};
   }
 
   async updateSupplier(id,data) {
     if (!data.name) throw new Error('Thiếu tên nhà cung cấp');
-    await pool.query(`UPDATE suppliers SET name=?,phone=?,address=?,note=?,is_active=? WHERE id=? AND del_flg=0`, [data.name,data.phone||'',data.address||'',data.note||'',data.is_active?1:0,id]);
+    await pool.query(`UPDATE suppliers SET name=?,phone=?,address=?,note=?,billing_calendar_type=?,is_active=? WHERE id=? AND del_flg=0`, [data.name,data.phone||'',data.address||'',data.note||'',normalizeCalendarType(data.billing_calendar_type),data.is_active?1:0,id]);
     return {message:'Đã sửa nhà cung cấp'};
   }
 
@@ -106,7 +107,7 @@ class SupplierAgent {
 
   async lots() {
     const [rows]=await pool.query(
-      `SELECT l.*,s.name supplier_name,
+      `SELECT l.*,s.name supplier_name,s.billing_calendar_type supplier_billing_calendar_type,
        COALESCE(SUM(CASE WHEN sp.type='PAYMENT' THEN sp.amount ELSE 0 END),0) paid_amount,
        COALESCE(SUM(CASE WHEN sp.type='ADVANCE' THEN sp.amount ELSE 0 END),0) advance_amount
        FROM purchase_lots l LEFT JOIN suppliers s ON s.id=l.supplier_id
@@ -119,7 +120,7 @@ class SupplierAgent {
 
   async getLot(id) {
     const [rows]=await pool.query(
-      `SELECT l.*,s.name supplier_name,s.phone supplier_phone,s.address supplier_address,
+      `SELECT l.*,s.name supplier_name,s.phone supplier_phone,s.address supplier_address,s.billing_calendar_type supplier_billing_calendar_type,
        COALESCE(SUM(CASE WHEN sp.type='PAYMENT' THEN sp.amount ELSE 0 END),0) paid_amount,
        COALESCE(SUM(CASE WHEN sp.type='ADVANCE' THEN sp.amount ELSE 0 END),0) advance_amount
        FROM purchase_lots l LEFT JOIN suppliers s ON s.id=l.supplier_id
@@ -139,9 +140,15 @@ class SupplierAgent {
     try {
       await conn.beginTransaction();
       const code=await nextCode(conn,'purchase_lots','lot_code','LOT');
+      let calendarType=normalizeCalendarType(data.calendar_type||data.billing_calendar_type);
+      if(data.supplier_id && !data.calendar_type && !data.billing_calendar_type){
+        const [sr]=await conn.query(`SELECT billing_calendar_type FROM suppliers WHERE id=? LIMIT 1`,[data.supplier_id]);
+        calendarType=normalizeCalendarType(sr[0]?.billing_calendar_type);
+      }
+      const lunarDateText=calendarType==='LUNAR' ? String(data.lunar_date_text||'') : '';
       await conn.query(
         `INSERT INTO purchase_lots(
-          lot_code,lot_name,supplier_id,purchase_date,
+          lot_code,lot_name,supplier_id,purchase_date,calendar_type,lunar_date_text,
           raw_weight,bone_weight,deducted_weight,total_weight,purchase_price,total_cost,
           raw_weight_expr,bone_weight_expr,deducted_weight_expr,
           damage_weight,fat_weight,other_deduct_weight,deduct_note,
@@ -149,9 +156,9 @@ class SupplierAgent {
           male_price,female_price,male_weight,female_weight,
           status,note,created_by,del_flg
         )
-         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN',?,?,0)`,
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN',?,?,0)`,
         [
-          code,data.lot_name||code,data.supplier_id||null,data.purchase_date,
+          code,data.lot_name||code,data.supplier_id||null,data.purchase_date,calendarType,lunarDateText,
           c.rawWeight,c.boneWeight,c.deductedWeight,c.totalWeight,c.purchasePrice,c.totalCost,
           data.raw_weight_expr||String(c.rawWeight),
           data.bone_weight_expr||String(c.boneWeight),

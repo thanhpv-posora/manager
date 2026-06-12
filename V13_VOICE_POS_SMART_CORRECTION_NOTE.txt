@@ -1,0 +1,11 @@
+V13 Voice POS Smart Correction
+
+- AI Voice POS vẫn collapse mặc định.
+- Bổ sung lệnh giọng nói:
+  + xóa dòng cuối
+  + xóa món vừa nói
+  + nhầm rồi / lộn rồi / nói nhầm
+  + xóa tất cả
+- Tăng dictionary ngành thịt bò: xg= xương, búp/bóp=bắp, gầu nạc, gầu mỡ, gân phở, gan phổi...
+- Thêm file SQL: backend/sql/V13_MEAT_VOICE_DICTIONARY_UX.sql
+- Không đụng flow POS thủ công, không thêm lại voice trong nhập thủ công.

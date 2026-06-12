@@ -1,7 +1,0 @@
-{
-  "no_code_header": true,
-  "no_unit_header": true,
-  "has_orderDate": true,
-  "has_sticky_payment": true,
-  "safe_page_tags": true
-}

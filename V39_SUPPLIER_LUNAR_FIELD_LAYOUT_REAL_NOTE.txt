@@ -1,0 +1,6 @@
+V39 Supplier Lunar Field Layout REAL
+- Bỏ field "Lịch tính bill đang áp dụng" ở form nhập lô.
+- Bỏ chú thích dưới field Nhà cung cấp.
+- Chỉ giữ "Ngày âm lịch in trên phiếu NCC" khi NCC dùng Âm lịch.
+- Field ngày âm lịch nằm giữa Nhà cung cấp và Ghi chú / mô tả lô nhập.
+- Đã chạy npm run build OK trước khi đóng gói.

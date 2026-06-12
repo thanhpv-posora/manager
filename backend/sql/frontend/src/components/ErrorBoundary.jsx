@@ -1,2 +1,0 @@
-import React from 'react';
-export default class ErrorBoundary extends React.Component{constructor(p){super(p);this.state={hasError:false,message:''}}static getDerivedStateFromError(e){return{hasError:true,message:e?.message||'Lỗi giao diện'}}componentDidCatch(e,i){console.error('UI ERROR',e,i)}render(){if(this.state.hasError)return <div className="card error"><h3>Màn hình này đang lỗi</h3><p>{this.state.message}</p><button className="btn" onClick={()=>window.location.reload()}>Reload</button></div>;return this.props.children}}

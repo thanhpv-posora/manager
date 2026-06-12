@@ -461,6 +461,69 @@ CREATE TABLE IF NOT EXISTS import_audit_logs (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+
+
+CREATE TABLE IF NOT EXISTS ai_chat_sessions (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  session_id VARCHAR(100) NOT NULL,
+  customer_id BIGINT NULL,
+  draft_json LONGTEXT NOT NULL,
+  status VARCHAR(50) NOT NULL DEFAULT 'DRAFT',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_ai_chat_session_status(session_id,status,id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS product_supplier_links (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  product_id BIGINT NOT NULL,
+  supplier_id BIGINT NOT NULL,
+  purchase_price DECIMAL(15,2) NOT NULL DEFAULT 0,
+  min_order_qty DECIMAL(15,3) NOT NULL DEFAULT 0,
+  order_multiple_qty DECIMAL(15,3) NOT NULL DEFAULT 0,
+  lead_time_days INT NOT NULL DEFAULT 0,
+  is_default TINYINT(1) NOT NULL DEFAULT 1,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  note TEXT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_product_supplier(product_id,supplier_id),
+  INDEX idx_product_supplier_default(product_id,is_default,is_active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS purchase_orders (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  order_code VARCHAR(50) NOT NULL UNIQUE,
+  supplier_id BIGINT NOT NULL,
+  order_date DATE NOT NULL,
+  expected_date DATE NULL,
+  status VARCHAR(30) NOT NULL DEFAULT 'DRAFT',
+  source VARCHAR(50) NOT NULL DEFAULT 'MANUAL',
+  total_amount DECIMAL(15,2) NOT NULL DEFAULT 0,
+  note TEXT NULL,
+  created_by BIGINT NULL,
+  del_flg TINYINT(1) NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_purchase_orders_supplier_date(supplier_id,order_date,status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS purchase_order_items (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  purchase_order_id BIGINT NOT NULL,
+  product_id BIGINT NOT NULL,
+  product_name VARCHAR(255) NOT NULL,
+  unit VARCHAR(50) NOT NULL DEFAULT 'kg',
+  quantity DECIMAL(15,3) NOT NULL DEFAULT 0,
+  purchase_price DECIMAL(15,2) NOT NULL DEFAULT 0,
+  total_price DECIMAL(15,2) NOT NULL DEFAULT 0,
+  received_quantity DECIMAL(15,3) NOT NULL DEFAULT 0,
+  note TEXT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_purchase_order_items_order(purchase_order_id),
+  INDEX idx_purchase_order_items_product(product_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS business_settings (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   setting_key VARCHAR(100) NOT NULL UNIQUE,
@@ -490,10 +553,14 @@ CREATE TABLE IF NOT EXISTS delete_logs (
       }
     }
 
-    await safeAddColumn(conn, 'products', 'inventory_mode', "inventory_mode ENUM('STOCK','NON_STOCK','CARCASS_PART') NOT NULL DEFAULT 'STOCK'");
+    await safeAddColumn(conn, 'products', 'inventory_mode', "inventory_mode ENUM('NON_STOCK','TRACK_STOCK','CARCASS_PART') NOT NULL DEFAULT 'NON_STOCK'");
     await safeAddColumn(conn, 'products', 'parent_product_id', 'parent_product_id BIGINT NULL');
     await safeAddColumn(conn, 'products', 'carcass_group', 'carcass_group VARCHAR(100) NULL');
     await safeAddColumn(conn, 'products', 'allow_negative_stock', 'allow_negative_stock TINYINT(1) NOT NULL DEFAULT 0');
+    await safeAddColumn(conn, 'products', 'default_supplier_id', 'default_supplier_id BIGINT NULL');
+    await safeAddColumn(conn, 'purchase_orders', 'source', "source VARCHAR(50) NOT NULL DEFAULT 'MANUAL'");
+    await safeAddColumn(conn, 'purchase_orders', 'del_flg', 'del_flg TINYINT(1) NOT NULL DEFAULT 0');
+    await safeAddColumn(conn, 'purchase_order_items', 'received_quantity', 'received_quantity DECIMAL(15,3) NOT NULL DEFAULT 0');
 
     await safeAddColumn(conn, 'purchase_lots', 'raw_weight', 'raw_weight DECIMAL(15,3) NOT NULL DEFAULT 0 AFTER purchase_date');
     await safeAddColumn(conn, 'purchase_lots', 'bone_weight', 'bone_weight DECIMAL(15,3) NOT NULL DEFAULT 0 AFTER raw_weight');
@@ -563,13 +630,13 @@ CREATE TABLE IF NOT EXISTS delete_logs (
     const [prodCount] = await conn.query(`SELECT COUNT(*) cnt FROM products`);
     if (Number(prodCount[0].cnt) === 0) {
       await conn.query(`INSERT INTO products(category_id,product_code,name,unit,default_sale_price,stock_quantity,low_stock_threshold,inventory_mode,allow_negative_stock) VALUES
-      (1,'BO_PHO','Bò phở','kg',220000,10,5,'STOCK',0),
-      (1,'BO_SUON','Sườn bò','kg',190000,10,5,'STOCK',0),
-      (1,'BO_BAP','Bắp bò','kg',260000,10,5,'STOCK',0),
-      (1,'BO_NAM','Nạm bò','kg',180000,10,5,'STOCK',0),
-      (2,'HEO_BA_CHI','Heo ba chỉ','kg',120000,20,5,'STOCK',0),
-      (3,'GA_TA','Gà ta','kg',95000,20,5,'STOCK',0),
-      (4,'CHA_LUA','Chả lụa','kg',140000,10,5,'STOCK',0),
+      (1,'BO_PHO','Bò phở','kg',220000,10,5,'TRACK_STOCK',0),
+      (1,'BO_SUON','Sườn bò','kg',190000,10,5,'TRACK_STOCK',0),
+      (1,'BO_BAP','Bắp bò','kg',260000,10,5,'TRACK_STOCK',0),
+      (1,'BO_NAM','Nạm bò','kg',180000,10,5,'TRACK_STOCK',0),
+      (2,'HEO_BA_CHI','Heo ba chỉ','kg',120000,20,5,'TRACK_STOCK',0),
+      (3,'GA_TA','Gà ta','kg',95000,20,5,'TRACK_STOCK',0),
+      (4,'CHA_LUA','Chả lụa','kg',140000,10,5,'TRACK_STOCK',0),
       (5,'BO_XO','Bò xô nguyên con','kg',200000,0,0,'NON_STOCK',1),
       (5,'BO_DUI','Đùi bò pha lóc','kg',260000,0,0,'CARCASS_PART',1),
       (5,'BO_BUP','Búp bò pha lóc','kg',250000,0,0,'CARCASS_PART',1)`);

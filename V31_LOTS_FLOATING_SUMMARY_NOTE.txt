@@ -1,0 +1,6 @@
+V31 Lots Floating Summary Fix
+- Khung Cách tính + nút Lưu lô nhập chuyển sang floating fixed trên desktop.
+- Khi kéo xuống cuối trang, khung vẫn đi theo màn hình.
+- Layout chừa cột phải 372px nên không đè các trường nhập.
+- Mobile/tablet quay về hiển thị bình thường để không che màn hình.
+- Frontend build OK trước khi xóa dist/node_modules.

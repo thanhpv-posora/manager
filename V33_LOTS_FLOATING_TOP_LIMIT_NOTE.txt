@@ -1,0 +1,5 @@
+V33 Lots Floating Top Limit
+- Panel Cách tính + Lưu lô nhập chạy theo scroll.
+- Panel bị giới hạn top tại mép trên field "Tổng kg thịt xô".
+- Khi kéo xuống, panel đi theo nhưng không chạy lên cao hơn vùng nhập kg thịt xô.
+- Mobile giữ layout bình thường, không floating để tránh che màn hình.

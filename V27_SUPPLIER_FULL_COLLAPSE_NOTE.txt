@@ -1,0 +1,1 @@
+V27: Collapse toàn bộ khối Nhà cung cấp trong màn Nhập lô. Form thêm/sửa và danh sách NCC đều thu gọn mặc định. Build frontend OK trước khi đóng gói. dist/node_modules đã được xoá.

@@ -1,0 +1,25 @@
+V15 Production Auth & Verification
+
+Added:
+- Customer registration sends notification to support@posora.vn.
+- Customer email verification link: /verify-email?token=...
+- Phone verification OTP for registration.
+- Admin approval is blocked until email is verified when email exists.
+- Optional strict phone verification before approval: REQUIRE_PHONE_VERIFY_FOR_APPROVAL=true.
+- Forgot password supports email/phone code.
+- Auth event log table for registration/verify/approval events.
+
+Required .env:
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_USER=
+SMTP_PASS=
+SMTP_FROM=support@posora.vn
+SUPPORT_EMAIL=support@posora.vn
+PUBLIC_APP_URL=https://meatbiz.posora.vn
+
+Optional:
+SMS_PROVIDER_URL=
+SMS_PROVIDER_API_KEY=
+RETURN_DEV_OTP=true   # only for local testing
+REQUIRE_PHONE_VERIFY_FOR_APPROVAL=false

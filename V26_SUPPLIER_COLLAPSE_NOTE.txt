@@ -1,0 +1,7 @@
+V26 - Supplier form collapse in Lots page
+- Nhà cung cấp form mặc định thu gọn.
+- Danh sách NCC vẫn hiển thị để chọn/sửa nhanh.
+- Bấm + Thêm / sửa NCC mới mở form.
+- Sau khi thêm/sửa NCC xong sẽ tự thu gọn lại.
+- Bấm Sửa trong danh sách sẽ tự mở form sửa.
+- Frontend build verified OK before removing dist/node_modules.

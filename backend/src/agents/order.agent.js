@@ -1,23 +1,8 @@
 const orderService = require('../services/order.service');
 const aiSessionService = require('../services/aiSession.service');
 
-function unwrapDraftPayload(body) {
-  if (!body || typeof body !== 'object') return body;
-
-  // Frontend variants supported:
-  // 1) draft object directly
-  // 2) { draft }
-  // 3) { data: { draft } } from /api/ai/chat response
-  // 4) { data: draft } from /api/ai/orders/create-draft response
-  // 5) { intent, parsed, draft, ... }
-  if (body.customer && Array.isArray(body.items)) return body;
-  if (body.draft && body.draft.customer && Array.isArray(body.draft.items)) return body.draft;
-  if (body.data && body.data.draft && body.data.draft.customer && Array.isArray(body.data.draft.items)) return body.data.draft;
-  if (body.data && body.data.customer && Array.isArray(body.data.items)) return body.data;
-  if (body.payload && body.payload.draft && body.payload.draft.customer && Array.isArray(body.payload.draft.items)) return body.payload.draft;
-  if (body.payload && body.payload.customer && Array.isArray(body.payload.items)) return body.payload;
-
-  return body;
+function pickSessionId(body = {}) {
+  return body.session_id || body.sessionId || body.session || 'DEFAULT';
 }
 
 async function createOrderDraft(req, res) {
@@ -41,38 +26,59 @@ async function createOrderDraft(req, res) {
 async function confirmOrderDraft(req, res) {
   try {
     const body = req.body || {};
-    let draft = unwrapDraftPayload(body);
-    let sessionRecord = null;
 
-    // If the frontend only sends session_id/draft_session_id, confirm the saved pending draft.
-    if (!draft || !draft.customer || !Array.isArray(draft.items)) {
-      const sessionId = body.session_id || body.sessionId || body.session || req.query?.session_id || 'DEFAULT';
-      sessionRecord = await aiSessionService.getLatestPendingSession(sessionId);
-      if (!sessionRecord || !sessionRecord.draft_json) {
-        return res.status(400).json({
-          success: false,
-          message: 'Không có nháp để xác nhận',
-          hint: 'Gửi draft trực tiếp hoặc gửi session_id đúng với phiên đã tạo draft.'
-        });
+    // Production Voice POS confirm path:
+    // Frontend often only has session_id, because the draft is stored in ai_chat_sessions.
+    // Confirm the newest DRAFT session for that session_id instead of expecting the full draft JSON.
+    if (body.session_id || body.sessionId || body.session || body.draft_session_id || body.draftSessionId) {
+      let latestSession = null;
+
+      if (body.draft_session_id || body.draftSessionId) {
+        const wantedId = Number(body.draft_session_id || body.draftSessionId);
+        const [rows] = await require('../config/db').query(`
+          SELECT *
+          FROM ai_chat_sessions
+          WHERE id = ?
+            AND status = 'DRAFT'
+          LIMIT 1
+        `, [wantedId]);
+
+        if (rows.length > 0) {
+          latestSession = {
+            ...rows[0],
+            draft_json: JSON.parse(rows[0].draft_json)
+          };
+        }
       }
-      draft = sessionRecord.draft_json;
-    }
 
-    if (draft.can_confirm === false) {
-      return res.status(400).json({
-        success: false,
-        message: draft.warnings?.[0] || 'Nháp chưa đủ điều kiện lưu bill',
-        data: { draft }
+      if (!latestSession) {
+        latestSession = await aiSessionService.getLatestDraftSession(pickSessionId(body));
+      }
+
+      if (!latestSession) {
+        throw new Error('Không có nháp bill để xác nhận. Vui lòng tạo nháp lại rồi bấm Xác nhận lưu.');
+      }
+
+      const draft = latestSession.draft_json;
+      if (draft && draft.can_confirm === false) {
+        throw new Error(draft.warnings?.[0] || 'Nháp chưa đủ điều kiện lưu bill.');
+      }
+
+      const data = await orderService.confirmOrderDraft(draft);
+      await aiSessionService.markSessionConfirmed(latestSession.id);
+
+      return res.json({
+        success: true,
+        data: {
+          intent: 'CONFIRM_PREVIOUS_ORDER',
+          confirmed: data,
+          draft_session_id: latestSession.id
+        }
       });
     }
 
-    const data = await orderService.confirmOrderDraft(draft);
-
-    if (sessionRecord?.id) {
-      await aiSessionService.markSessionConfirmed(sessionRecord.id);
-    } else if (body.draft_session_id || body.draftSessionId) {
-      await aiSessionService.markSessionConfirmed(body.draft_session_id || body.draftSessionId).catch(() => {});
-    }
+    // Backward compatible: caller posts the full draft object.
+    const data = await orderService.confirmOrderDraft(body);
 
     return res.json({
       success: true,

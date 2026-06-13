@@ -1178,6 +1178,7 @@ async function handleChat(message, options = {}) {
         source: 'VOICE_POS_CUSTOMER_FIRST',
         parsed: draftPayload,
         draft,
+        draft_session_id: draftSessionId,
         requires_confirm: draft.can_confirm !== false,
         requires_payment: draft.requires_payment === true,
         confirm_message: draft.can_confirm === false ? 'Nháp chưa đủ điều kiện lưu bill' : 'Xác nhận lưu bill?'

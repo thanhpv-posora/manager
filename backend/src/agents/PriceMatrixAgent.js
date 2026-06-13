@@ -9,6 +9,7 @@ function normalizeRowsV636(rows){
 }
 
 const pool = require('../config/db');
+const { productOwnerWhere } = require('../middleware/scope');
 
 async function ensureCustomerAccessV626(customerId,user){
   if(user&&user.role==='CUSTOMER'){
@@ -27,10 +28,12 @@ function customerScopeSqlV626(user,alias='c'){
 class PriceMatrixAgent {
   constructor(){this.version='6.9.0';this.responsibility='Private price matrix, customer catalog package, Excel-like price editing';}
 
-  async matrix(customerId) {
+  async matrix(customerId, user=null) {
+    await ensureCustomerAccessV626(customerId,user);
     const [customers] = await pool.query(`SELECT * FROM customers WHERE id=? AND del_flg=0`, [customerId]);
     if(!customers.length) throw new Error('Không tìm thấy khách hàng');
 
+    const own=productOwnerWhere(user,'p');
     const [rows] = await pool.query(
       `SELECT p.id product_id, p.product_code, p.name product_name, p.unit, p.default_sale_price,
               p.inventory_mode, p.stock_quantity, pc.name category_name,
@@ -46,14 +49,24 @@ class PriceMatrixAgent {
               ON cpc.product_id=p.id AND cpc.customer_id=? AND cpc.del_flg=0 AND cpc.is_active=1
        LEFT JOIN customer_product_prices cpp
               ON cpp.product_id=p.id AND cpp.customer_id=? AND cpp.is_active=1
-       WHERE p.del_flg=0 AND p.is_active=1
+       WHERE p.del_flg=0 AND p.is_active=1 ${own.sql}
        ORDER BY COALESCE(cpc.is_default,0) DESC, COALESCE(cpc.sort_order,p.id), pc.sort_order, p.name`,
-      [customerId, customerId]
+      [customerId, customerId, ...own.params]
     );
     return {customer:customers[0], rows};
   }
 
-  async saveMatrix(customerId, items, userId) {
+  async saveMatrix(customerId, items, userId, user=null) {
+    await ensureCustomerAccessV626(customerId,user);
+    const own=productOwnerWhere(user,'p');
+    if(own.sql){
+      const ids=(items||[]).map(x=>Number(x.product_id)).filter(Boolean);
+      if(ids.length){
+        const [allowed]=await pool.query(`SELECT p.id FROM products p WHERE p.id IN (${ids.map(()=>'?').join(',')}) ${own.sql}`,[...ids,...own.params]);
+        const allowSet=new Set(allowed.map(x=>Number(x.id)));
+        items=(items||[]).filter(x=>allowSet.has(Number(x.product_id)));
+      }
+    }
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
@@ -114,10 +127,12 @@ class PriceMatrixAgent {
     }
   }
 
-  async customerCatalogForOrder(customerId) {
+  async customerCatalogForOrder(customerId, user=null) {
+    await ensureCustomerAccessV626(customerId,user);
     const [customers] = await pool.query(`SELECT * FROM customers WHERE id=? AND del_flg=0`, [customerId]);
     if(!customers.length) throw new Error('Không tìm thấy khách hàng');
 
+    const own=productOwnerWhere(user,'p');
     const [catalogRows] = await pool.query(
       `SELECT p.id product_id, p.product_code, p.name product_name, p.unit, p.stock_quantity,
               p.inventory_mode, p.allow_negative_stock, pc.name category_name,
@@ -128,9 +143,9 @@ class PriceMatrixAgent {
        JOIN products p ON p.id=cpc.product_id AND p.del_flg=0 AND p.is_active=1
        LEFT JOIN product_categories pc ON pc.id=p.category_id
        LEFT JOIN customer_product_prices cpp ON cpp.product_id=p.id AND cpp.customer_id=cpc.customer_id AND cpp.is_active=1
-       WHERE cpc.customer_id=? AND cpc.del_flg=0 AND cpc.is_active=1 AND cpc.is_default=1
+       WHERE cpc.customer_id=? AND cpc.del_flg=0 AND cpc.is_active=1 AND cpc.is_default=1 ${own.sql}
        ORDER BY cpc.sort_order, pc.sort_order, p.name`,
-      [customerId]
+      [customerId, ...own.params]
     );
 
     if(catalogRows.length) return {customer:customers[0], products:catalogRows, source:'CUSTOMER_CATALOG'};
@@ -144,9 +159,9 @@ class PriceMatrixAgent {
        FROM products p
        LEFT JOIN product_categories pc ON pc.id=p.category_id
        LEFT JOIN customer_product_prices cpp ON cpp.product_id=p.id AND cpp.customer_id=? AND cpp.is_active=1
-       WHERE p.del_flg=0 AND p.is_active=1
+       WHERE p.del_flg=0 AND p.is_active=1 ${own.sql}
        ORDER BY pc.sort_order, p.name`,
-      [customerId]
+      [customerId, ...own.params]
     );
     return {customer:customers[0], products:fallback, source:'ALL_PRODUCTS_FALLBACK'};
   }

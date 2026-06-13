@@ -3,8 +3,10 @@ const pool = require('../config/db');
 class ReportAgent {
   async dashboard(user) {
     const today=new Date().toISOString().slice(0,10);
-    const params=[]; const cw=user.role==='CUSTOMER'?'AND o.customer_id=?':'';
-    if (user.role==='CUSTOMER') params.push(user.customer_id);
+    const params=[];
+    const mustCustomerScope = user && user.customer_id && user.role !== 'ADMIN';
+    const cw = mustCustomerScope ? 'AND o.customer_id=?' : '';
+    if (mustCustomerScope) params.push(user.customer_id);
     const [summary]=await pool.query(
       `SELECT COALESCE(SUM(total_amount),0) total_revenue,COALESCE(SUM(paid_amount),0) total_paid,COALESCE(SUM(debt_amount),0) total_debt,COUNT(*) total_orders,
        COALESCE(SUM(CASE WHEN order_date=? THEN total_amount ELSE 0 END),0) today_revenue
@@ -20,7 +22,7 @@ class ReportAgent {
       `SELECT oi.product_name,SUM(oi.quantity) qty,SUM(oi.total_price) revenue FROM order_items oi JOIN orders o ON o.id=oi.order_id
        WHERE o.status<>'CANCELLED' ${cw} GROUP BY oi.product_name ORDER BY revenue DESC LIMIT 10`, params
     );
-    const [topCustomers]=user.role==='CUSTOMER'?[[]]:await pool.query(
+    const [topCustomers]=mustCustomerScope?[[]]:await pool.query(
       `SELECT c.name,SUM(o.total_amount) revenue FROM orders o JOIN customers c ON c.id=o.customer_id
        WHERE o.status<>'CANCELLED' GROUP BY c.id ORDER BY revenue DESC LIMIT 10`
     );
@@ -30,7 +32,7 @@ class ReportAgent {
   async revenue(query, user) {
     const {from,to,group_by}=query;
     const where=[`o.status<>'CANCELLED'`], params=[];
-    if (user.role==='CUSTOMER') { where.push('o.customer_id=?'); params.push(user.customer_id); }
+    if (user && user.customer_id && user.role !== 'ADMIN') { where.push('o.customer_id=?'); params.push(user.customer_id); }
     if (from) { where.push('o.order_date>=?'); params.push(from); }
     if (to) { where.push('o.order_date<=?'); params.push(to); }
     const groupExpr=group_by==='month'?`DATE_FORMAT(o.order_date,'%Y-%m')`:`o.order_date`;

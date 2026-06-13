@@ -138,6 +138,15 @@ function shouldAcceptVoiceLine(line, recentRef){
   const now=Date.now();
   recentRef.current=(recentRef.current||[]).filter(x=>now-x.ts<6500);
   if(recentRef.current.some(x=>x.key===key)) return false;
+
+  // Không chặn câu dài hơn nếu nó là bản hoàn chỉnh của câu ngắn trước đó.
+  // Ví dụ đã có "chien", câu mới "chien xuong ong 10 kg" vẫn phải được nhận để replace dòng cũ.
+  const isLongerCompletion=recentRef.current.some(x=>key.startsWith(x.key) && key.length>x.key.length);
+  if(!isLongerCompletion){
+    // Nếu câu mới là bản ngắn hơn của câu vừa nhận thì bỏ qua.
+    if(recentRef.current.some(x=>x.key.startsWith(key) && x.key.length>key.length)) return false;
+  }
+
   recentRef.current.push({key,ts:now});
   return true;
 }
@@ -272,10 +281,32 @@ export default function AIVoicePOSPanel({sessionId='POS_VOICE_001'}){
       return {handled:true, shouldSend: line};
     }
     const currentLast=getLastMeaningfulLine(messageRef.current);
-    if(dedupeKey(currentLast) && dedupeKey(currentLast)===dedupeKey(line)){
-      setPartial('');
-      return {handled:true, duplicate:true};
+    const currentKey=dedupeKey(currentLast);
+    const lineKey=dedupeKey(line);
+
+    // Web Speech trên mobile/tablet có thể trả nhiều câu final tăng dần:
+    // "Chiến" -> "Chiến xương ống 10 kg" -> "Chiến xương ống 10 kg".
+    // Nếu câu mới là bản đầy đủ hơn của dòng cuối, REPLACE dòng cuối thay vì append.
+    if(currentKey && lineKey){
+      if(lineKey===currentKey){
+        setPartial('');
+        return {handled:true, duplicate:true};
+      }
+      if(lineKey.startsWith(currentKey) && lineKey.length>currentKey.length){
+        const lines=String(messageRef.current||'').split(/\n+/).map(x=>x.trim()).filter(Boolean);
+        lines[lines.length-1]=line;
+        const next=lines.join('\n');
+        messageRef.current=next;
+        setMessage(next);
+        setPartial('');
+        return {handled:false, replacedPrefix:true};
+      }
+      if(currentKey.startsWith(lineKey)){
+        setPartial('');
+        return {handled:true, shorterPrefix:true};
+      }
     }
+
     const next=appendLine(messageRef.current,line);
     messageRef.current=next;
     setMessage(next);
@@ -339,7 +370,7 @@ export default function AIVoicePOSPanel({sessionId='POS_VOICE_001'}){
       pendingFinalRef.current='';
       setPartial('');
       commitVoiceText(textToCommit);
-    },950);
+    },1400);
   };
 
   const flushPendingVoice=()=>{

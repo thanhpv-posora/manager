@@ -14,7 +14,10 @@ function normText(text){
     .replace(/\b(xuong)\s+uc\b/g,'xuong uc')
     .replace(/\b(xuong)\s+duoi\b/g,'xuong duoi')
     .replace(/\b(xuong)\s+cui\s+gan\b/g,'xuong cui gan')
-    .replace(/\b(bup|bop|boop|bup|bap)\b/g,'bap')
+    .replace(/\bnầm\b/g,'nam mo')
+    .replace(/\bnam mo\b/g,'nam mo')
+    .replace(/\bnấp\b/g,'nap')
+    .replace(/\b(bup|bop|boop|bap)\b/g,'bup')
     .replace(/\bgau\b/g,'gau')
     .replace(/\bgau\s+nac\b/g,'gau nac')
     .replace(/\bgau\s+mo\b/g,'gau mo')
@@ -32,8 +35,7 @@ function prettyName(name){
   if(n==='gau nac')return 'gầu nạc';
   if(n==='gau mo')return 'gầu mỡ';
   if(n==='nam')return 'nạm bò';
-  if(n==='nam')return 'nạm bò';
-  if(n==='nam')return 'nạm bò';
+  if(n==='nam mo')return 'nầm';
   if(n==='xuong ong')return 'xương ống';
   if(n==='xuong suon')return 'xương sườn';
   if(n==='xuong uc')return 'xương ức';
@@ -44,7 +46,7 @@ function prettyName(name){
   if(n==='long')return 'lòng';
   if(n==='luoi')return 'lưỡi';
   if(n==='nam')return 'nạm';
-  if(n==='nam')return 'nầm';
+  if(n==='nam mo')return 'nầm';
   if(n==='nap')return 'nấp';
   if(n==='de o')return 'đeo';
   return name;
@@ -208,6 +210,7 @@ export default function AIVoicePOSPanel({sessionId='POS_VOICE_001'}){
     let m=String(text||'').trim();
     if(!m)return null;
     setLoading(true);setError('');
+    if(!extraPayload.confirm && !/^ok|luu|lưu$/i.test(m)) setResult(null);
     try{
       const payload={session_id:sessionId,message:m,customer_type:customerType,voice_mode:'CONTINUOUS',...extraPayload};
       const r=await api.post('/ai/chat',payload);

@@ -46,6 +46,15 @@ async function getLatestDraftSession(sessionId) {
   return getLatestSessionByStatus(sessionId, 'DRAFT');
 }
 
+async function cancelOpenOrderDrafts(sessionId) {
+  await db.query(`
+    UPDATE ai_chat_sessions
+    SET status = 'CANCELLED'
+    WHERE session_id = ?
+      AND status = 'DRAFT'
+  `, [sessionId]);
+}
+
 async function savePaymentSession(sessionId, customerId, paymentPreview) {
   return saveSession(sessionId, customerId, paymentPreview, 'PAYMENT_DRAFT');
 }
@@ -117,5 +126,6 @@ module.exports = {
   getLatestPendingSession,
   updateDraftSession,
   markSessionConfirmed,
-  markSessionCancelled
+  markSessionCancelled,
+  cancelOpenOrderDrafts
 };

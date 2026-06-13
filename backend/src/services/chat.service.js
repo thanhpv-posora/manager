@@ -27,7 +27,7 @@ function sanitizeSpeechText(text) {
     .replace(/\blấy\b/gi, 'lay')
     .replace(/\bthêm\b/gi, 'them')
     .replace(/\bvới\b/gi, 'voi')
-    .replace(/\bnầm\b/gi, 'nam')
+    .replace(/\bnầm\b/gi, 'nam mo')
     .replace(/\bnấp\b/gi, 'nap')
     .replace(/\bgầu\b/gi, 'gau')
     .replace(/\bxg\b/gi, 'xuong')
@@ -196,27 +196,79 @@ function normalizeVoiceBillLines(message) {
     .trim();
 }
 
+function splitVoiceOrderLines(message) {
+  return String(message || '')
+    .replace(/[;,，。]+/g, '\n')
+    .split(/\n+/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+function cleanProductPhrase(value) {
+  return normalizeText(value)
+    .replace(/\b(kg|ky|ki|ký|kí|can|cân)\b/g, ' ')
+    .replace(/\b(lay|them|mua|voi|va|cho|xong|huy|doi|xoa|luu|ok)\b/g, ' ')
+    .replace(/\b(khach thuong|khach quen|regular|khach vang lai|vang lai|walk in|walkin)\b/g, ' ')
+    .replace(/\b(chi|anh|co|chu|bac)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseItemFromLine(line) {
+  const n = normalizeText(line);
+  // product first: "nam 10 kg", "xuong ong 10 ky"
+  let m = n.match(/^(.+?)\s+([0-9]+(?:[.,][0-9]+)?)\s*(?:kg|ky|ki|ký|kí|can|cân)?\s*$/i);
+  if (m) {
+    const productName = cleanProductPhrase(m[1]);
+    const quantity = Number(String(m[2]).replace(',', '.'));
+    if (productName && quantity > 0) return { product_name: productName, quantity, unit_input: 'kg' };
+  }
+  // quantity first: "10 kg nam", "10 nam"
+  m = n.match(/^([0-9]+(?:[.,][0-9]+)?)\s*(?:kg|ky|ki|ký|kí|can|cân)?\s+(.+?)\s*$/i);
+  if (m) {
+    const productName = cleanProductPhrase(m[2]);
+    const quantity = Number(String(m[1]).replace(',', '.'));
+    if (productName && quantity > 0) return { product_name: productName, quantity, unit_input: 'kg' };
+  }
+  return null;
+}
+
+function mergeParsedItems(items) {
+  const map = new Map();
+  for (const item of items || []) {
+    const key = normalizeText(item.product_name || '').replace(/\s+/g, ' ').trim();
+    if (!key) continue;
+    if (!map.has(key)) map.set(key, { ...item, quantity: Number(item.quantity || 0) });
+    else map.get(key).quantity += Number(item.quantity || 0);
+  }
+  return Array.from(map.values()).filter((x) => x.quantity > 0);
+}
+
 function parseSimpleBill(message, options = {}) {
-  message = normalizeVoiceBillLines(message);
-  const text = normalizeText(message);
+  const originalMessage = String(message || '');
+  const selectedCustomerType = String(options.customer_type || '').toUpperCase();
+  const lines = splitVoiceOrderLines(originalMessage);
+  const normalizedWhole = normalizeText(normalizeVoiceBillLines(originalMessage));
 
-  const firstItemMatch = text.match(/[0-9]+(?:[.,][0-9]+)?\s*(kg|ky|ký|kí|ki)?/i);
-
+  const firstItemMatch = normalizedWhole.match(/[0-9]+(?:[.,][0-9]+)?\s*(kg|ky|ký|kí|ki|can|cân)?/i);
   if (!firstItemMatch) {
     throw new Error('Không tìm thấy sản phẩm/số lượng để tạo bill');
   }
 
-  const selectedCustomerType = String(options.customer_type || '').toUpperCase();
-
-  let customerName = text
+  let customerName = normalizedWhole
     .substring(0, firstItemMatch.index)
     .trim()
-    // UI có nút chọn loại khách nên các từ này không phải tên khách.
     .replace(/\b(khach thuong|khach quen|regular|khach vang lai|vang lai|walk in|walkin)\b/gi, '')
-    // ví dụ: "chi hien lay them 1kg bon" => "hien"
     .replace(/\b(lay|them|mua|voi|cho)\b.*$/i, '')
     .replace(/^(chi|anh|co|chu|bac)\s+/i, '')
     .trim();
+
+  if (!customerName && lines.length > 1) {
+    const firstLineNorm = normalizeText(lines[0]);
+    if (!parseItemFromLine(firstLineNorm)) {
+      customerName = firstLineNorm.replace(/^(chi|anh|co|chu|bac)\s+/i, '').trim();
+    }
+  }
 
   if (!customerName && selectedCustomerType === 'WALK_IN') {
     customerName = 'Khách vãng lai';
@@ -226,45 +278,44 @@ function parseSimpleBill(message, options = {}) {
     throw new Error('Thiếu tên khách. Khách thường cần chọn hoặc nhập tên khách, ví dụ: Hồng Hiền 5 ký bắp 2 ký gầu.');
   }
 
-  const cleanText = text
-    .replace(/(trả|tra|tr亣|tm|tiền mặt|tien mat|ck|chuyển khoản|chuyen khoan).*$/i, '')
-    .trim();
-
-  const itemsText = cleanText.substring(firstItemMatch.index).trim();
-
-  const itemRegex = /([0-9]+(?:[.,][0-9]+)?)\s*(kg|ky|ký|kí|ki)?\s+([a-zA-ZÀ-ỹ0-9][a-zA-ZÀ-ỹ0-9\s]*?)(?=\s+[0-9]+(?:[.,][0-9]+)?\s*(?:kg|ky|ký|kí|ki)?\s+|$)/gi;
-
   const items = [];
-  let match;
-
-  while ((match = itemRegex.exec(itemsText)) !== null) {
-    const productName = match[3]
-      .trim()
-      .replace(/\b(kg|ky|ki|ký|kí)\b/gi, '')
-      .replace(/\b(lay|them|mua|voi|va|cho|xong|huy|doi|xoa)\b/gi, '')
-      .replace(/\b(khach thuong|khach quen|regular|khach vang lai|vang lai|walk in|walkin)\b/gi, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    if (productName) {
-      items.push({
-        product_name: productName,
-        quantity: Number(match[1].replace(',', '.')),
-        unit_input: 'kg'
-      });
-    }
+  for (const line of lines) {
+    const n = normalizeText(line);
+    if (!n || n === customerName) continue;
+    const parsedLine = parseItemFromLine(n);
+    if (parsedLine) items.push(parsedLine);
   }
 
   if (items.length === 0) {
+    const cleanText = normalizedWhole
+      .replace(/(trả|tra|tm|tien mat|ck|chuyen khoan|bank).*$/i, '')
+      .trim();
+    const itemsText = cleanText.substring(firstItemMatch.index).trim();
+    const itemRegex = /([0-9]+(?:[.,][0-9]+)?)\s*(kg|ky|ký|kí|ki|can|cân)?\s+([a-zA-ZÀ-ỹ0-9][a-zA-ZÀ-ỹ0-9\s]*?)(?=\s+[0-9]+(?:[.,][0-9]+)?\s*(?:kg|ky|ký|kí|ki|can|cân)?\s+|$)/gi;
+    let match;
+    while ((match = itemRegex.exec(itemsText)) !== null) {
+      const productName = cleanProductPhrase(match[3]);
+      if (productName) {
+        items.push({
+          product_name: productName,
+          quantity: Number(match[1].replace(',', '.')),
+          unit_input: 'kg'
+        });
+      }
+    }
+  }
+
+  const mergedItems = mergeParsedItems(items);
+  if (mergedItems.length === 0) {
     throw new Error('Không tìm thấy item');
   }
 
-  const cashAmount = parseMoney(text);
-  const isBank = /\b(ck|chuyen khoan|chuyển khoản|bank)\b/i.test(text);
+  const cashAmount = parseMoney(normalizedWhole);
+  const isBank = /\b(ck|chuyen khoan|bank)\b/i.test(normalizedWhole);
 
   return {
     customer_name: customerName,
-    items,
+    items: mergedItems,
     cash_amount: isBank ? 0 : cashAmount,
     transfer_amount: isBank ? cashAmount : 0
   };
@@ -704,6 +755,8 @@ async function handleNluIntent(message, options, sessionId) {
 
     const draft = await orderService.createOrderDraft(draftPayload);
 
+    await aiSessionService.cancelOpenOrderDrafts(sessionId);
+
     const draftSessionId = await aiSessionService.saveDraftSession(
       sessionId,
       draft.customer.id,
@@ -976,6 +1029,8 @@ async function handleChat(message, options = {}) {
   const draft = await orderService.createOrderDraft(
     draftPayload
   );
+
+  await aiSessionService.cancelOpenOrderDrafts(sessionId);
 
   const draftSessionId = await aiSessionService.saveDraftSession(
     sessionId,

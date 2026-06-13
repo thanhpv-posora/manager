@@ -34,9 +34,9 @@ function expandProductKeywordVariants(keyword) {
     'bắp': ['bo bap', 'bò bắp'],
     gau: ['gầu', 'gầu bò', 'gau bo'],
     'gầu': ['gầu bò', 'gau bo'],
-    nam: ['nạm', 'nạm bò', 'nam bo'],
-    'nạm': ['nạm bò', 'nam bo'],
-    bon: ['bòn', 'bò nạm', 'nam', 'nạm'],
+    nam: ['nạm'],
+    'nạm': ['nam'],
+    bon: ['bon'],
     xg: ['xương', 'xuong'],
     xuong: ['xương'],
     'xương': ['xuong'],
@@ -48,8 +48,8 @@ function expandProductKeywordVariants(keyword) {
     'gan pho': ['gân phở', 'gân phô', 'gan phở'],
     'gau nac': ['gầu nạc', 'gau nạc'],
     'gau mo': ['gầu mỡ', 'gau mỡ'],
-    xuo: ['xô', 'thịt xô', 'thit xo'],
-    xo: ['xô', 'thịt xô', 'thit xo']
+    xuo: ['xô'],
+    xo: ['xô']
   };
 
   for (const [key, values] of Object.entries(aliasMap)) {
@@ -59,6 +59,116 @@ function expandProductKeywordVariants(keyword) {
   }
 
   return Array.from(variants).filter(Boolean);
+}
+
+function canonicalProductKey(value) {
+  let n = normalizeVietnameseText(String(value || '').trim()).toLowerCase();
+  n = n
+    .replace(/\bky\b|\bki\b|\bkg\b|\bcan\b/g, ' ')
+    .replace(/\bxg\b/g, 'xuong')
+    .replace(/\bbop\b|\bbup\b/g, 'bup')
+    .replace(/\bgau\b/g, 'gau')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return n;
+}
+
+function canonicalProductAliases(keyword) {
+  const key = canonicalProductKey(keyword);
+  const aliases = {
+    'xg ong': ['xg ong', 'xuong ong'],
+    'xuong ong': ['xg ong', 'xuong ong'],
+    'xg suon': ['xg suon', 'xuong suon'],
+    'xuong suon': ['xg suon', 'xuong suon'],
+    'xg nac': ['xg nac', 'xuong nac'],
+    'xuong nac': ['xg nac', 'xuong nac'],
+    'huyet': ['huyet'],
+    'luoi': ['luoi'],
+    'gan': ['gan bo', 'gan'],
+    'long': ['long'],
+    'nam': ['nam'],
+    'nam mo': ['nam mo'],
+    'nap': ['nap'],
+    'bon': ['bon'],
+    'bup': ['bup', 'bop'],
+    'bop': ['bup', 'bop'],
+    'dui': ['dui'],
+    'suon': ['suon'],
+    'deo': ['deo'],
+    'lung': ['lung'],
+    'vun': ['vun'],
+    'bu': ['bu'],
+    'ria': ['ria'],
+    'gio': ['gio'],
+    'xg uc': ['xg uc', 'xuong uc'],
+    'xuong uc': ['xg uc', 'xuong uc'],
+    'xg duoi': ['xg duoi', 'xuong duoi'],
+    'xuong duoi': ['xg duoi', 'xuong duoi'],
+    'gan phoi': ['gan phoi'],
+    'gan pho': ['gan pho'],
+    'mo': ['mo'],
+    'xg cui gan': ['xg cui gan', 'xuong cui gan'],
+    'xuong cui gan': ['xg cui gan', 'xuong cui gan'],
+    'gau nac': ['gau nac'],
+    'gau mo': ['gau mo'],
+    'dim': ['dim'],
+    'ti': ['ti'],
+    'so': ['so']
+  };
+  return Array.from(new Set([key, ...(aliases[key] || [])].filter(Boolean)));
+}
+
+async function findExactProductByAlias(customerId, keyword) {
+  const keys = canonicalProductAliases(keyword);
+  if (keys.length === 0) return null;
+  const [rows] = await db.query(`
+    SELECT
+      p.id,
+      p.name,
+      p.unit,
+      p.stock_quantity,
+      p.inventory_mode,
+      p.allow_negative_stock,
+      COALESCE(cpp.sale_price, p.default_sale_price, 0) AS price,
+      poa.alias_text
+    FROM product_ocr_aliases poa
+    JOIN products p ON p.id = poa.product_id
+    LEFT JOIN customer_product_prices cpp
+      ON cpp.product_id = p.id
+     AND cpp.customer_id = ?
+     AND cpp.is_active = 1
+     AND (cpp.effective_from IS NULL OR cpp.effective_from <= CURDATE())
+     AND (cpp.effective_to IS NULL OR cpp.effective_to >= CURDATE())
+    WHERE p.del_flg = 0
+      AND p.is_active = 1
+      AND (poa.customer_id = ? OR poa.customer_id IS NULL)
+      AND LOWER(TRIM(poa.alias_text)) IN (?)
+    ORDER BY
+      CASE WHEN poa.customer_id = ? THEN 1 ELSE 2 END,
+      p.id ASC
+  `, [customerId, customerId, keys, customerId]);
+
+  const uniqueProductIds = Array.from(new Set(rows.map((r) => r.id)));
+  if (uniqueProductIds.length === 1) return rows[0];
+  if (uniqueProductIds.length > 1) {
+    throw new Error(`Alias sản phẩm "${keyword}" đang trùng nhiều sản phẩm (${uniqueProductIds.join(', ')}). Vui lòng làm sạch product_ocr_aliases trước khi dùng AI Voice POS.`);
+  }
+  return null;
+}
+
+function mergeDraftItemsByProduct(items) {
+  const map = new Map();
+  for (const item of items || []) {
+    const key = item.product_id || canonicalProductKey(item.product_name || item.input_name);
+    if (!key) continue;
+    if (!map.has(key)) map.set(key, { ...item });
+    else {
+      const old = map.get(key);
+      old.quantity = normalizeAmount(old.quantity) + normalizeAmount(item.quantity);
+      old.amount = normalizeAmount(old.quantity) * normalizeAmount(old.price);
+    }
+  }
+  return Array.from(map.values());
 }
 
 function findBestProductVariant(keyword, candidates) {
@@ -222,6 +332,10 @@ async function findProductForCustomer(customerId, productName) {
   if (!keyword) {
     throw new Error('Thiếu tên sản phẩm');
   }
+
+  // Production safety: exact alias/name first. Do not fuzzy-match meat products before exact alias.
+  const exactByAlias = await findExactProductByAlias(customerId, keyword);
+  if (exactByAlias) return exactByAlias;
 
   // Fast path: product name / customer alias LIKE
   const [products] = await db.query(`
@@ -403,6 +517,9 @@ async function createOrderDraft(payload) {
     totalAmount += amount;
   }
 
+  const mergedDraftItems = mergeDraftItemsByProduct(draftItems);
+  totalAmount = mergedDraftItems.reduce((sum, item) => sum + normalizeAmount(item.amount), 0);
+
   let cashAmount = normalizeAmount(cash_amount);
   let transferAmount = normalizeAmount(transfer_amount);
   const requestedPaidAmount = cashAmount + transferAmount;
@@ -431,7 +548,7 @@ async function createOrderDraft(payload) {
     customer,
     customer_payment_type: paymentPolicy.customer_payment_type,
     payment_policy: paymentPolicy,
-    items: draftItems,
+    items: mergedDraftItems,
     total_amount: totalAmount,
     cash_amount: cashAmount,
     transfer_amount: transferAmount,

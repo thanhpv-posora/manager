@@ -1,0 +1,21 @@
+V48 Voice POS Product Stable
+
+Fix chính:
+- Dùng ai_chat_sessions đúng table hiện tại, không dùng ai_draft_sessions.
+- Khi tạo bill AI mới: tự cancel DRAFT cũ cùng session để không dính item rác.
+- Parser đọc từng dòng: Khách / sản phẩm số kg.
+- Hỗ trợ product-first: "nam 10 kg", "xương ống 10 kg".
+- Merge item trùng trong cùng draft theo product_id, không lặp record xương ống nhiều lần.
+- Exact alias resolver trước fuzzy resolver; nếu alias trùng nhiều product thì báo lỗi rõ, không chọn bừa.
+- SQL V48 làm sạch product_ocr_aliases cho danh mục thịt bò.
+
+Sau khi deploy chạy:
+backend/sql/V48_VOICE_POS_PRODUCT_ALIAS_CLEANUP.sql
+
+Kiểm tra alias trùng sau khi chạy SQL:
+SELECT alias_text, GROUP_CONCAT(product_id ORDER BY product_id) product_ids, COUNT(DISTINCT product_id) cnt
+FROM product_ocr_aliases
+GROUP BY alias_text
+HAVING COUNT(DISTINCT product_id) > 1;
+
+Kết quả mong muốn: 0 rows.

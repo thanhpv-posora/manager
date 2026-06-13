@@ -28,14 +28,19 @@ function expandProductKeywordVariants(keyword) {
   const variants = new Set([raw, normalized]);
 
   const aliasMap = {
-    bup: ['bap', 'bo bap', 'bò bắp', 'bắp'],
-    búp: ['bap', 'bo bap', 'bò bắp', 'bắp'],
-    bap: ['bo bap', 'bò bắp', 'bắp'],
-    'bắp': ['bo bap', 'bò bắp'],
-    gau: ['gầu', 'gầu bò', 'gau bo'],
-    'gầu': ['gầu bò', 'gau bo'],
+    bup: ['búp'],
+    búp: ['bup'],
+    bap: ['bắp'],
+    'bắp': ['bap'],
+    gau: ['gầu', 'gàu'],
+    'gầu': ['gau', 'gàu'],
+    'gàu': ['gau', 'gầu'],
     nam: ['nạm'],
     'nạm': ['nam'],
+    'nam mo': ['nầm'],
+    'nầm': ['nam mo'],
+    nap: ['nấp'],
+    'nấp': ['nap'],
     bon: ['bon'],
     xg: ['xương', 'xuong'],
     xuong: ['xương'],
@@ -156,6 +161,41 @@ async function findExactProductByAlias(customerId, keyword) {
   return null;
 }
 
+async function findExactProductByName(customerId, keyword) {
+  const key = canonicalProductKey(keyword);
+  if (!key) return null;
+
+  const [rows] = await db.query(`
+    SELECT
+      p.id,
+      p.name,
+      p.unit,
+      p.stock_quantity,
+      p.inventory_mode,
+      p.allow_negative_stock,
+      COALESCE(cpp.sale_price, p.default_sale_price, 0) AS price,
+      NULL AS alias_text
+    FROM products p
+    LEFT JOIN customer_product_prices cpp
+      ON cpp.product_id = p.id
+     AND cpp.customer_id = ?
+     AND cpp.is_active = 1
+     AND (cpp.effective_from IS NULL OR cpp.effective_from <= CURDATE())
+     AND (cpp.effective_to IS NULL OR cpp.effective_to >= CURDATE())
+    WHERE p.del_flg = 0
+      AND p.is_active = 1
+    ORDER BY p.id ASC
+  `, [customerId]);
+
+  const exact = rows.filter((p) => canonicalProductKey(p.name) === key);
+  const uniqueProductIds = Array.from(new Set(exact.map((r) => r.id)));
+  if (uniqueProductIds.length === 1) return exact[0];
+  if (uniqueProductIds.length > 1) {
+    throw new Error(`Tên sản phẩm "${keyword}" đang trùng nhiều sản phẩm (${uniqueProductIds.join(', ')}). Vui lòng làm sạch bảng products.`);
+  }
+  return null;
+}
+
 function mergeDraftItemsByProduct(items) {
   const map = new Map();
   for (const item of items || []) {
@@ -195,52 +235,28 @@ function findBestProductVariant(keyword, candidates) {
 }
 
 async function saveProductAlias(conn, customerId, aliasText, productId) {
+  // Production safety:
+  // Do NOT auto-learn new product aliases from AI Voice POS.
+  // A wrong speech recognition once can poison product_ocr_aliases and make later bills wrong.
+  // Only increase hit_count if the exact alias already exists for the same product.
   const alias = String(aliasText || '').trim().toLowerCase();
 
   if (!alias || !productId) {
     return;
   }
 
-  const [rows] = await conn.query(`
-    SELECT id, hit_count
-    FROM product_ocr_aliases
-    WHERE customer_id = ?
-      AND alias_text = ?
-      AND product_id = ?
-    LIMIT 1
-  `, [
-    customerId,
-    alias,
-    productId
-  ]);
-
-  if (rows.length > 0) {
-    await conn.query(`
-      UPDATE product_ocr_aliases
-      SET
-        hit_count = COALESCE(hit_count, 0) + 1,
-        updated_at = NOW()
-      WHERE id = ?
-    `, [rows[0].id]);
-
-    return;
-  }
-
   await conn.query(`
-    INSERT INTO product_ocr_aliases (
-      customer_id,
-      alias_text,
-      product_id,
-      source,
-      hit_count,
-      created_at,
-      updated_at
-    ) VALUES (?, ?, ?, ?, 1, NOW(), NOW())
+    UPDATE product_ocr_aliases
+    SET
+      hit_count = COALESCE(hit_count, 0) + 1,
+      updated_at = NOW()
+    WHERE alias_text = ?
+      AND product_id = ?
+      AND (customer_id = ? OR customer_id IS NULL)
   `, [
-    customerId,
     alias,
     productId,
-    'AI_CHAT'
+    customerId || null
   ]);
 }
 
@@ -333,134 +349,127 @@ async function findProductForCustomer(customerId, productName) {
     throw new Error('Thiếu tên sản phẩm');
   }
 
-  // Production safety: exact alias/name first. Do not fuzzy-match meat products before exact alias.
+  // 1) Exact alias first. If duplicate aliases exist, throw instead of guessing.
   const exactByAlias = await findExactProductByAlias(customerId, keyword);
   if (exactByAlias) return exactByAlias;
 
-  // Fast path: product name / customer alias LIKE
-  const [products] = await db.query(`
-    SELECT
-      p.id,
-      p.name,
-      p.unit,
-      p.stock_quantity,
-      p.inventory_mode,
-      p.allow_negative_stock,
-      COALESCE(cpp.sale_price, p.default_sale_price, 0) AS price,
-      poa.alias_text
-    FROM products p
+  // 2) Exact product name second.
+  const exactByName = await findExactProductByName(customerId, keyword);
+  if (exactByName) return exactByName;
 
-    LEFT JOIN product_ocr_aliases poa
-      ON poa.product_id = p.id
-     AND poa.customer_id = ?
+  // 3) Safe prefix/name match only for longer phrases like "xuong ong".
+  // Avoid "nam" accidentally matching "nam mo", "gan" matching "gan pho", etc.
+  const safeKey = canonicalProductKey(keyword);
+  if (safeKey.length >= 5) {
+    const [products] = await db.query(`
+      SELECT
+        p.id,
+        p.name,
+        p.unit,
+        p.stock_quantity,
+        p.inventory_mode,
+        p.allow_negative_stock,
+        COALESCE(cpp.sale_price, p.default_sale_price, 0) AS price,
+        poa.alias_text
+      FROM products p
+      LEFT JOIN product_ocr_aliases poa
+        ON poa.product_id = p.id
+       AND (poa.customer_id = ? OR poa.customer_id IS NULL)
+      LEFT JOIN customer_product_prices cpp
+        ON cpp.product_id = p.id
+       AND cpp.customer_id = ?
+       AND cpp.is_active = 1
+       AND (cpp.effective_from IS NULL OR cpp.effective_from <= CURDATE())
+       AND (cpp.effective_to IS NULL OR cpp.effective_to >= CURDATE())
+      WHERE p.del_flg = 0
+        AND p.is_active = 1
+        AND (
+          LOWER(p.name) LIKE LOWER(?)
+          OR LOWER(poa.alias_text) LIKE LOWER(?)
+        )
+      ORDER BY
+        CASE
+          WHEN LOWER(TRIM(poa.alias_text)) = LOWER(TRIM(?)) THEN 1
+          WHEN LOWER(TRIM(p.name)) = LOWER(TRIM(?)) THEN 2
+          WHEN LOWER(poa.alias_text) LIKE LOWER(?) THEN 3
+          WHEN LOWER(p.name) LIKE LOWER(?) THEN 4
+          ELSE 5
+        END,
+        p.id ASC
+      LIMIT 20
+    `, [
+      customerId,
+      customerId,
+      `%${keyword}%`,
+      `%${keyword}%`,
+      keyword,
+      keyword,
+      `%${keyword}%`,
+      `%${keyword}%`
+    ]);
 
-    LEFT JOIN customer_product_prices cpp
-      ON cpp.product_id = p.id
-     AND cpp.customer_id = ?
-     AND cpp.is_active = 1
-     AND (
-       cpp.effective_from IS NULL
-       OR cpp.effective_from <= CURDATE()
-     )
-     AND (
-       cpp.effective_to IS NULL
-       OR cpp.effective_to >= CURDATE()
-     )
+    if (products.length === 1) {
+      return products[0];
+    }
 
-    WHERE p.del_flg = 0
-      AND p.is_active = 1
-      AND (
-        LOWER(p.name) LIKE LOWER(?)
-        OR LOWER(poa.alias_text) LIKE LOWER(?)
-      )
+    if (products.length > 1) {
+      const exactLike = products.filter((p) =>
+        canonicalProductKey(p.name) === safeKey ||
+        canonicalProductKey(p.alias_text) === safeKey
+      );
+      const uniqueExactIds = Array.from(new Set(exactLike.map((p) => p.id)));
+      if (uniqueExactIds.length === 1) return exactLike[0];
 
-    ORDER BY
-      CASE
-        WHEN LOWER(poa.alias_text) = LOWER(?) THEN 1
-        WHEN LOWER(p.name) = LOWER(?) THEN 2
-        WHEN LOWER(poa.alias_text) LIKE LOWER(?) THEN 3
-        WHEN LOWER(p.name) LIKE LOWER(?) THEN 4
-        ELSE 5
-      END,
-      cpp.effective_from DESC,
-      cpp.id DESC
-
-    LIMIT 1
-  `, [
-    customerId,
-    customerId,
-    `%${keyword}%`,
-    `%${keyword}%`,
-    keyword,
-    keyword,
-    `%${keyword}%`,
-    `%${keyword}%`
-  ]);
-
-  if (products.length > 0) {
-    return products[0];
+      throw new Error(`Sản phẩm "${productName}" đang khớp nhiều mặt hàng (${products.map((p) => `${p.id}:${p.name}`).join(', ')}). Vui lòng nói rõ hơn hoặc làm sạch alias.`);
+    }
   }
 
-  // Production path: dynamic resolver from all active products + aliases.
-  const [candidates] = await db.query(`
-    SELECT
-      p.id,
-      p.name,
-      p.unit,
-      p.stock_quantity,
-      p.inventory_mode,
-      p.allow_negative_stock,
-      COALESCE(cpp.sale_price, p.default_sale_price, 0) AS price,
-      GROUP_CONCAT(DISTINCT poa.alias_text SEPARATOR ' ') AS alias_text
-    FROM products p
+  // 4) Last-resort fuzzy only for long input, never for short meat aliases.
+  if (safeKey.length >= 7) {
+    const [candidates] = await db.query(`
+      SELECT
+        p.id,
+        p.name,
+        p.unit,
+        p.stock_quantity,
+        p.inventory_mode,
+        p.allow_negative_stock,
+        COALESCE(cpp.sale_price, p.default_sale_price, 0) AS price,
+        GROUP_CONCAT(DISTINCT poa.alias_text SEPARATOR ' ') AS alias_text
+      FROM products p
+      LEFT JOIN product_ocr_aliases poa
+        ON poa.product_id = p.id
+       AND (poa.customer_id = ? OR poa.customer_id IS NULL)
+      LEFT JOIN customer_product_prices cpp
+        ON cpp.product_id = p.id
+       AND cpp.customer_id = ?
+       AND cpp.is_active = 1
+       AND (cpp.effective_from IS NULL OR cpp.effective_from <= CURDATE())
+       AND (cpp.effective_to IS NULL OR cpp.effective_to >= CURDATE())
+      WHERE p.del_flg = 0
+        AND p.is_active = 1
+      GROUP BY
+        p.id,
+        p.name,
+        p.unit,
+        p.stock_quantity,
+        p.inventory_mode,
+        p.allow_negative_stock,
+        cpp.sale_price
+      LIMIT 10000
+    `, [
+      customerId,
+      customerId
+    ]);
 
-    LEFT JOIN product_ocr_aliases poa
-      ON poa.product_id = p.id
-     AND (
-       poa.customer_id = ?
-       OR poa.customer_id IS NULL
-     )
-
-    LEFT JOIN customer_product_prices cpp
-      ON cpp.product_id = p.id
-     AND cpp.customer_id = ?
-     AND cpp.is_active = 1
-     AND (
-       cpp.effective_from IS NULL
-       OR cpp.effective_from <= CURDATE()
-     )
-     AND (
-       cpp.effective_to IS NULL
-       OR cpp.effective_to >= CURDATE()
-     )
-
-    WHERE p.del_flg = 0
-      AND p.is_active = 1
-
-    GROUP BY
-      p.id,
-      p.name,
-      p.unit,
-      p.stock_quantity,
-      p.inventory_mode,
-      p.allow_negative_stock,
-      cpp.sale_price
-
-    LIMIT 10000
-  `, [
-    customerId,
-    customerId
-  ]);
-
-  const best = findBestProductVariant(keyword, candidates);
-
-  if (!best) {
-    throw new Error(`Không tìm thấy sản phẩm: ${productName}`);
+    const best = findBestProductVariant(keyword, candidates);
+    if (best && best.score >= 55) {
+      return best.item;
+    }
   }
 
-  return best.item;
+  throw new Error(`Không tìm thấy sản phẩm: ${productName}`);
 }
-
 async function createOrderDraft(payload) {
   const {
     customer_name,

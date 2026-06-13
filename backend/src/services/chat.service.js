@@ -52,9 +52,7 @@ function normalizeText(text) {
     .replace(/\bky\b/g, 'kg')
     .replace(/\bki\b/g, 'kg')
     .replace(/\bbop\b/g, 'bup')
-    .replace(/\bbup\b/g, 'bap')
-    .replace(/\bbop\b/g, 'bap')
-    .replace(/\bboop\b/g, 'bap')
+    .replace(/\bboop\b/g, 'bup')
     .replace(/như/g, 'nhu')
     .replace(/hôm/g, 'hom')
     .replace(/bữa/g, 'bua')
@@ -250,25 +248,24 @@ function parseSimpleBill(message, options = {}) {
   const lines = splitVoiceOrderLines(originalMessage);
   const normalizedWhole = normalizeText(normalizeVoiceBillLines(originalMessage));
 
+  // If the first line has no quantity, treat it as customer name and parse items only from following lines.
+  const firstLineNormForCustomer = lines.length > 1 ? normalizeText(lines[0]) : '';
+  const firstLineIsCustomerOnly = Boolean(firstLineNormForCustomer && !parseItemFromLine(firstLineNormForCustomer));
+
   const firstItemMatch = normalizedWhole.match(/[0-9]+(?:[.,][0-9]+)?\s*(kg|ky|ký|kí|ki|can|cân)?/i);
   if (!firstItemMatch) {
     throw new Error('Không tìm thấy sản phẩm/số lượng để tạo bill');
   }
 
-  let customerName = normalizedWhole
-    .substring(0, firstItemMatch.index)
-    .trim()
-    .replace(/\b(khach thuong|khach quen|regular|khach vang lai|vang lai|walk in|walkin)\b/gi, '')
-    .replace(/\b(lay|them|mua|voi|cho)\b.*$/i, '')
-    .replace(/^(chi|anh|co|chu|bac)\s+/i, '')
-    .trim();
-
-  if (!customerName && lines.length > 1) {
-    const firstLineNorm = normalizeText(lines[0]);
-    if (!parseItemFromLine(firstLineNorm)) {
-      customerName = firstLineNorm.replace(/^(chi|anh|co|chu|bac)\s+/i, '').trim();
-    }
-  }
+  let customerName = firstLineIsCustomerOnly
+    ? firstLineNormForCustomer.replace(/^(chi|anh|co|chu|bac)\s+/i, '').trim()
+    : normalizedWhole
+      .substring(0, firstItemMatch.index)
+      .trim()
+      .replace(/\b(khach thuong|khach quen|regular|khach vang lai|vang lai|walk in|walkin)\b/gi, '')
+      .replace(/\b(lay|them|mua|voi|cho)\b.*$/i, '')
+      .replace(/^(chi|anh|co|chu|bac)\s+/i, '')
+      .trim();
 
   if (!customerName && selectedCustomerType === 'WALK_IN') {
     customerName = 'Khách vãng lai';
@@ -279,7 +276,9 @@ function parseSimpleBill(message, options = {}) {
   }
 
   const items = [];
-  for (const line of lines) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    if (firstLineIsCustomerOnly && lineIndex === 0) continue;
+    const line = lines[lineIndex];
     const n = normalizeText(line);
     if (!n || n === customerName) continue;
     const parsedLine = parseItemFromLine(n);
@@ -317,7 +316,9 @@ function parseSimpleBill(message, options = {}) {
     customer_name: customerName,
     items: mergedItems,
     cash_amount: isBank ? 0 : cashAmount,
-    transfer_amount: isBank ? cashAmount : 0
+    transfer_amount: isBank ? cashAmount : 0,
+    raw_message: originalMessage,
+    parsed_items_debug: mergedItems
   };
 }
 

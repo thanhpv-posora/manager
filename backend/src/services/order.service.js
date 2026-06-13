@@ -226,22 +226,10 @@ async function saveProductAlias(conn, customerId, aliasText, productId) {
     return;
   }
 
-  await conn.query(`
-    INSERT INTO product_ocr_aliases (
-      customer_id,
-      alias_text,
-      product_id,
-      source,
-      hit_count,
-      created_at,
-      updated_at
-    ) VALUES (?, ?, ?, ?, 1, NOW(), NOW())
-  `, [
-    customerId,
-    alias,
-    productId,
-    'AI_CHAT'
-  ]);
+  // Production safety: do not auto-create product aliases from AI Voice POS.
+  // Bad speech recognition can poison product_ocr_aliases and make later bills resolve to wrong products.
+  // Alias creation/cleanup must be done from controlled admin/SQL migration only.
+  return;
 }
 
 async function findCustomerByName(customerName) {

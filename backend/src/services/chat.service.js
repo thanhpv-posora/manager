@@ -6,6 +6,7 @@ const aiNluService = require('./aiNlu.service');
 const aiInventoryInsightService = require('./aiInventoryInsight.service');
 const aiInventoryPredictionService = require('./aiInventoryPrediction.service');
 const aiSupplierOrderingService = require('./aiSupplierOrdering.service');
+const db = require('../config/db');
 
 function sanitizeSpeechText(text) {
   return String(text || '')
@@ -52,7 +53,9 @@ function normalizeText(text) {
     .replace(/\bky\b/g, 'kg')
     .replace(/\bki\b/g, 'kg')
     .replace(/\bbop\b/g, 'bup')
-    .replace(/\bboop\b/g, 'bup')
+    .replace(/\bbup\b/g, 'bap')
+    .replace(/\bbop\b/g, 'bap')
+    .replace(/\bboop\b/g, 'bap')
     .replace(/như/g, 'nhu')
     .replace(/hôm/g, 'hom')
     .replace(/bữa/g, 'bua')
@@ -242,33 +245,129 @@ function mergeParsedItems(items) {
   return Array.from(map.values()).filter((x) => x.quantity > 0);
 }
 
-function parseSimpleBill(message, options = {}) {
+
+async function getActiveCustomersForVoice() {
+  const [rows] = await db.query(`
+    SELECT id, name
+    FROM customers
+    WHERE del_flg = 0
+    ORDER BY CHAR_LENGTH(name) DESC, id ASC
+    LIMIT 5000
+  `);
+  return rows || [];
+}
+
+function detectCustomerPrefix(text, customers) {
+  const n = normalizeText(text);
+  let best = null;
+
+  for (const customer of customers || []) {
+    const customerNorm = normalizeText(customer.name || '');
+    if (!customerNorm) continue;
+
+    if (n === customerNorm || n.startsWith(customerNorm + ' ')) {
+      if (!best || customerNorm.length > best.prefixNorm.length) {
+        best = {
+          customer,
+          customerName: customer.name,
+          prefixNorm: customerNorm
+        };
+      }
+    }
+  }
+
+  return best;
+}
+
+function stripCustomerPrefix(line, customerPrefixNorm) {
+  const n = normalizeText(line);
+  const prefix = normalizeText(customerPrefixNorm || '');
+  if (!prefix) return n;
+  if (n === prefix) return '';
+  if (n.startsWith(prefix + ' ')) return n.slice(prefix.length).trim();
+  return n;
+}
+
+function parseItemsFromSegment(segment) {
+  const text = normalizeText(segment);
+  const items = [];
+
+  if (!text) return items;
+
+  const directLine = parseItemFromLine(text);
+  if (directLine) {
+    items.push(directLine);
+    return items;
+  }
+
+  // Product-first multi item: "xuong ong 10 kg nam 10 kg"
+  const productFirstRegex = /([a-zA-ZÀ-ỹ0-9][a-zA-ZÀ-ỹ0-9\s]*?)\s+([0-9]+(?:[.,][0-9]+)?)\s*(?:kg|ky|ký|kí|ki|can|cân)?(?=\s+[a-zA-ZÀ-ỹ][a-zA-ZÀ-ỹ0-9\s]*?\s+[0-9]+(?:[.,][0-9]+)?\s*(?:kg|ky|ký|kí|ki|can|cân)?|$)/gi;
+  let match;
+  while ((match = productFirstRegex.exec(text)) !== null) {
+    const productName = cleanProductPhrase(match[1]);
+    const quantity = Number(String(match[2]).replace(',', '.'));
+    if (productName && quantity > 0) {
+      items.push({ product_name: productName, quantity, unit_input: 'kg' });
+    }
+  }
+
+  if (items.length > 0) return items;
+
+  // Quantity-first multi item: "10 kg xuong ong 5 kg nam"
+  const quantityFirstRegex = /([0-9]+(?:[.,][0-9]+)?)\s*(?:kg|ky|ký|kí|ki|can|cân)?\s+([a-zA-ZÀ-ỹ0-9][a-zA-ZÀ-ỹ0-9\s]*?)(?=\s+[0-9]+(?:[.,][0-9]+)?\s*(?:kg|ky|ký|kí|ki|can|cân)?\s+|$)/gi;
+  while ((match = quantityFirstRegex.exec(text)) !== null) {
+    const quantity = Number(String(match[1]).replace(',', '.'));
+    const productName = cleanProductPhrase(match[2]);
+    if (productName && quantity > 0) {
+      items.push({ product_name: productName, quantity, unit_input: 'kg' });
+    }
+  }
+
+  return items;
+}
+
+async function parseSimpleBill(message, options = {}) {
   const originalMessage = String(message || '');
   const selectedCustomerType = String(options.customer_type || '').toUpperCase();
   const lines = splitVoiceOrderLines(originalMessage);
   const normalizedWhole = normalizeText(normalizeVoiceBillLines(originalMessage));
-
-  // If the first line has no quantity, treat it as customer name and parse items only from following lines.
-  const firstLineNormForCustomer = lines.length > 1 ? normalizeText(lines[0]) : '';
-  const firstLineIsCustomerOnly = Boolean(firstLineNormForCustomer && !parseItemFromLine(firstLineNormForCustomer));
 
   const firstItemMatch = normalizedWhole.match(/[0-9]+(?:[.,][0-9]+)?\s*(kg|ky|ký|kí|ki|can|cân)?/i);
   if (!firstItemMatch) {
     throw new Error('Không tìm thấy sản phẩm/số lượng để tạo bill');
   }
 
-  let customerName = firstLineIsCustomerOnly
-    ? firstLineNormForCustomer.replace(/^(chi|anh|co|chu|bac)\s+/i, '').trim()
-    : normalizedWhole
+  const customers = await getActiveCustomersForVoice();
+  const firstLine = lines[0] || originalMessage;
+  let detectedCustomer = detectCustomerPrefix(firstLine, customers) || detectCustomerPrefix(normalizedWhole, customers);
+
+  let customerName = detectedCustomer?.customerName || '';
+  let customerPrefixNorm = detectedCustomer?.prefixNorm || '';
+
+  // Multiline mode: first line is customer only, following lines are items.
+  if (!customerName && lines.length > 1) {
+    const firstLineNorm = normalizeText(lines[0]);
+    if (!parseItemFromLine(firstLineNorm)) {
+      customerName = firstLineNorm.replace(/^(chi|anh|co|chu|bac)\s+/i, '').trim();
+      customerPrefixNorm = normalizeText(customerName);
+    }
+  }
+
+  // Legacy fallback for one-line text without exact customer prefix.
+  if (!customerName) {
+    customerName = normalizedWhole
       .substring(0, firstItemMatch.index)
       .trim()
       .replace(/\b(khach thuong|khach quen|regular|khach vang lai|vang lai|walk in|walkin)\b/gi, '')
       .replace(/\b(lay|them|mua|voi|cho)\b.*$/i, '')
       .replace(/^(chi|anh|co|chu|bac)\s+/i, '')
       .trim();
+    customerPrefixNorm = normalizeText(customerName);
+  }
 
   if (!customerName && selectedCustomerType === 'WALK_IN') {
     customerName = 'Khách vãng lai';
+    customerPrefixNorm = normalizeText(customerName);
   }
 
   if (!customerName) {
@@ -276,31 +375,21 @@ function parseSimpleBill(message, options = {}) {
   }
 
   const items = [];
-  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-    if (firstLineIsCustomerOnly && lineIndex === 0) continue;
-    const line = lines[lineIndex];
-    const n = normalizeText(line);
-    if (!n || n === customerName) continue;
-    const parsedLine = parseItemFromLine(n);
-    if (parsedLine) items.push(parsedLine);
+  for (const line of lines) {
+    let segment = stripCustomerPrefix(line, customerPrefixNorm);
+    if (!segment) continue;
+    for (const item of parseItemsFromSegment(segment)) {
+      items.push(item);
+    }
   }
 
   if (items.length === 0) {
-    const cleanText = normalizedWhole
+    let cleanText = normalizedWhole
       .replace(/(trả|tra|tm|tien mat|ck|chuyen khoan|bank).*$/i, '')
       .trim();
-    const itemsText = cleanText.substring(firstItemMatch.index).trim();
-    const itemRegex = /([0-9]+(?:[.,][0-9]+)?)\s*(kg|ky|ký|kí|ki|can|cân)?\s+([a-zA-ZÀ-ỹ0-9][a-zA-ZÀ-ỹ0-9\s]*?)(?=\s+[0-9]+(?:[.,][0-9]+)?\s*(?:kg|ky|ký|kí|ki|can|cân)?\s+|$)/gi;
-    let match;
-    while ((match = itemRegex.exec(itemsText)) !== null) {
-      const productName = cleanProductPhrase(match[3]);
-      if (productName) {
-        items.push({
-          product_name: productName,
-          quantity: Number(match[1].replace(',', '.')),
-          unit_input: 'kg'
-        });
-      }
+    cleanText = stripCustomerPrefix(cleanText, customerPrefixNorm);
+    for (const item of parseItemsFromSegment(cleanText)) {
+      items.push(item);
     }
   }
 
@@ -316,9 +405,7 @@ function parseSimpleBill(message, options = {}) {
     customer_name: customerName,
     items: mergedItems,
     cash_amount: isBank ? 0 : cashAmount,
-    transfer_amount: isBank ? cashAmount : 0,
-    raw_message: originalMessage,
-    parsed_items_debug: mergedItems
+    transfer_amount: isBank ? cashAmount : 0
   };
 }
 
@@ -857,6 +944,42 @@ async function handleNluIntent(message, options, sessionId) {
 }
 
 
+
+async function createFreshOrderDraftFromMessage(sessionId, message, options = {}) {
+  const draftPayload = await parseSimpleBill(message, options);
+  const draft = await orderService.createOrderDraft(draftPayload);
+
+  // Production rule: a new bill phrase replaces the old AI order draft.
+  // This prevents old add_item/cache from leaking into the new bill.
+  await aiSessionService.cancelOpenOrderDrafts(sessionId);
+
+  const draftSessionId = await aiSessionService.saveDraftSession(
+    sessionId,
+    draft.customer.id,
+    draft
+  );
+
+  if (options.confirm === true) {
+    const confirmed = await orderService.confirmOrderDraft(draft);
+    await aiSessionService.markSessionConfirmed(draftSessionId);
+    return {
+      intent: 'CREATE_ORDER_AND_CONFIRM',
+      parsed: draftPayload,
+      draft,
+      confirmed
+    };
+  }
+
+  return {
+    intent: 'CREATE_ORDER_DRAFT',
+    parsed: draftPayload,
+    draft,
+    requires_confirm: draft.can_confirm !== false,
+    requires_payment: draft.requires_payment === true,
+    confirm_message: draft.can_confirm === false ? 'Nháp chưa đủ điều kiện lưu bill' : 'Xác nhận lưu bill?'
+  };
+}
+
 async function handleChat(message, options = {}) {
   const sessionId = options.session_id || 'DEFAULT';
 
@@ -886,6 +1009,53 @@ async function handleChat(message, options = {}) {
       forecast_days: forecastDays,
       lookback_days: 14
     });
+  }
+
+  // Draft control must run before LLM NLU.
+  if (isCancelMessage(message)) {
+    const latestSession = await aiSessionService.getLatestPendingSession(sessionId);
+    if (!latestSession) throw new Error('Không có nháp để hủy');
+    await aiSessionService.markSessionCancelled(latestSession.id);
+    return { intent: 'CANCEL_PREVIOUS_DRAFT', message: 'Đã hủy nháp gần nhất.' };
+  }
+
+  if (isConfirmMessage(message)) {
+    const latestSession = await aiSessionService.getLatestPendingSession(sessionId);
+    if (!latestSession) throw new Error('Không có nháp để xác nhận');
+
+    if (latestSession.status === 'SUPPLIER_ORDER_DRAFT') {
+      const confirmed = await aiSupplierOrderingService.confirmSupplierOrderDraft(latestSession.draft_json, { id: null, role: 'ADMIN' });
+      await aiSessionService.markSessionConfirmed(latestSession.id);
+      return { intent: 'CONFIRM_PREVIOUS_SUPPLIER_ORDER', confirmed };
+    }
+
+    if (latestSession.status === 'PAYMENT_DRAFT') {
+      const confirmed = await aiPaymentService.confirmPaymentFromPreview(latestSession.draft_json, { id: null, role: 'ADMIN' });
+      await aiSessionService.markSessionConfirmed(latestSession.id);
+      return { intent: 'CONFIRM_PREVIOUS_PAYMENT', confirmed };
+    }
+
+    if (latestSession.draft_json && latestSession.draft_json.can_confirm === false) {
+      throw new Error(latestSession.draft_json.warnings?.[0] || 'Nháp chưa đủ điều kiện xác nhận');
+    }
+
+    const confirmed = await orderService.confirmOrderDraft(latestSession.draft_json);
+    await aiSessionService.markSessionConfirmed(latestSession.id);
+    return { intent: 'CONFIRM_PREVIOUS_ORDER', confirmed };
+  }
+
+  if (isEditOrderDraftMessage(message)) {
+    return editLatestOrderDraft(sessionId, message);
+  }
+
+  // If the message contains bill items, parse deterministically before OpenAI NLU.
+  // This prevents OpenAI from wrongly classifying a new bill as ADD_ITEM and reusing an old draft.
+  if (hasOrderItems(message)) {
+    try {
+      return await createFreshOrderDraftFromMessage(sessionId, message, options);
+    } catch (err) {
+      return buildClarificationResponse(message, err);
+    }
   }
 
   // Real AI NLU layer: understand free-form Vietnamese first.
@@ -1022,7 +1192,7 @@ async function handleChat(message, options = {}) {
   let draftPayload;
 
   try {
-    draftPayload = parseSimpleBill(message, options);
+    draftPayload = await parseSimpleBill(message, options);
   } catch (err) {
     return buildClarificationResponse(message, err);
   }

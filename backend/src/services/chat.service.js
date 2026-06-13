@@ -7,6 +7,7 @@ const aiInventoryInsightService = require('./aiInventoryInsight.service');
 const aiInventoryPredictionService = require('./aiInventoryPrediction.service');
 const aiSupplierOrderingService = require('./aiSupplierOrdering.service');
 const db = require('../config/db');
+// V52_DONE_KEYWORD_MULTI_ITEM_FIX: final words xong/ket thuc confirm draft; multi-item parser does not stop at first item.
 
 function sanitizeSpeechText(text) {
   return String(text || '')
@@ -234,6 +235,13 @@ function parseItemFromLine(line) {
   return null;
 }
 
+
+function countQuantityTokens(text) {
+  const normalized = normalizeText(text);
+  const matches = normalized.match(/[0-9]+(?:[.,][0-9]+)?\s*(?:kg|ky|ký|kí|ki|can|cân)?/gi);
+  return matches ? matches.length : 0;
+}
+
 function mergeParsedItems(items) {
   const map = new Map();
   for (const item of items || []) {
@@ -294,10 +302,15 @@ function parseItemsFromSegment(segment) {
 
   if (!text) return items;
 
-  const directLine = parseItemFromLine(text);
-  if (directLine) {
-    items.push(directLine);
-    return items;
+  // Only use single-line parser when there is exactly one quantity.
+  // If there are multiple quantities, continue to the multi-item parser.
+  // Example: "xuong ong 10 kg dui 20 kg" must return 2 items, not one wrong item.
+  if (countQuantityTokens(text) <= 1) {
+    const directLine = parseItemFromLine(text);
+    if (directLine) {
+      items.push(directLine);
+      return items;
+    }
   }
 
   // Product-first multi item: "xuong ong 10 kg nam 10 kg"
@@ -424,6 +437,11 @@ function isConfirmMessage(message) {
     'luu bill',
     'lưu',
     'luu',
+    'xong',
+    'kết thúc',
+    'ket thuc',
+    'hoàn thành',
+    'hoan thanh',
     'đồng ý',
     'dong y'
   ];
@@ -698,9 +716,12 @@ async function handleRepeatOrderMessage(sessionId, message, options = {}) {
 
 
 function hasOrderItems(message) {
-  return /[0-9]+(?:[.,][0-9]+)?\s*(kg|ký|kí)?\s+[a-zA-ZÀ-ỹ0-9]+/i.test(
-    normalizeText(message)
-  );
+  const text = normalizeText(normalizeVoiceBillLines(message));
+  // quantity-first: "10 kg xuong ong"
+  if (/[0-9]+(?:[.,][0-9]+)?\s*(kg|ky|ký|kí|ki|can|cân)?\s+[a-zA-ZÀ-ỹ0-9]+/i.test(text)) return true;
+  // product-first: "xuong ong 10 kg"
+  if (/[a-zA-ZÀ-ỹ0-9]+(?:\s+[a-zA-ZÀ-ỹ0-9]+)*\s+[0-9]+(?:[.,][0-9]+)?\s*(kg|ky|ký|kí|ki|can|cân)?/i.test(text)) return true;
+  return false;
 }
 
 

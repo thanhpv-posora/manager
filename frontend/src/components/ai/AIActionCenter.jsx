@@ -31,7 +31,7 @@ function ActionCard({icon,title,desc,button,onClick,loading,tone='orange'}){
   </div>;
 }
 
-export default function AIActionCenter(){
+export default function AIActionCenter({anonymizeDebtors=false}){
   const sessionId=useMemo(getSessionId,[]);
   const[loading,setLoading]=useState(false);
   const[error,setError]=useState('');
@@ -59,7 +59,7 @@ export default function AIActionCenter(){
   const lowStock=summary?.low_stock||[];
   const topDebtors=summary?.top_debtors||[];
   const topProducts=summary?.top_products||[];
-  const debtorLabel=(index)=>`Khách hàng ${String.fromCharCode(65+index)}`;
+  const debtorLabel=(x,index)=>anonymizeDebtors?`Khách hàng ${String.fromCharCode(65+index)}`:(x?.name||`Khách hàng ${String.fromCharCode(65+index)}`);
   const hasLowStock=lowStock.length>0;
   const hasDebtors=topDebtors.length>0;
   const supplierGroups=draft?.supplier_groups||[];
@@ -87,7 +87,7 @@ export default function AIActionCenter(){
 
     <div className="ai-action-stack">
       {hasLowStock&&<ActionCard tone="red" icon={<PackagePlus size={22}/>} title={`Có ${lowStock.length} mặt hàng dưới ngưỡng`} desc={`${lowStock.slice(0,2).map(x=>`${x.product_name} còn ${qty(x.stock_quantity)}${x.unit}`).join(' • ')}`} button="Lập nháp nhập hàng" loading={loading} onClick={()=>ask('nen nhap hang gi tuan toi',{asDraft:true})}/>} 
-      {hasDebtors&&<ActionCard tone="yellow" icon={<Users size={22}/>} title="Khách nợ cần chú ý" desc={`${debtorLabel(0)} đang nợ ${money(topDebtors[0]?.debt_amount)}`} button="Xem công nợ" loading={loading} onClick={()=>setNotice('Mở menu Công nợ để xử lý chi tiết. Bước sau sẽ gắn nút nhắc nợ tự động.')}/>} 
+      {hasDebtors&&<ActionCard tone="yellow" icon={<Users size={22}/>} title="Khách nợ cần chú ý" desc={`${debtorLabel(topDebtors[0],0)} đang nợ ${money(topDebtors[0]?.debt_amount)}`} button="Xem công nợ" loading={loading} onClick={()=>setNotice('Mở menu Công nợ để xử lý chi tiết. Bước sau sẽ gắn nút nhắc nợ tự động.')}/>} 
       {!hasLowStock&&!hasDebtors&&<ActionCard tone="green" icon={<CheckCircle2 size={22}/>} title="Hệ thống ổn" desc="Chưa thấy cảnh báo lớn từ dữ liệu hôm nay." button="Dự báo tồn kho" loading={loading} onClick={()=>ask('du bao ton kho 7 ngay toi')}/>} 
       <ActionCard tone="blue" icon={<BarChart3 size={22}/>} title="Hỏi AI nhanh" desc="Tóm tắt, dự báo tồn kho, đề xuất nhập hàng bằng một nút." button="Tóm tắt lại" loading={loading} onClick={()=>ask('tom tat dieu hanh hom nay')}/>
     </div>
@@ -113,7 +113,7 @@ export default function AIActionCenter(){
     <div className="ai-simple-lists">
       {topProducts.length>0&&<div><b>Bán chạy</b>{topProducts.slice(0,4).map(x=><p key={x.product_id}>{x.product_name}: {qty(x.sold_qty)} {x.unit}</p>)}</div>}
       {lowStock.length>0&&<div><b>Hàng thiếu</b>{lowStock.slice(0,4).map(x=><p key={x.product_id}>{x.product_name}: còn {qty(x.stock_quantity)} {x.unit}</p>)}</div>}
-      {topDebtors.length>0&&<div><b>Nợ cao</b>{topDebtors.slice(0,4).map((x,i)=><p key={x.id}>{debtorLabel(i)}: {money(x.debt_amount)}</p>)}</div>}
+      {topDebtors.length>0&&<div><b>Nợ cao</b>{topDebtors.slice(0,4).map((x,i)=><p key={x.id}>{debtorLabel(x,i)}: {money(x.debt_amount)}</p>)}</div>}
     </div>
   </div>;
 }

@@ -1,0 +1,23 @@
+V46 verified changes
+
+Build checked:
+- frontend npm ci OK
+- frontend npm run build OK
+- backend SupplierAgent syntax OK
+
+Changed files:
+- frontend/src/components/ai/AIVoicePOSPanel.jsx
+  Fix AI Voice POS duplicate transcript. Only stabilized final transcript is committed.
+- frontend/src/pages/Lots.jsx
+  Block saving empty purchase lot. Need supplier, raw kg > 0, total animals > 0, final kg > 0.
+- backend/src/agents/SupplierAgent.js
+  Backend validation for empty lot save.
+- frontend/src/components/ai/AIActionCenter.jsx
+  Dashboard can show real debtor names. Home remains anonymized.
+- frontend/src/components/ai/AIBusinessPanel.jsx
+  Dashboard/business panel can show real debtor names.
+- frontend/src/pages/Dashboard.jsx
+  Uses real customer names in dashboard.
+
+Home privacy:
+- frontend/src/pages/LandingPage.jsx still shows Khách hàng A only.

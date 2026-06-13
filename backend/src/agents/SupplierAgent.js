@@ -136,6 +136,10 @@ class SupplierAgent {
 
   async createLot(data, user) {
     const c=this.calc(data);
+    if(!data.supplier_id) throw new Error('Vui lòng chọn nhà cung cấp trước khi lưu lô nhập.');
+    if(c.rawWeight<=0) throw new Error('Tổng kg thịt xô phải lớn hơn 0. Không thể lưu lô nhập trống.');
+    if(c.totalAnimals<=0) throw new Error('Tổng số con phải lớn hơn 0.');
+    if(c.totalWeight<=0) throw new Error('Kg tính tiền phải lớn hơn 0. Vui lòng kiểm tra lại số kg trừ.');
     const conn=await pool.getConnection();
     try {
       await conn.beginTransaction();

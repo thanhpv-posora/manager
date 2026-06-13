@@ -1,0 +1,17 @@
+V45 Voice POS Final Transcript Fix
+
+Checked package root: meatbiz_v45_voice_pos_final_transcript_SOURCE
+
+Main fix file:
+frontend/src/components/ai/AIVoicePOSPanel.jsx
+
+Fixes:
+- Web Speech API only sends final transcript to AI.
+- Interim transcript is shown on UI only, not processed.
+- Duplicate final transcript is ignored.
+- Example: speaking "Chiến xương ống 12 ký" will not create partial duplicated rows like "Chiến", "Chiến xương", "Chiến xương ống".
+
+Important grep check:
+- interimResults=true
+- event.results[i].isFinal
+- lastFinalTextRef

@@ -1,4 +1,4 @@
-import React,{useMemo,useRef,useState}from'react';
+import React,{useEffect,useMemo,useRef,useState}from'react';
 import api from'../../api/api';
 
 const hasSpeech=()=>typeof window!=='undefined'&&(window.SpeechRecognition||window.webkitSpeechRecognition);
@@ -178,7 +178,14 @@ export default function AIVoicePOSPanel({sessionId='POS_VOICE_001'}){
   const messageRef=useRef('');
   const continuousRef=useRef(false);
   const recentVoiceRef=useRef([]);
+  const pendingFinalRef=useRef('');
+  const finalTimerRef=useRef(null);
   const previewItems=useMemo(()=>localPreview(message),[message]);
+
+  useEffect(()=>()=>{
+    if(finalTimerRef.current)clearTimeout(finalTimerRef.current);
+    try{recRef.current&&recRef.current.stop&&recRef.current.stop();}catch(e){}
+  },[]);
 
   const friendlyError=(value)=>{
     const msg=String(value||'');
@@ -277,9 +284,77 @@ export default function AIVoicePOSPanel({sessionId='POS_VOICE_001'}){
   };
 
 
+  const clearFinalTimer=()=>{
+    if(finalTimerRef.current){
+      clearTimeout(finalTimerRef.current);
+      finalTimerRef.current=null;
+    }
+  };
+
+  const commitVoiceText=(text)=>{
+    const lines=splitVoiceFinal(text).map(squashRepeatedPhrase).filter(Boolean);
+    for(const rawLine of lines){
+      const line=rawLine.trim();
+      const normalized=normText(line);
+      if(!line)continue;
+      if(/\b(xong|ket thuc|done)\b/.test(normalized)){
+        stopVoice();
+        send(messageRef.current);
+        return;
+      }
+      if(/\b(huy|cancel)\b/.test(normalized)){
+        stopVoice();
+        setMessage('');messageRef.current='';setResult(null);recentVoiceRef.current=[];pendingFinalRef.current='';return;
+      }
+      if(!shouldAcceptVoiceLine(line,recentVoiceRef)){
+        setPartial('');
+        continue;
+      }
+      const applied=applyVoiceLine(line);
+      if(applied.shouldSend && result) send(applied.shouldSend);
+    }
+  };
+
+  const scheduleFinalVoice=(text)=>{
+    const incoming=squashRepeatedPhrase(String(text||'').trim());
+    if(!incoming)return;
+    const old=pendingFinalRef.current;
+    const oldKey=dedupeKey(old);
+    const newKey=dedupeKey(incoming);
+    if(oldKey && newKey){
+      if(newKey.startsWith(oldKey)){
+        pendingFinalRef.current=incoming;
+      }else if(oldKey.startsWith(newKey)){
+        pendingFinalRef.current=old;
+      }else{
+        pendingFinalRef.current=`${old} ${incoming}`.trim();
+      }
+    }else{
+      pendingFinalRef.current=incoming;
+    }
+    setPartial(pendingFinalRef.current);
+    clearFinalTimer();
+    finalTimerRef.current=setTimeout(()=>{
+      const textToCommit=pendingFinalRef.current;
+      pendingFinalRef.current='';
+      setPartial('');
+      commitVoiceText(textToCommit);
+    },950);
+  };
+
+  const flushPendingVoice=()=>{
+    clearFinalTimer();
+    const textToCommit=pendingFinalRef.current;
+    pendingFinalRef.current='';
+    setPartial('');
+    if(textToCommit)commitVoiceText(textToCommit);
+  };
+
   const stopVoice=()=>{
     continuousRef.current=false;
     setContinuous(false);
+    clearFinalTimer();
+    pendingFinalRef.current='';
     try{recRef.current&&recRef.current.stop&&recRef.current.stop();}catch(e){}
     setListening(false);
     setPartial('');
@@ -311,27 +386,10 @@ export default function AIVoicePOSPanel({sessionId='POS_VOICE_001'}){
       }
       if(interim)setPartial(interim.trim());
       if(finalText.trim()){
-        const lines=splitVoiceFinal(finalText).map(squashRepeatedPhrase).filter(Boolean);
-        for(const rawLine of lines){
-          const line=rawLine.trim();
-          const normalized=normText(line);
-          if(/\b(xong|ket thuc|done)\b/.test(normalized)){
-            stopVoice();
-            send(messageRef.current);
-            return;
-          }
-          if(/\b(huy|cancel)\b/.test(normalized)){
-            stopVoice();
-            setMessage('');messageRef.current='';setResult(null);recentVoiceRef.current=[];return;
-          }
-          if(!shouldAcceptVoiceLine(line,recentVoiceRef)){
-            setPartial('');
-            continue;
-          }
-          const applied=applyVoiceLine(line);
-          if(applied.shouldSend && result) send(applied.shouldSend);
-          if(!keepOpen && !applied.handled)send(messageRef.current);
-        }
+        // Chỉ đưa final transcript vào bill sau khi câu đã ổn định.
+        // Browser trên mobile thường trả nhiều final nhỏ: "Chiến" -> "Chiến xương" -> "Chiến xương ống 12 ký".
+        // scheduleFinalVoice sẽ giữ câu dài nhất và chỉ commit 1 lần.
+        scheduleFinalVoice(finalText.trim());
       }
     };
     recRef.current=rec;

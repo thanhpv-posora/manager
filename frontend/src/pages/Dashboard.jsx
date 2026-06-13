@@ -17,7 +17,7 @@ export default function Dashboard(){
   <div className="dashboard-compact">
    {cards.map(([label,val])=><div className="mini-card" key={label}><div className="mini-label">{label}</div><div className="mini-value">{moneyVnd(val)}</div></div>)}
   </div>
-  <AIActionCenter/>
+  <AIActionCenter anonymizeDebtors={false}/>
   <div className="grid cols-2">
    <div className="card"><h3>Việc cần chú ý</h3><p className="muted">Theo dõi công nợ, bill chưa thu đủ, hàng tồn âm và lịch góp nợ.</p></div>
    <div className="card"><h3>Agent AI gợi ý</h3><p className="muted">Nên kiểm tra quyền user, dữ liệu khách hàng theo scope, và backup dữ liệu cuối ngày.</p></div>

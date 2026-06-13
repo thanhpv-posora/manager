@@ -202,8 +202,25 @@ export default function Lots(){
 
   const save=async()=>{
     if(saving)return;
-    setSaving(true);
     setSaveStatus(null);
+    if(!f.supplier_id){
+      setSaveStatus({type:'error',message:'Vui lòng chọn nhà cung cấp trước khi lưu lô nhập.'});
+      return;
+    }
+    if(rawWeight<=0){
+      setSaveStatus({type:'error',message:'Tổng kg thịt xô phải lớn hơn 0. Không thể lưu lô nhập trống.'});
+      rawWeightRef.current?.focus?.();
+      return;
+    }
+    if(totalAnimals<=0){
+      setSaveStatus({type:'error',message:'Tổng số con phải lớn hơn 0.'});
+      return;
+    }
+    if(finalWeight<=0){
+      setSaveStatus({type:'error',message:'Kg tính tiền phải lớn hơn 0. Vui lòng kiểm tra lại số kg trừ.'});
+      return;
+    }
+    setSaving(true);
     try{
       const res=await api.post('/lots',{
         ...f,

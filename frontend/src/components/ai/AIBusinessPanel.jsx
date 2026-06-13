@@ -20,7 +20,7 @@ function normalizeMessage(raw){
   return data?.data||data;
 }
 
-export default function AIBusinessPanel({compact=false,title='AI điều hành MeatBiz'}){
+export default function AIBusinessPanel({compact=false,title='AI điều hành MeatBiz',anonymizeDebtors=false}){
   const[message,setMessage]=useState('nen nhap hang gi tuan toi');
   const[loading,setLoading]=useState(false);
   const[error,setError]=useState('');
@@ -52,7 +52,7 @@ export default function AIBusinessPanel({compact=false,title='AI điều hành M
   const topProducts=result?.top_products||[];
   const lowStock=result?.low_stock||[];
   const topDebtors=result?.top_debtors||[];
-  const debtorLabel=(index)=>`Khách hàng ${String.fromCharCode(65+index)}`;
+  const debtorLabel=(x,index)=>anonymizeDebtors?`Khách hàng ${String.fromCharCode(65+index)}`:(x?.name||`Khách hàng ${String.fromCharCode(65+index)}`);
   const actions=result?.recommended_actions||[];
   const today=result?.today||null;
   const canConfirm=!!result?.requires_confirm||!!result?.can_confirm;
@@ -116,7 +116,7 @@ export default function AIBusinessPanel({compact=false,title='AI điều hành M
         {topDebtors.length>0&&<div className="ai-mini-section">
           <b><Users size={16}/> Khách nợ cao</b>
           <table className="table ai-table"><thead><tr><th>Khách</th><th>Nợ</th><th>Bill</th></tr></thead>
-          <tbody>{topDebtors.map((x,i)=><tr key={x.id}><td>{debtorLabel(i)}</td><td>{money(x.debt_amount)}</td><td>{x.unpaid_orders}</td></tr>)}</tbody></table>
+          <tbody>{topDebtors.map((x,i)=><tr key={x.id}><td>{debtorLabel(x,i)}</td><td>{money(x.debt_amount)}</td><td>{x.unpaid_orders}</td></tr>)}</tbody></table>
         </div>}
       </div>}
 

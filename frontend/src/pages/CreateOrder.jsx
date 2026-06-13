@@ -687,7 +687,7 @@ export default function CreateOrder(){
                               <td><b>{r.name||r.raw||''}</b><br/><span className="muted">{r.raw||''}</span></td>
                               <td>{r.product?<span>{r.product.product_code} - {r.product.product_name}</span>:<span className="muted">Chưa khớp danh mục</span>}</td>
                               <td>
-                                <input className="input" style={{width:120}} value={r.qtyExpr||r.quantity_expr||r.qty||''} onChange={e=>updateImportRow(idx,{qtyExpr:e.target.value})}/>
+                                <input className="input" inputMode="decimal" pattern="[0-9.,+\-\s]*" autoComplete="off" style={{width:120}} value={r.qtyExpr||r.quantity_expr||r.qty||''} onChange={e=>updateImportRow(idx,{qtyExpr:e.target.value})}/>
                               </td>
                               <td>
                                 {r.errors?.length?<span>🔴 {r.errors.join(', ')}</span>:r.warnings?.length?<span>🟡 {r.warnings.join(', ')}</span>:<span>🟢 OK</span>}

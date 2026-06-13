@@ -1,38 +1,50 @@
 const pool = require('../config/db');
 
 class ReportAgent {
-  async dashboard(user) {
+  orderScope(user,alias='o'){
+    const role=String(user?.role||'').toUpperCase();
+    if(role==='ADMIN')return {sql:'',params:[]};
+    if(role==='CUSTOMER'){
+      const cid=Number(user?.customer_id||0);
+      if(!cid)return {sql:' AND 1=0',params:[]};
+      return {sql:` AND ${alias}.customer_id=?`,params:[cid]};
+    }
+    const uid=Number(user?.id||0);
+    if(!uid)return {sql:' AND 1=0',params:[]};
+    return {sql:` AND ${alias}.created_by=?`,params:[uid]};
+  }
+
+  async dashboard(user={}) {
     const today=new Date().toISOString().slice(0,10);
-    const params=[];
-    const mustCustomerScope = user && user.customer_id && user.role !== 'ADMIN';
-    const cw = mustCustomerScope ? 'AND o.customer_id=?' : '';
-    if (mustCustomerScope) params.push(user.customer_id);
+    const scope=this.orderScope(user,'o');
     const [summary]=await pool.query(
       `SELECT COALESCE(SUM(total_amount),0) total_revenue,COALESCE(SUM(paid_amount),0) total_paid,COALESCE(SUM(debt_amount),0) total_debt,COUNT(*) total_orders,
        COALESCE(SUM(CASE WHEN order_date=? THEN total_amount ELSE 0 END),0) today_revenue
-       FROM orders o WHERE o.status<>'CANCELLED' ${cw}`,
-      [today,...params]
+       FROM orders o WHERE o.status<>'CANCELLED' ${scope.sql}`,
+      [today,...scope.params]
     );
     const [daily]=await pool.query(
       `SELECT order_date,SUM(total_amount) revenue,SUM(paid_amount) paid,SUM(debt_amount) debt,COUNT(*) orders
-       FROM orders o WHERE o.status<>'CANCELLED' ${cw} GROUP BY order_date ORDER BY order_date DESC LIMIT 30`,
-      params
+       FROM orders o WHERE o.status<>'CANCELLED' ${scope.sql} GROUP BY order_date ORDER BY order_date DESC LIMIT 30`,
+      scope.params
     );
     const [topProducts]=await pool.query(
       `SELECT oi.product_name,SUM(oi.quantity) qty,SUM(oi.total_price) revenue FROM order_items oi JOIN orders o ON o.id=oi.order_id
-       WHERE o.status<>'CANCELLED' ${cw} GROUP BY oi.product_name ORDER BY revenue DESC LIMIT 10`, params
+       WHERE o.status<>'CANCELLED' ${scope.sql} GROUP BY oi.product_name ORDER BY revenue DESC LIMIT 10`, scope.params
     );
-    const [topCustomers]=mustCustomerScope?[[]]:await pool.query(
+    const role=String(user?.role||'').toUpperCase();
+    const [topCustomers]=role==='CUSTOMER'?[[]]:await pool.query(
       `SELECT c.name,SUM(o.total_amount) revenue FROM orders o JOIN customers c ON c.id=o.customer_id
-       WHERE o.status<>'CANCELLED' GROUP BY c.id ORDER BY revenue DESC LIMIT 10`
+       WHERE o.status<>'CANCELLED' ${scope.sql} GROUP BY c.id ORDER BY revenue DESC LIMIT 10`, scope.params
     );
-    return {summary:summary[0], daily:daily.reverse(), topProducts, topCustomers};
+    return {summary:summary[0], daily:daily.reverse(), topProducts, topCustomers, scope:role==='ADMIN'?'ALL':'USER'};
   }
 
-  async revenue(query, user) {
+  async revenue(query, user={}) {
     const {from,to,group_by}=query;
     const where=[`o.status<>'CANCELLED'`], params=[];
-    if (user && user.customer_id && user.role !== 'ADMIN') { where.push('o.customer_id=?'); params.push(user.customer_id); }
+    const scope=this.orderScope(user,'o');
+    if(scope.sql){ where.push(scope.sql.replace(/^\s*AND\s*/i,'')); params.push(...scope.params); }
     if (from) { where.push('o.order_date>=?'); params.push(from); }
     if (to) { where.push('o.order_date<=?'); params.push(to); }
     const groupExpr=group_by==='month'?`DATE_FORMAT(o.order_date,'%Y-%m')`:`o.order_date`;

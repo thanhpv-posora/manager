@@ -22,7 +22,6 @@ import Registrations from'./pages/Registrations';import UserCustomerMapping from
 import LandingPage from'./pages/LandingPage';
 import MainLayout from'./layouts/MainLayout';
 import api from'./api/api';
-import {applyMobileNumericInputMode} from'./utils/mobileInputMode';
 
 function roleDefaultPage(user,menus){
   const role=user?.role||'ADMIN';
@@ -53,12 +52,25 @@ export default function App(){
   };
 
   useEffect(()=>{ if(token) refreshPermissions(); },[token]);
+
   useEffect(()=>{
-    applyMobileNumericInputMode(document);
-    const obs=new MutationObserver(()=>applyMobileNumericInputMode(document));
-    obs.observe(document.body,{childList:true,subtree:true});
-    return()=>obs.disconnect();
-  },[page,token]);
+    const numericHint=/giá|tiền|kg|kí|ký|số lượng|số tiền|sl|tồn|ngưỡng|đơn giá|chuyển khoản|tiền mặt|góp|nợ|qty|quantity|price|amount|cash|bank/i;
+    const apply=()=>{
+      document.querySelectorAll('input.input, input[type="text"], input:not([type])').forEach(el=>{
+        const type=(el.getAttribute('type')||'text').toLowerCase();
+        if(['file','password','checkbox','radio','date','email'].includes(type))return;
+        const ctx=[el.placeholder,el.name,el.id,el.getAttribute('aria-label'),el.closest('label')?.innerText,el.closest('td')?.previousElementSibling?.innerText].filter(Boolean).join(' ');
+        if(numericHint.test(ctx)){
+          el.setAttribute('inputmode',/tiền|giá|amount|cash|bank|price/i.test(ctx)?'numeric':'decimal');
+          el.setAttribute('autocomplete','off');
+        }
+      });
+    };
+    apply();
+    const mo=new MutationObserver(apply);
+    mo.observe(document.body,{childList:true,subtree:true});
+    return()=>mo.disconnect();
+  },[]);
 
   const onLoggedIn=(data)=>{
     localStorage.setItem('token',data.token);

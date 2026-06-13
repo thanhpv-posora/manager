@@ -25,17 +25,4 @@ function requireOwnCustomer(req, customerId) {
   }
 }
 
-module.exports={customerScope,customerWhere,requireOwnCustomer,productOwnerWhere,productOwnerAndParams,isAdmin};
-
-
-function productOwnerWhere(user, alias='p'){
-  if(!user || user.role==='ADMIN') return {sql:'', params:[]};
-  const col = alias ? `${alias}.created_by` : 'created_by';
-  return {sql:` AND ${col}=?`, params:[user.id]};
-}
-
-function productOwnerAndParams(user, alias='p'){
-  return productOwnerWhere(user, alias);
-}
-
-function isAdmin(user){ return !!user && user.role==='ADMIN'; }
+module.exports={customerScope,customerWhere,requireOwnCustomer};

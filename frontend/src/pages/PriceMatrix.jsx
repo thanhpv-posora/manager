@@ -76,7 +76,7 @@ export default function PriceMatrix(){
           <tbody>{rows.map((r,idx)=><tr key={r.product_id} draggable onDragStart={()=>setDragId(r.product_id)} onDragOver={e=>e.preventDefault()} onDrop={()=>handleDrop(r.product_id)} style={{cursor:'move'}}>
             <td>☰</td>
             <td><input type="checkbox" checked={!!r.in_catalog} onChange={e=>setRow(idx,{in_catalog:e.target.checked})}/></td>
-            <td><input className="input" style={{width:70}} value={idx+1} readOnly/></td>
+            <td><input className="input" inputMode="numeric" style={{width:70}} value={idx+1} readOnly/></td>
             <td><b>{r.product_name}</b><br/><span className="muted">{r.category_name} · {r.product_code}</span></td>
             <td>{moneyVnd(r.default_sale_price)}</td>
             <td><MoneyInput value={r.private_price??r.effective_price??0} onChange={v=>setRow(idx,{private_price:v})}/></td>

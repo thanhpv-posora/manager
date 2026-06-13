@@ -176,7 +176,7 @@ export default function Products(){
         <h3>{editing?'Sửa mặt hàng':'Thêm mặt hàng'}</h3>
         <p className="muted">Hệ thống nhớ mặc định theo user: nhóm hàng, đơn vị, kiểu tồn kho, âm kho.</p>
         <div className="form-grid">
-          <label className="field-label"><span>Mã hàng</span><input className="input" placeholder="Ví dụ: BO0001" value={form.product_code||''} onChange={e=>updateForm({product_code:e.target.value})}/></label>
+          <label className="field-label"><span>Mã hàng</span><input className="input" placeholder="Để trống để tự sinh theo user, ví dụ: U12-BO0001" value={form.product_code||''} onChange={e=>updateForm({product_code:e.target.value})}/></label>
           <label className="field-label"><span>Tên mặt hàng</span><input className="input" placeholder="Ví dụ: Búp bò, Sườn bò, Vụn..." value={form.name||''} onChange={e=>updateForm({name:e.target.value})}/></label>
 
           <label className="field-label"><span>Nhóm hàng</span><select className="select" value={form.category_id||''} onChange={e=>updateForm({category_id:e.target.value},true)}>
@@ -189,8 +189,8 @@ export default function Products(){
           <label className="field-label"><span>Giá bán mặc định</span><MoneyInput placeholder="Ví dụ: 120,000" value={form.sale_price??''} onChange={v=>updateForm({sale_price:v})}/></label>
           <label className="field-label"><span>Giá vốn / giá nhập</span><MoneyInput placeholder="Ví dụ: 90,000" value={form.cost_price??''} onChange={v=>updateForm({cost_price:v})}/></label>
 
-          <label className="field-label"><span>Tồn kho ban đầu</span><input className="input" placeholder="Ví dụ: 0" value={form.stock_quantity??''} inputMode="decimal" onChange={e=>updateForm({stock_quantity:e.target.value})}/></label>
-          <label className="field-label"><span>Ngưỡng cảnh báo tồn thấp</span><input className="input" placeholder="Ví dụ: 5" value={form.low_stock_threshold??''} inputMode="decimal" onChange={e=>updateForm({low_stock_threshold:e.target.value})}/></label>
+          <label className="field-label"><span>Tồn kho ban đầu</span><input className="input" placeholder="Ví dụ: 0" inputMode="decimal" pattern="[0-9.,+\-\s]*" autoComplete="off" value={form.stock_quantity??''} onChange={e=>updateForm({stock_quantity:e.target.value})}/></label>
+          <label className="field-label"><span>Ngưỡng cảnh báo tồn thấp</span><input className="input" placeholder="Ví dụ: 5" inputMode="decimal" pattern="[0-9.,+\-\s]*" autoComplete="off" value={form.low_stock_threshold??''} onChange={e=>updateForm({low_stock_threshold:e.target.value})}/></label>
 
           <label className="field-label"><span>Kiểu quản tồn kho</span><select className="select" value={form.inventory_mode||'STOCK'} onChange={e=>updateForm({inventory_mode:e.target.value},true)}>
             <option value="STOCK">Quản tồn kho chuẩn: gà/vịt/thịt đông lạnh</option>

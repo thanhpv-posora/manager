@@ -177,7 +177,8 @@ export default function AIVoicePOSPanel({sessionId='POS_VOICE_001'}){
   const[collapsed,setCollapsed]=useState(true);
   const[message,setMessage]=useState('');
   const[customerType,setCustomerType]=useState('REGULAR');
-  const[loading,setLoading]=useState(false);
+  const[sending,setSending]=useState(false);
+  const[confirmSaving,setConfirmSaving]=useState(false);
   const[listening,setListening]=useState(false);
   const[continuous,setContinuous]=useState(false);
   const[result,setResult]=useState(null);
@@ -209,7 +210,7 @@ export default function AIVoicePOSPanel({sessionId='POS_VOICE_001'}){
   const send=async(text=message, extraPayload={})=>{
     let m=String(text||'').trim();
     if(!m)return null;
-    setLoading(true);setError('');
+    setSending(true);setError('');
     if(!extraPayload.confirm && !/^ok|luu|lưu$/i.test(m)) setResult(null);
     try{
       const payload={session_id:sessionId,message:m,customer_type:customerType,voice_mode:'CONTINUOUS',...extraPayload};
@@ -223,15 +224,38 @@ export default function AIVoicePOSPanel({sessionId='POS_VOICE_001'}){
       setError(msg);
       return null;
     }
-    finally{setLoading(false)}
+    finally{setSending(false)}
   };
 
   const confirm=async()=>{
-    const data=await send('ok',{confirm:true});
-    if(data?.confirmed){
-      setMessage('');
-      messageRef.current='';
-      setPartial('');
+    if(confirmSaving) return;
+    setConfirmSaving(true);
+    setError('');
+    try{
+      const payload={
+        session_id: sessionId,
+        draft_session_id: result?.draft_session_id || result?.draft?.draft_session_id || result?.id || undefined
+      };
+      const r=await api.post('/ai/orders/confirm-draft', payload);
+      const data=r.data?.data||r.data;
+      setResult(data);
+      if(data?.confirmed || data?.order_id || data?.order_code){
+        const confirmedData=data.confirmed||data;
+        setResult({confirmed: confirmedData});
+        setMessage('');
+        messageRef.current='';
+        setPartial('');
+        recentVoiceRef.current=[];
+      }else if(data?.success===false || data?.message){
+        setError(friendlyError(data?.message||'Chưa lưu được bill.'));
+      }
+      return data;
+    }catch(e){
+      const msg=friendlyError(e.response?.data?.message||e.message);
+      setError(msg);
+      return null;
+    }finally{
+      setConfirmSaving(false);
     }
   };
   const cancel=async()=>{
@@ -444,21 +468,21 @@ export default function AIVoicePOSPanel({sessionId='POS_VOICE_001'}){
         <p>Mic có thể mở liên tục. Đọc từng món, nói <b>xong</b> để AI lập bill nháp.</p>
       </div>
       <div className="actions">
-        <button className="btn secondary" onClick={()=>setCollapsed(!collapsed)}>{collapsed?'Mở AI Voice POS':'Thu gọn'}</button>
-        {!collapsed&&<button className="btn" onClick={()=>startVoice(true)} disabled={listening||loading||!hasSpeech()}>{listening?'Đang nghe liên tục...':'🎤 Nói liên tục'}</button>}
-        {!collapsed&&listening&&<button className="btn secondary" onClick={stopVoice}>Dừng mic</button>}
+        <button type="button" className="btn secondary" onClick={()=>setCollapsed(!collapsed)}>{collapsed?'Mở AI Voice POS':'Thu gọn'}</button>
+        {!collapsed&&<button type="button" className="btn" onClick={()=>startVoice(true)} disabled={listening||sending||confirmSaving||!hasSpeech()}>{listening?'Đang nghe liên tục...':'🎤 Nói liên tục'}</button>}
+        {!collapsed&&listening&&<button type="button" className="btn secondary" onClick={stopVoice}>Dừng mic</button>}
       </div>
     </div>
 
     {!collapsed&&<>
     <div className="ai-type-switch">
-      <button className={customerType==='REGULAR'?'active':''} onClick={()=>setCustomerType('REGULAR')}>Khách thường</button>
-      <button className={customerType==='WALK_IN'?'active':''} onClick={()=>setCustomerType('WALK_IN')}>Khách vãng lai</button>
+      <button type="button" className={customerType==='REGULAR'?'active':''} onClick={()=>setCustomerType('REGULAR')}>Khách thường</button>
+      <button type="button" className={customerType==='WALK_IN'?'active':''} onClick={()=>setCustomerType('WALK_IN')}>Khách vãng lai</button>
     </div>
 
     <div className="ai-voice-pos-input-row">
       <textarea className="input ai-voice-textarea" rows={5} value={message} onChange={e=>{setMessage(e.target.value);messageRef.current=e.target.value}} placeholder={customerType==='REGULAR'?'Ví dụ:\nHồng Hiền\nxg ống 5 ký\nbúp 2 ký\ngầu 1 ký\nxong':'Ví dụ:\nkhách vãng lai\ngầu 2 ký\ntiền mặt 340k\nxong'}/>
-      <button className="btn secondary" onClick={()=>send()} disabled={loading}>{loading?'Đang xử lý...':'Gửi AI'}</button>
+      <button className="btn secondary" onClick={()=>send()} type="button" disabled={sending||confirmSaving}>{sending?'Đang xử lý...':'Gửi AI'}</button>
     </div>
 
     {partial&&<div className="ai-live-preview"><span>Đang nghe:</span><b>{partial}</b></div>}
@@ -469,14 +493,14 @@ export default function AIVoicePOSPanel({sessionId='POS_VOICE_001'}){
     </div>}
 
     <div className="ai-voice-pos-examples">
-      <button onClick={()=>{const t='Hong Hien\nxg ong 5 ky\nxg suon 3 ky\nbup 2 ky\ngau 1 ky';setCustomerType('REGULAR');setMessage(t);messageRef.current=t}}>Mẫu bill nhiều món</button>
-      <button onClick={()=>applyVoiceLine('xoa gau')}>Xoá gầu</button>
-      <button onClick={()=>applyVoiceLine('xoa dong cuoi')}>Xoá dòng cuối</button>
-      <button onClick={()=>{const t='doi bup 3 ky';setMessage(appendLine(message,t));messageRef.current=appendLine(messageRef.current,t)}}>Đổi búp 3kg</button>
-      <button onClick={clearAll}>Xoá tất cả</button>
+      <button type="button" onClick={()=>{const t='Hong Hien\nxg ong 5 ky\nxg suon 3 ky\nbup 2 ky\ngau 1 ky';setCustomerType('REGULAR');setMessage(t);messageRef.current=t}}>Mẫu bill nhiều món</button>
+      <button type="button" onClick={()=>applyVoiceLine('xoa gau')}>Xoá gầu</button>
+      <button type="button" onClick={()=>applyVoiceLine('xoa dong cuoi')}>Xoá dòng cuối</button>
+      <button type="button" onClick={()=>{const t='doi bup 3 ky';setMessage(appendLine(message,t));messageRef.current=appendLine(messageRef.current,t)}}>Đổi búp 3kg</button>
+      <button type="button" onClick={clearAll}>Xoá tất cả</button>
     </div>
 
-    {error&&<div className="ai-alert danger">{error}<div style={{marginTop:10}}><button className="btn secondary" onClick={investigateBug} disabled={bugLoading}>{bugLoading?'AI đang điều tra...':'AI điều tra lỗi'}</button></div></div>}
+    {error&&<div className="ai-alert danger">{error}<div style={{marginTop:10}}><button type="button" className="btn secondary" onClick={investigateBug} disabled={bugLoading}>{bugLoading?'AI đang điều tra...':'AI điều tra lỗi'}</button></div></div>}
 
     {bugInfo&&<div className="ai-voice-pos-result">
       <div className="ai-result-top"><b>AI điều tra lỗi</b><span>{bugInfo.error_id?'#'+bugInfo.error_id:'Log gần nhất'}</span></div>
@@ -511,8 +535,8 @@ export default function AIVoicePOSPanel({sessionId='POS_VOICE_001'}){
       {draft.paid_amount!=null&&<p><b>Đã thu:</b> {Number(draft.paid_amount||0).toLocaleString('en-US')}đ</p>}
       {draft.debt_amount!=null&&<p><b>Công nợ:</b> {Number(draft.debt_amount||0).toLocaleString('en-US')}đ</p>}
       <div className="actions">
-        <button className="btn" onClick={confirm} disabled={loading||draft.can_confirm===false}>Xác nhận lưu</button>
-        <button className="btn secondary" onClick={cancel} disabled={loading}>Huỷ nháp</button>
+        <button className="btn" type="button" onClick={confirm} disabled={confirmSaving||sending||draft.can_confirm===false}>{confirmSaving?'Đang lưu...':'Xác nhận lưu'}</button>
+        <button type="button" className="btn secondary" onClick={cancel} disabled={sending||confirmSaving}>Huỷ nháp</button>
       </div>
     </div>}
     </>}

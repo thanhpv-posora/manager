@@ -1221,7 +1221,21 @@ async function handleChat(message, options = {}) {
 
   // Confirm newest pending draft: order draft or payment draft.
   if (isConfirmMessage(message)) {
-    const latestSession = await aiSessionService.getLatestPendingSession(sessionId);
+    let latestSession = await aiSessionService.getLatestPendingSession(sessionId);
+
+    // Safety fallback for Voice POS UI builds that confirm with a different session_id.
+    // Only use the fallback when there is exactly one recent open DRAFT to avoid saving the wrong bill.
+    if (!latestSession) {
+      const recentDrafts = await aiSessionService.getRecentDraftSessions(5);
+      if (recentDrafts.length === 1) {
+        latestSession = recentDrafts[0];
+      } else if (recentDrafts.length > 1) {
+        console.warn('[AI_CHAT_CONFIRM_DRAFT_AMBIGUOUS]', JSON.stringify({
+          requested_session_id: sessionId,
+          recent_drafts: recentDrafts.map(d => ({ id: d.id, session_id: d.session_id, customer_id: d.customer_id, created_at: d.created_at }))
+        }));
+      }
+    }
 
     if (!latestSession) {
       throw new Error('Không có nháp để xác nhận');
@@ -1267,7 +1281,9 @@ async function handleChat(message, options = {}) {
 
     return {
       intent: 'CONFIRM_PREVIOUS_ORDER',
-      confirmed
+      message: 'Đã lưu bill thành công.',
+      confirmed,
+      draft_session_id: latestSession.id
     };
   }
 
@@ -1361,6 +1377,7 @@ async function handleChat(message, options = {}) {
     intent: 'CREATE_ORDER_DRAFT',
     parsed: draftPayload,
     draft,
+    draft_session_id: draftSessionId,
     requires_confirm: draft.can_confirm !== false,
     requires_payment: draft.requires_payment === true,
     confirm_message: draft.can_confirm === false ? 'Nháp chưa đủ điều kiện lưu bill' : 'Xác nhận lưu bill?'

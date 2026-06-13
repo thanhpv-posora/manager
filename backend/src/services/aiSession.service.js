@@ -87,6 +87,27 @@ async function getLatestPendingSession(sessionId) {
   };
 }
 
+async function getRecentDraftSessions(limit = 5) {
+  const [rows] = await db.query(`
+    SELECT *
+    FROM ai_chat_sessions
+    WHERE status = 'DRAFT'
+      AND created_at >= DATE_SUB(NOW(), INTERVAL 2 HOUR)
+    ORDER BY id DESC
+    LIMIT ?
+  `, [Number(limit) || 5]);
+
+  return rows.map((row) => ({
+    ...row,
+    draft_json: row.draft_json ? JSON.parse(row.draft_json) : null
+  }));
+}
+
+async function getLatestAnyDraftSession() {
+  const rows = await getRecentDraftSessions(10);
+  if (rows.length === 0) return null;
+  return rows[0];
+}
 
 async function updateDraftSession(id, draft) {
   await db.query(`
@@ -127,5 +148,7 @@ module.exports = {
   updateDraftSession,
   markSessionConfirmed,
   markSessionCancelled,
-  cancelOpenOrderDrafts
+  cancelOpenOrderDrafts,
+  getRecentDraftSessions,
+  getLatestAnyDraftSession
 };

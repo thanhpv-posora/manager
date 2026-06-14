@@ -75,9 +75,6 @@ export default function POSProductTableAgent({
                     <input
                       ref={el => qtyRefs.current[i.product_id] = el}
                       className="input pos-agent-qty-input"
-                      inputMode="decimal"
-                      pattern="[0-9.,+\-\s]*"
-                      autoComplete="off"
                       data-pos-qty="1"
                       value={i.quantity_expr || ''}
                       onKeyDown={e => {

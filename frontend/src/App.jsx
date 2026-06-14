@@ -53,25 +53,6 @@ export default function App(){
 
   useEffect(()=>{ if(token) refreshPermissions(); },[token]);
 
-  useEffect(()=>{
-    const numericHint=/giá|tiền|kg|kí|ký|số lượng|số tiền|sl|tồn|ngưỡng|đơn giá|chuyển khoản|tiền mặt|góp|nợ|qty|quantity|price|amount|cash|bank/i;
-    const apply=()=>{
-      document.querySelectorAll('input.input, input[type="text"], input:not([type])').forEach(el=>{
-        const type=(el.getAttribute('type')||'text').toLowerCase();
-        if(['file','password','checkbox','radio','date','email'].includes(type))return;
-        const ctx=[el.placeholder,el.name,el.id,el.getAttribute('aria-label'),el.closest('label')?.innerText,el.closest('td')?.previousElementSibling?.innerText].filter(Boolean).join(' ');
-        if(numericHint.test(ctx)){
-          el.setAttribute('inputmode',/tiền|giá|amount|cash|bank|price/i.test(ctx)?'numeric':'decimal');
-          el.setAttribute('autocomplete','off');
-        }
-      });
-    };
-    apply();
-    const mo=new MutationObserver(apply);
-    mo.observe(document.body,{childList:true,subtree:true});
-    return()=>mo.disconnect();
-  },[]);
-
   const onLoggedIn=(data)=>{
     localStorage.setItem('token',data.token);
     localStorage.setItem('user',JSON.stringify(data.user));

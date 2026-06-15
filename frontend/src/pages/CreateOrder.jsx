@@ -50,6 +50,8 @@ export default function CreateOrder(){
   const[error,setError]=useState('');
   const[filter,setFilter]=useState('');
   const[customerOpen,setCustomerOpen]=useState(false);
+  const[saveNotice,setSaveNotice]=useState('');
+  const[pendingFocusQty,setPendingFocusQty]=useState(false);
 
   const[quickOpen,setQuickOpen]=useState(false);
   const[voiceOpen,setVoiceOpen]=useState(false);
@@ -173,9 +175,43 @@ export default function CreateOrder(){
     }));
   };
 
+
+  const reloadCustomerCatalogClearQty=async(id)=>{
+    if(!id){setItems([]);return;}
+    const r=(await api.get('/price-matrix/'+id+'/catalog/order')).data;
+    setSource(r.source);
+    setItems((r.products||[]).map((p,idx)=>({
+      ...p,
+      quantity_expr:'',
+      quantity:0,
+      sale_price:p.sale_price,
+      selected:false,
+      sort_order:p.sort_order||idx+1
+    })));
+    setPendingFocusQty(true);
+  };
+
+  const focusFirstQtyInput=()=>{
+    setTimeout(()=>{
+      const first=shown.find(x=>qtyRefs.current[x.product_id]);
+      if(first&&qtyRefs.current[first.product_id]){
+        qtyRefs.current[first.product_id].focus();
+        qtyRefs.current[first.product_id].select?.();
+      }
+    },80);
+  };
+
   const loadCustomerCatalog=async(id)=>{
+    if(selected.length && id && String(id)!==String(cid)){
+      const ok=confirm('Bill hiện tại đang có số lượng. Đổi khách sẽ xóa bill đang nhập. Tiếp tục?');
+      if(!ok)return;
+    }
     setCid(id);
     setMsg('');
+    setSaveNotice('');
+    setPaid(0);
+    setCashAmount(0);
+    setBankAmount(0);
     setImportText('');
     setImportPreview([]);
     setImportMsg('');
@@ -202,6 +238,7 @@ export default function CreateOrder(){
       selected:false,
       sort_order:p.sort_order||idx+1
     })));
+    setPendingFocusQty(true);
   };
 
   const update=(idx,patch)=>{
@@ -223,6 +260,19 @@ export default function CreateOrder(){
       String(x.category_name).toLowerCase().includes(q)
     );
   },[items,filter]);
+
+  useEffect(()=>{
+    if(!pendingFocusQty||!cid||!shown.length)return;
+    const t=setTimeout(()=>{
+      const first=shown.find(x=>qtyRefs.current[x.product_id]);
+      if(first&&qtyRefs.current[first.product_id]){
+        qtyRefs.current[first.product_id].focus();
+        qtyRefs.current[first.product_id].select?.();
+      }
+      setPendingFocusQty(false);
+    },120);
+    return()=>clearTimeout(t);
+  },[pendingFocusQty,cid,shown.length]);
 
   const selected=items
     .map(i=>({...i,quantity:calcQtyExpression(i.quantity_expr)||Number(i.quantity||0)}))
@@ -323,11 +373,17 @@ export default function CreateOrder(){
       });
     }
 
-    setMsg(r.data.order_code);
-    await reloadCustomerCatalogKeepQty(cid);
+    const code=r.data.order_code;
+    setMsg(code);
+    setSaveNotice(`Đã lưu ${code}. Đang giữ khách ${currentCustomer?.name||''}, có thể nhập bill tiếp theo ngay.`);
+    await reloadCustomerCatalogClearQty(cid);
     setPaid(0);
     setCashAmount(0);
     setBankAmount(0);
+    setImportText('');
+    setImportPreview([]);
+    setImportMsg('');
+    focusFirstQtyInput();
   };
 
   const loadNextCode=async(categoryId)=>{
@@ -468,6 +524,24 @@ export default function CreateOrder(){
     setMsg('');
   };
 
+
+  const startChangeCustomer=()=>{
+    if(selected.length){
+      const ok=confirm('Bill hiện tại đang có số lượng. Đổi khách sẽ xóa bill đang nhập. Tiếp tục?');
+      if(!ok)return;
+    }
+    setCid('');
+    setItems([]);
+    setFilter('');
+    setSource('');
+    setMsg('');
+    setSaveNotice('');
+    setPaid(0);
+    setCashAmount(0);
+    setBankAmount(0);
+    setCustomerOpen(true);
+  };
+
   const previewImport=(sourceType='text')=>{
     if(!cid)return alert('Chọn khách trước');
     const rows=parseOrderText(importText,sourceType);
@@ -572,9 +646,6 @@ export default function CreateOrder(){
           setDateOpen={setDateOpen}
         />
 
-        <AIBusinessPanel compact title="AI nhập hàng / tồn kho"/>
-        <AIVoicePOSPanel sessionId={`POS_${cid||'NO_CUSTOMER'}`}/>
-
         <div className="pos-agent-layout pos-real-layout">
           <main className="pos-agent-main pos-real-main">
             <div className="card pos-customer-card pos-customer-collapse-card">
@@ -627,7 +698,7 @@ export default function CreateOrder(){
                     </select>
                     <input className="input" placeholder="Mã tự sinh" value={quick.product_code||''} onChange={e=>setQuick({...quick,product_code:e.target.value})}/>
                     <input className="input" placeholder="Tên mặt hàng mới" value={quick.name||''} onChange={e=>setQuick({...quick,name:e.target.value})}/>
-                    <input className="input" placeholder="Đơn vị" value={quick.unit||'kg'} onChange={e=>setQuick({...quick,unit:e.target.value})}/>
+                    <input inputMode="decimal" className="input" placeholder="Đơn vị" value={quick.unit||'kg'} onChange={e=>setQuick({...quick,unit:e.target.value})}/>
                     <select className="select" value={quick.inventory_mode||'CARCASS_PART'} onChange={e=>setQuick({...quick,inventory_mode:e.target.value,allow_negative_stock:e.target.value==='STOCK'?0:1})}>
                       <option value="STOCK">Quản tồn kho</option>
                       <option value="NON_STOCK">Bò xô không kiểm tồn</option>
@@ -687,7 +758,7 @@ export default function CreateOrder(){
                               <td><b>{r.name||r.raw||''}</b><br/><span className="muted">{r.raw||''}</span></td>
                               <td>{r.product?<span>{r.product.product_code} - {r.product.product_name}</span>:<span className="muted">Chưa khớp danh mục</span>}</td>
                               <td>
-                                <input className="input" style={{width:120}} value={r.qtyExpr||r.quantity_expr||r.qty||''} onChange={e=>updateImportRow(idx,{qtyExpr:e.target.value})}/>
+                                <input inputMode="decimal" className="input" style={{width:120}} value={r.qtyExpr||r.quantity_expr||r.qty||''} onChange={e=>updateImportRow(idx,{qtyExpr:e.target.value})}/>
                               </td>
                               <td>
                                 {r.errors?.length?<span>🔴 {r.errors.join(', ')}</span>:r.warnings?.length?<span>🟡 {r.warnings.join(', ')}</span>:<span>🟢 OK</span>}
@@ -711,6 +782,22 @@ export default function CreateOrder(){
               )}
             </div>
 
+            {currentCustomer&&(
+              <div className="pos-customer-session-banner">
+                <div>
+                  <span className="pos-session-label">Đang tạo bill cho</span>
+                  <b>{currentCustomer.name}</b>
+                  <span className="muted"> • {billCalendarType==='LUNAR'?'Âm lịch':'Dương lịch'} {billCalendarType==='LUNAR'?billLunarDateText:orderDate}</span>
+                </div>
+                <div className="actions">
+                  <button type="button" className="btn secondary" onClick={focusFirstQtyInput}>Nhập bill tiếp</button>
+                  <button type="button" className="btn secondary" onClick={startChangeCustomer}>Đổi khách</button>
+                </div>
+              </div>
+            )}
+
+            {saveNotice&&<div className="ai-alert success pos-save-session-notice">✔ {saveNotice}</div>}
+
             <POSProductTableAgent
               shown={shown}
               items={items}
@@ -720,6 +807,7 @@ export default function CreateOrder(){
               cid={cid}
               qtyRefs={qtyRefs}
               focusNext={focusNext}
+              focusFirstFilteredItem={focusFirstQtyInput}
               updateQtyExpr={updateQtyExpr}
               dragId={dragId}
               setDragId={setDragId}
@@ -743,6 +831,11 @@ export default function CreateOrder(){
             disabled={!cid||!selected.length}
             message={msg}
           />
+        </div>
+
+        <div className="pos-bottom-ai-tools">
+          <AIBusinessPanel compact title="AI nhập hàng / tồn kho"/>
+          <AIVoicePOSPanel sessionId={`POS_${cid||'NO_CUSTOMER'}`}/>
         </div>
       </div>
     </SafePage>

@@ -2,7 +2,7 @@ import React,{useEffect,useMemo,useState}from'react';
 import {Bot,RefreshCw,PackagePlus,CheckCircle2,XCircle,AlertTriangle,Users,BarChart3,ShoppingCart} from'lucide-react';
 import api from'../../api/api';
 
-const money=n=>Number(n||0).toLocaleString('vi-VN')+'đ';
+const money=n=>Number(n||0).toLocaleString('en-US')+'đ';
 const qty=n=>Number(n||0).toLocaleString('vi-VN',{maximumFractionDigits:3});
 
 function getSessionId(){
@@ -79,7 +79,7 @@ export default function AIActionCenter({anonymizeDebtors=false}){
     {notice&&<div className="ai-success">{notice}</div>}
 
     <div className="ai-kpi-strip">
-      <div><span>Bill hôm nay</span><b>{Number(today.total_orders||0).toLocaleString('vi-VN')}</b></div>
+      <div><span>Bill hôm nay</span><b>{Number(today.total_orders||0).toLocaleString('en-US')}</b></div>
       <div><span>Doanh thu</span><b>{money(today.total_amount)}</b></div>
       <div><span>Đã thu</span><b>{money(today.paid_amount)}</b></div>
       <div><span>Công nợ mới</span><b>{money(today.debt_amount)}</b></div>

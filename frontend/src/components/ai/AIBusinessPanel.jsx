@@ -1,8 +1,8 @@
 import React,{useMemo,useState}from'react';
-import {Bot,Send,CheckCircle2,XCircle,PackagePlus,BarChart3,AlertTriangle,Users} from'lucide-react';
+import {Bot,Send,CheckCircle2,XCircle,PackagePlus,BarChart3,AlertTriangle,Users,ChevronDown,ChevronUp} from'lucide-react';
 import api from'../../api/api';
 
-const money=n=>Number(n||0).toLocaleString('vi-VN')+'đ';
+const money=n=>Number(n||0).toLocaleString('en-US')+'đ';
 const qty=n=>Number(n||0).toLocaleString('vi-VN',{maximumFractionDigits:3});
 
 function getSessionId(){
@@ -26,6 +26,7 @@ export default function AIBusinessPanel({compact=false,title='AI điều hành M
   const[error,setError]=useState('');
   const[result,setResult]=useState(null);
   const[history,setHistory]=useState([]);
+  const[collapsed,setCollapsed]=useState(true);
   const sessionId=useMemo(getSessionId,[]);
 
   const send=async(text)=>{
@@ -57,15 +58,20 @@ export default function AIBusinessPanel({compact=false,title='AI điều hành M
   const today=result?.today||null;
   const canConfirm=!!result?.requires_confirm||!!result?.can_confirm;
 
-  return <div className={'card ai-business-panel '+(compact?'ai-compact':'')}>
-    <div className="ai-panel-head">
+  return <div className={'card ai-business-panel '+(compact?'ai-compact ':'')+(collapsed?'ai-collapsed':'')}>
+    <div className="ai-panel-head ai-collapsible-head" onClick={()=>setCollapsed(!collapsed)}>
       <div>
         <h3><Bot size={18}/> {title}</h3>
-        <p className="muted">Dùng qua API /ai/chat: hỏi tồn kho, đề xuất nhập hàng, xác nhận tạo phiếu.</p>
+        {!collapsed&&<p className="muted">Dùng qua API /ai/chat: hỏi tồn kho, đề xuất nhập hàng, xác nhận tạo phiếu.</p>}
+        {collapsed&&<p className="muted">Bấm mở khi cần hỏi tồn kho / đề xuất nhập hàng.</p>}
       </div>
-      <span className="ai-session">{sessionId}</span>
+      <div className="ai-head-actions">
+        {!collapsed&&<span className="ai-session">{sessionId}</span>}
+        <button type="button" className="btn secondary ai-toggle-btn" onClick={e=>{e.stopPropagation();setCollapsed(!collapsed)}}>{collapsed?<><ChevronDown size={16}/> Mở AI</>:<><ChevronUp size={16}/> Thu gọn</>}</button>
+      </div>
     </div>
 
+    {!collapsed&&<>
     <div className="ai-input-row">
       <input className="input" value={message} onChange={e=>setMessage(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')send()}} placeholder="Ví dụ: nên nhập hàng gì tuần tới"/>
       <button className="btn" onClick={()=>send()} disabled={loading}><Send size={16}/> {loading?'Đang xử lý':'Gửi AI'}</button>
@@ -90,7 +96,7 @@ export default function AIBusinessPanel({compact=false,title='AI điều hành M
 
       {result?.intent==='AI_DASHBOARD_SUMMARY'&&<div className="ai-dashboard-summary">
         {today&&<div className="ai-summary-grid">
-          <div className="ai-summary-card"><span>Bill hôm nay</span><b>{Number(today.total_orders||0).toLocaleString('vi-VN')}</b></div>
+          <div className="ai-summary-card"><span>Bill hôm nay</span><b>{Number(today.total_orders||0).toLocaleString('en-US')}</b></div>
           <div className="ai-summary-card"><span>Doanh thu</span><b>{money(today.total_amount)}</b></div>
           <div className="ai-summary-card"><span>Đã thu</span><b>{money(today.paid_amount)}</b></div>
           <div className="ai-summary-card"><span>Công nợ mới</span><b>{money(today.debt_amount)}</b></div>
@@ -158,5 +164,6 @@ export default function AIBusinessPanel({compact=false,title='AI điều hành M
         <b>{h.role==='user'?'Bạn':'AI'}:</b> {h.text}
       </div>)}
     </div>}
+    </>}
   </div>;
 }

@@ -118,6 +118,9 @@ CREATE TABLE IF NOT EXISTS suppliers (
   phone VARCHAR(50),
   address TEXT,
   note TEXT,
+  male_price DECIMAL(15,2) NOT NULL DEFAULT 0,
+  female_price DECIMAL(15,2) NOT NULL DEFAULT 0,
+  fragment_price DECIMAL(15,2) NOT NULL DEFAULT 0,
   is_active TINYINT(1) NOT NULL DEFAULT 1,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP
@@ -132,9 +135,15 @@ CREATE TABLE IF NOT EXISTS purchase_lots (
   raw_weight DECIMAL(15,3) NOT NULL DEFAULT 0,
   bone_weight DECIMAL(15,3) NOT NULL DEFAULT 0,
   deducted_weight DECIMAL(15,3) NOT NULL DEFAULT 0,
-  total_animals INT NOT NULL DEFAULT 0,
-  male_animals INT NOT NULL DEFAULT 0,
-  female_animals INT NOT NULL DEFAULT 0,
+  damage_weight DECIMAL(15,3) NOT NULL DEFAULT 0,
+  fat_weight DECIMAL(15,3) NOT NULL DEFAULT 0,
+  fragment_weight DECIMAL(15,3) NOT NULL DEFAULT 0,
+  fragment_price DECIMAL(15,2) NOT NULL DEFAULT 0,
+  fragment_cost DECIMAL(15,2) NOT NULL DEFAULT 0,
+  other_deduct_weight DECIMAL(15,3) NOT NULL DEFAULT 0,
+  total_animals DECIMAL(15,1) NOT NULL DEFAULT 0,
+  male_animals DECIMAL(15,1) NOT NULL DEFAULT 0,
+  female_animals DECIMAL(15,1) NOT NULL DEFAULT 0,
   deduct_mode VARCHAR(30) NOT NULL DEFAULT 'PER_ANIMAL',
   deduct_kg_per_animal DECIMAL(15,3) NOT NULL DEFAULT 0,
   male_price DECIMAL(15,2) NOT NULL DEFAULT 0,
@@ -558,6 +567,10 @@ CREATE TABLE IF NOT EXISTS delete_logs (
     await safeAddColumn(conn, 'products', 'carcass_group', 'carcass_group VARCHAR(100) NULL');
     await safeAddColumn(conn, 'products', 'allow_negative_stock', 'allow_negative_stock TINYINT(1) NOT NULL DEFAULT 0');
     await safeAddColumn(conn, 'products', 'default_supplier_id', 'default_supplier_id BIGINT NULL');
+    await safeAddColumn(conn, 'suppliers', 'male_price', 'male_price DECIMAL(15,2) NOT NULL DEFAULT 0');
+    await safeAddColumn(conn, 'suppliers', 'female_price', 'female_price DECIMAL(15,2) NOT NULL DEFAULT 0');
+    await safeAddColumn(conn, 'suppliers', 'fragment_price', 'fragment_price DECIMAL(15,2) NOT NULL DEFAULT 0');
+
     await safeAddColumn(conn, 'purchase_orders', 'source', "source VARCHAR(50) NOT NULL DEFAULT 'MANUAL'");
     await safeAddColumn(conn, 'purchase_orders', 'del_flg', 'del_flg TINYINT(1) NOT NULL DEFAULT 0');
     await safeAddColumn(conn, 'purchase_order_items', 'received_quantity', 'received_quantity DECIMAL(15,3) NOT NULL DEFAULT 0');
@@ -571,11 +584,15 @@ CREATE TABLE IF NOT EXISTS delete_logs (
     await safeAddColumn(conn, 'purchase_lots', 'deducted_weight_expr', 'deducted_weight_expr TEXT NULL');
     await safeAddColumn(conn, 'purchase_lots', 'damage_weight', 'damage_weight DECIMAL(15,3) NOT NULL DEFAULT 0');
     await safeAddColumn(conn, 'purchase_lots', 'fat_weight', 'fat_weight DECIMAL(15,3) NOT NULL DEFAULT 0');
+    await safeAddColumn(conn, 'purchase_lots', 'fragment_weight', 'fragment_weight DECIMAL(15,3) NOT NULL DEFAULT 0');
+    await safeAddColumn(conn, 'purchase_lots', 'fragment_price', 'fragment_price DECIMAL(15,2) NOT NULL DEFAULT 0');
+    await safeAddColumn(conn, 'purchase_lots', 'fragment_cost', 'fragment_cost DECIMAL(15,2) NOT NULL DEFAULT 0');
     await safeAddColumn(conn, 'purchase_lots', 'other_deduct_weight', 'other_deduct_weight DECIMAL(15,3) NOT NULL DEFAULT 0');
     await safeAddColumn(conn, 'purchase_lots', 'deduct_note', 'deduct_note TEXT NULL');
-  await safeAddColumn(conn, 'purchase_lots', 'total_animals', 'total_animals INT NOT NULL DEFAULT 0');
-  await safeAddColumn(conn, 'purchase_lots', 'male_animals', 'male_animals INT NOT NULL DEFAULT 0');
-  await safeAddColumn(conn, 'purchase_lots', 'female_animals', 'female_animals INT NOT NULL DEFAULT 0');
+  await safeAddColumn(conn, 'purchase_lots', 'total_animals', 'total_animals DECIMAL(15,1) NOT NULL DEFAULT 0');
+  await safeAddColumn(conn, 'purchase_lots', 'male_animals', 'male_animals DECIMAL(15,1) NOT NULL DEFAULT 0');
+  await safeAddColumn(conn, 'purchase_lots', 'female_animals', 'female_animals DECIMAL(15,1) NOT NULL DEFAULT 0');
+  try{ await conn.query("ALTER TABLE purchase_lots MODIFY total_animals DECIMAL(15,1) NOT NULL DEFAULT 0, MODIFY male_animals DECIMAL(15,1) NOT NULL DEFAULT 0, MODIFY female_animals DECIMAL(15,1) NOT NULL DEFAULT 0"); }catch(e){}
   await safeAddColumn(conn, 'purchase_lots', 'deduct_mode', "deduct_mode VARCHAR(30) NOT NULL DEFAULT 'PER_ANIMAL'");
   await safeAddColumn(conn, 'purchase_lots', 'deduct_kg_per_animal', 'deduct_kg_per_animal DECIMAL(15,3) NOT NULL DEFAULT 0');
   await safeAddColumn(conn, 'purchase_lots', 'male_price', 'male_price DECIMAL(15,2) NOT NULL DEFAULT 0');

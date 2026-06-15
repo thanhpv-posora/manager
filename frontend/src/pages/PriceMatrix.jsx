@@ -1,4 +1,4 @@
-import React,{useEffect,useState}from'react';import api from'../api/api';import SafePage from'../components/SafePage';import MoneyInput from'../components/MoneyInput';import {moneyVnd} from'../utils/money';
+import React,{useEffect,useState}from'react';import api from'../api/api';import SafePage from'../components/SafePage';import MoneyInput from'../components/MoneyInput';import {moneyVnd} from'../utils/money';import {handlePosInputKeyNavigation} from'../utils/focusNavigation';
 
 export default function PriceMatrix(){
   const[customers,setCustomers]=useState([]);
@@ -79,7 +79,7 @@ export default function PriceMatrix(){
             <td><input className="input" style={{width:70}} value={idx+1} readOnly/></td>
             <td><b>{r.product_name}</b><br/><span className="muted">{r.category_name} · {r.product_code}</span></td>
             <td>{moneyVnd(r.default_sale_price)}</td>
-            <td><MoneyInput value={r.private_price??r.effective_price??0} onChange={v=>setRow(idx,{private_price:v})}/></td>
+            <td><MoneyInput value={r.private_price??r.effective_price??0} onChange={v=>setRow(idx,{private_price:v})} data-pos-nav="true" onKeyDown={handlePosInputKeyNavigation}/></td>
             <td>{r.inventory_mode}</td>
           </tr>)}</tbody>
         </table>

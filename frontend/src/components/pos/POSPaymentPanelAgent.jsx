@@ -55,7 +55,7 @@ export default function POSPaymentPanelAgent({
         <div className="pos-agent-money-row pos-remain-row"><span>Còn nợ</span><b>{money(remain)}</b></div>
 
         <div className="actions pos-agent-payment-actions">
-          <button className="btn" onClick={onSave} disabled={disabled}>Lưu bill</button>
+          <button type="button" className="btn" onClick={onSave} disabled={disabled}>Lưu bill</button>
           <button className="btn secondary" onClick={onClear}>Xóa SL</button>
         </div>
 

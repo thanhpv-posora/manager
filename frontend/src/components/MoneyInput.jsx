@@ -1,7 +1,7 @@
 import React,{useEffect,useState}from'react';
 import {formatMoney,parseMoney}from'../utils/money';
 
-export default function MoneyInput({value,onChange,placeholder='',style={},className='input',disabled=false}){
+export default function MoneyInput({value,onChange,placeholder='',style={},className='input',disabled=false,...rest}){
   const[text,setText]=useState(formatMoney(value));
 
   useEffect(()=>{setText(formatMoney(value))},[value]);
@@ -21,5 +21,7 @@ export default function MoneyInput({value,onChange,placeholder='',style={},class
     value={text}
     onChange={handleChange}
     inputMode="numeric"
+    type="text"
+    {...rest}
   />
 }

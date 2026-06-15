@@ -1,98 +1,21 @@
 const pool = require('../config/db');
 const SoftDeleteAgent = require('./SoftDeleteAgent');
 
-function normalizeCodePart(v){
-  return String(v||'')
-    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
-    .replace(/[^a-zA-Z0-9]/g,'')
-    .toUpperCase();
-}
-
 class ProductAgent {
-  constructor(){
-    this.version='6.59.0';
-    this.responsibility='User-scoped product/category CRUD, mobile-safe product code prefix, prices';
-    this._schemaReady=false;
-  }
-
-  async ensureUserScopeSchema(){
-    if(this._schemaReady)return;
-    await this.ensureColumn('products','product_owner_user_id','BIGINT NULL');
-    await this.ensureColumn('products','owner_prefix','VARCHAR(50) NULL');
-    await this.ensureColumn('products','created_by','BIGINT NULL');
-    await this.ensureIndex('products','idx_products_owner_user','product_owner_user_id');
-    await this.ensureIndex('products','idx_products_owner_code','product_owner_user_id, product_code');
-    this._schemaReady=true;
-  }
-
-  async ensureColumn(table,column,definition){
-    const [rows]=await pool.query(
-      `SELECT COUNT(*) cnt FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME=?`,
-      [table,column]
-    );
-    if(Number(rows[0].cnt)===0){
-      await pool.query(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
-    }
-  }
-
-  async ensureIndex(table,indexName,columns){
-    const [rows]=await pool.query(
-      `SELECT COUNT(*) cnt FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND INDEX_NAME=?`,
-      [table,indexName]
-    );
-    if(Number(rows[0].cnt)===0){
-      await pool.query(`ALTER TABLE ${table} ADD INDEX ${indexName} (${columns})`);
-    }
-  }
-
-  isAdmin(user){
-    return String(user?.role||'').toUpperCase()==='ADMIN';
-  }
-
-  ownerId(user){
-    return user?.id ? Number(user.id) : null;
-  }
-
-  ownerPrefix(user){
-    const id=this.ownerId(user);
-    if(!id)return 'SYS';
-    return `U${id}`;
-  }
-
-  productScope(user,alias='p'){
-    if(this.isAdmin(user)) return {sql:'',params:[]};
-    const uid=this.ownerId(user);
-    if(!uid) return {sql:' AND 1=0',params:[]};
-    return {sql:` AND ${alias}.product_owner_user_id=?`,params:[uid]};
-  }
-
-  applyUserPrefix(code,user){
-    const prefix=this.ownerPrefix(user);
-    const clean=String(code||'').trim();
-    if(!clean)return clean;
-    if(clean.toUpperCase().startsWith(prefix.toUpperCase()+'-'))return clean;
-    return `${prefix}-${clean}`;
-  }
-
-  async nextProductCode(categoryId,user) {
-    await this.ensureUserScopeSchema();
+  async nextProductCode(categoryId) {
     const [cats] = await pool.query(`SELECT id,name FROM product_categories WHERE id=?`, [categoryId]);
     const name = cats[0]?.name || 'SP';
-    let base = 'SP';
-    if (name.includes('bò') || name.includes('Bò')) base = 'BO';
-    else if (name.includes('heo') || name.includes('Heo')) base = 'HEO';
-    else if (name.includes('gà') || name.includes('Gà')) base = 'GA';
-    else if (name.includes('vịt') || name.includes('Vịt')) base = 'VIT';
-    else if (name.includes('chả') || name.includes('Chả')) base = 'CHA';
-    else base = normalizeCodePart(name).slice(0,3) || 'SP';
-
-    const prefix=`${this.ownerPrefix(user)}-${base}`;
+    let prefix = 'SP';
+    if (name.includes('bò') || name.includes('Bò')) prefix = 'BO';
+    else if (name.includes('heo') || name.includes('Heo')) prefix = 'HEO';
+    else if (name.includes('gà') || name.includes('Gà')) prefix = 'GA';
+    else if (name.includes('vịt') || name.includes('Vịt')) prefix = 'VIT';
+    else if (name.includes('chả') || name.includes('Chả')) prefix = 'CHA';
+    else {
+      prefix = name.normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-zA-Z0-9]/g,'').slice(0,3).toUpperCase() || 'SP';
+    }
     const like = `${prefix}%`;
-    const owner=this.ownerId(user);
-    const [rows] = await pool.query(
-      `SELECT product_code FROM products WHERE product_code LIKE ? AND (product_owner_user_id <=> ?) ORDER BY id DESC LIMIT 1`,
-      [like,owner]
-    );
+    const [rows] = await pool.query(`SELECT product_code FROM products WHERE product_code LIKE ? ORDER BY id DESC LIMIT 1`, [like]);
     let n = 1;
     if(rows.length) {
       const m = String(rows[0].product_code).match(/(\d+)$/);
@@ -101,17 +24,17 @@ class ProductAgent {
     return `${prefix}${String(n).padStart(4,'0')}`;
   }
 
+  constructor(){this.version='6.43.0';this.responsibility='Product/category CRUD, inventory mode, carcass/non-stock option, duplicate name check, del_flg soft delete warning, prices';}
+
   normalizeName(name){
     return String(name||'').trim().toLowerCase();
   }
 
-  async assertUniqueProductName(name, excludeId=null, user=null){
-    await this.ensureUserScopeSchema();
+  async assertUniqueProductName(name, excludeId=null){
     const normalized=this.normalizeName(name);
     if(!normalized) throw new Error('Thiếu tên hàng');
-    const owner=this.ownerId(user);
-    const params=[normalized,owner];
-    let sql=`SELECT id,name FROM products WHERE del_flg=0 AND LOWER(TRIM(name))=? AND (product_owner_user_id <=> ?)`;
+    const params=[normalized];
+    let sql=`SELECT id,name FROM products WHERE del_flg=0 AND LOWER(TRIM(name))=?`;
     if(excludeId){
       sql+=` AND id<>?`;
       params.push(excludeId);
@@ -119,21 +42,10 @@ class ProductAgent {
     sql+=` LIMIT 1`;
     const [rows]=await pool.query(sql,params);
     if(rows.length){
-      throw new Error(`Tên mặt hàng đã tồn tại trong tài khoản này: ${rows[0].name}`);
+      throw new Error(`Tên mặt hàng đã tồn tại: ${rows[0].name}. Không được nhập trùng dù khác chữ hoa/thường.`);
     }
   }
 
-  async requireProductAccess(productId,user,conn=pool){
-    await this.ensureUserScopeSchema();
-    if(this.isAdmin(user)) return;
-    const uid=this.ownerId(user);
-    const [rows]=await conn.query(`SELECT id FROM products WHERE id=? AND del_flg=0 AND product_owner_user_id=? LIMIT 1`,[productId,uid]);
-    if(!rows.length){
-      const err=new Error('Không có quyền thao tác mặt hàng này');
-      err.status=403;
-      throw err;
-    }
-  }
 
   async categories() {
     const [rows] = await pool.query(`SELECT * FROM product_categories WHERE del_flg=0 AND is_active=1 ORDER BY sort_order,id`);
@@ -155,69 +67,54 @@ class ProductAgent {
     return SoftDeleteAgent.softDelete('category', id, reason, userId);
   }
 
-  async products(q='',user=null) {
-    await this.ensureUserScopeSchema();
+  async products(q='') {
     const like = `%${q}%`;
-    const scope=this.productScope(user,'p');
     const [rows] = await pool.query(
-      `SELECT p.*,pc.name category_name, pp.name parent_product_name, u.username owner_username, u.full_name owner_full_name
+      `SELECT p.*,pc.name category_name, pp.name parent_product_name
        FROM products p
        LEFT JOIN product_categories pc ON pc.id=p.category_id
        LEFT JOIN products pp ON pp.id=p.parent_product_id
-       LEFT JOIN users u ON u.id=p.product_owner_user_id
-       WHERE p.del_flg=0 AND p.is_active=1 ${scope.sql} AND (p.name LIKE ? OR p.product_code LIKE ?)
+       WHERE p.del_flg=0 AND p.is_active=1 AND (p.name LIKE ? OR p.product_code LIKE ?)
        ORDER BY pc.sort_order,p.name`,
-      [...scope.params,like,like]
+      [like,like]
     );
     return rows;
   }
 
-  async addProduct(data,user=null) {
-    await this.ensureUserScopeSchema();
+  async addProduct(data) {
     if(!data.name) throw new Error('Thiếu tên hàng');
-    await this.assertUniqueProductName(data.name,null,user);
-    const owner=this.ownerId(user);
-    const prefix=this.ownerPrefix(user);
-    if(!data.product_code) data.product_code = await this.nextProductCode(data.category_id,user);
-    else data.product_code=this.applyUserPrefix(data.product_code,user);
+    await this.assertUniqueProductName(data.name);
+    if(!data.product_code) data.product_code = await this.nextProductCode(data.category_id);
     await pool.query(
-      `INSERT INTO products(category_id,product_code,name,unit,default_sale_price,default_purchase_price,stock_quantity,low_stock_threshold,note,is_active,del_flg,inventory_mode,parent_product_id,carcass_group,allow_negative_stock,product_owner_user_id,owner_prefix,created_by)
-       VALUES(?,?,?,?,?,?,?,?,?,1,0,?,?,?,?,?,?,?)`,
-      [data.category_id||null,data.product_code,data.name,data.unit||'kg',data.default_sale_price||data.sale_price||0,data.default_purchase_price||data.cost_price||0,data.stock_quantity||0,data.low_stock_threshold||5,data.note||'',data.inventory_mode||'STOCK',data.parent_product_id||null,data.carcass_group||null,data.allow_negative_stock?1:0,owner,prefix,owner]
+      `INSERT INTO products(category_id,product_code,name,unit,default_sale_price,default_purchase_price,stock_quantity,low_stock_threshold,note,is_active,del_flg,inventory_mode,parent_product_id,carcass_group,allow_negative_stock)
+       VALUES(?,?,?,?,?,?,?,?,?,1,0,?,?,?,?)`,
+      [data.category_id||null,data.product_code,data.name,data.unit||'kg',data.default_sale_price||0,data.default_purchase_price||0,data.stock_quantity||0,data.low_stock_threshold||5,data.note||'',data.inventory_mode||'STOCK',data.parent_product_id||null,data.carcass_group||null,data.allow_negative_stock?1:0]
     );
-    return {message:'Đã thêm mặt hàng', product_code:data.product_code};
+    return {message:'Đã thêm mặt hàng'};
   }
 
-  async updateProduct(id,data,user=null) {
-    await this.ensureUserScopeSchema();
-    await this.requireProductAccess(id,user);
+  async updateProduct(id,data) {
     if(!data.name) throw new Error('Thiếu tên hàng');
-    await this.assertUniqueProductName(data.name,id,user);
+    await this.assertUniqueProductName(data.name,id);
     await pool.query(
       `UPDATE products SET category_id=?,name=?,unit=?,default_sale_price=?,default_purchase_price=?,stock_quantity=?,low_stock_threshold=?,note=?,is_active=?,inventory_mode=?,parent_product_id=?,carcass_group=?,allow_negative_stock=? WHERE id=? AND del_flg=0`,
-      [data.category_id||null,data.name,data.unit||'kg',data.default_sale_price||data.sale_price||0,data.default_purchase_price||data.cost_price||0,data.stock_quantity||0,data.low_stock_threshold||5,data.note||'',data.is_active?1:0,data.inventory_mode||'STOCK',data.parent_product_id||null,data.carcass_group||null,data.allow_negative_stock?1:0,id]
+      [data.category_id||null,data.name,data.unit||'kg',data.default_sale_price||0,data.default_purchase_price||0,data.stock_quantity||0,data.low_stock_threshold||5,data.note||'',data.is_active?1:0,data.inventory_mode||'STOCK',data.parent_product_id||null,data.carcass_group||null,data.allow_negative_stock?1:0,id]
     );
     return {message:'Đã sửa mặt hàng'};
   }
 
-  async updatePrice(id, data, user=null) {
-    await this.ensureUserScopeSchema();
-    await this.requireProductAccess(id,user);
+  async updatePrice(id, data) {
     await pool.query(`UPDATE products SET default_sale_price=?,default_purchase_price=? WHERE id=? AND del_flg=0`, [data.default_sale_price||0,data.default_purchase_price||0,id]);
     return {message:'Đã sửa giá mặt hàng'};
   }
 
-  async removeProduct(id, reason, userId, user=null) {
-    await this.ensureUserScopeSchema();
-    await this.requireProductAccess(id,user);
+  async removeProduct(id, reason, userId) {
     return SoftDeleteAgent.softDelete('product', id, reason, userId);
   }
 
-  async customerProducts(customerId,user=null) {
-    await this.ensureUserScopeSchema();
+  async customerProducts(customerId) {
     const [customers] = await pool.query(`SELECT * FROM customers WHERE id=? AND del_flg=0`, [customerId]);
     if (!customers.length) throw new Error('Không tìm thấy khách');
-    const scope=this.productScope(user,'p');
     const [rows] = await pool.query(
       `SELECT p.id product_id,p.product_code,p.name product_name,p.unit,p.stock_quantity,p.default_sale_price,p.default_purchase_price,p.inventory_mode,p.allow_negative_stock,
        COALESCE(cpp.sale_price,p.default_sale_price) sale_price,
@@ -226,16 +123,14 @@ class ProductAgent {
        FROM products p
        LEFT JOIN product_categories pc ON pc.id=p.category_id
        LEFT JOIN customer_product_prices cpp ON cpp.product_id=p.id AND cpp.customer_id=? AND cpp.is_active=1
-       WHERE p.del_flg=0 AND p.is_active=1 ${scope.sql}
+       WHERE p.del_flg=0 AND p.is_active=1
        ORDER BY CASE WHEN cpp.sale_price IS NOT NULL THEN 0 ELSE 1 END,pc.sort_order,p.name`,
-      [customerId,...scope.params]
+      [customerId]
     );
     return {customer:customers[0], products:rows};
   }
 
-  async updateCustomerPrice(customerId, productId, salePrice, user=null) {
-    await this.ensureUserScopeSchema();
-    await this.requireProductAccess(productId,user);
+  async updateCustomerPrice(customerId, productId, salePrice) {
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
@@ -272,20 +167,17 @@ class ProductAgent {
     return {message:'Đã chuyển nhóm bò/pha lóc sang CARCASS_PART, không kiểm tồn từng phần'};
   }
 
-  async quickProduct(data,user=null) {
-    await this.ensureUserScopeSchema();
+  async quickProduct(data) {
     if(!data.name) throw new Error('Thiếu tên hàng');
-    await this.assertUniqueProductName(data.name,null,user);
-    const owner=this.ownerId(user);
-    const prefix=this.ownerPrefix(user);
-    const code = data.product_code ? this.applyUserPrefix(data.product_code,user) : await this.nextProductCode(data.category_id,user);
+    await this.assertUniqueProductName(data.name);
+    const code = data.product_code || await this.nextProductCode(data.category_id);
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
       const [r] = await conn.query(
-        `INSERT INTO products(category_id,product_code,name,unit,default_sale_price,default_purchase_price,low_stock_threshold,inventory_mode,allow_negative_stock,del_flg,product_owner_user_id,owner_prefix,created_by)
-         VALUES(?,?,?,?,?,?,?,?,?,0,?,?,?)`,
-        [data.category_id||null,code,data.name,data.unit||'kg',data.sale_price||0,0,5,data.inventory_mode||'STOCK',data.allow_negative_stock?1:0,owner,prefix,owner]
+        `INSERT INTO products(category_id,product_code,name,unit,default_sale_price,default_purchase_price,low_stock_threshold,inventory_mode,allow_negative_stock,del_flg)
+         VALUES(?,?,?,?,?,?,?,?,?,0)`,
+        [data.category_id||null,code,data.name,data.unit||'kg',data.sale_price||0,0,5,data.inventory_mode||'STOCK',data.allow_negative_stock?1:0]
       );
       if (data.customer_id) {
         await conn.query(

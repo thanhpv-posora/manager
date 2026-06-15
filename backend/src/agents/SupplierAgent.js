@@ -16,6 +16,7 @@ function safeCalcExpression(expr) {
 }
 
 const n=v=>Number(v||0);
+const floor1=v=>Math.floor((Number(v)||0)*10)/10;
 const normalizeCalendarType=v=>String(v||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
 
 class SupplierAgent {
@@ -28,9 +29,9 @@ class SupplierAgent {
     const rawWeight = body.raw_weight_expr ? safeCalcExpression(body.raw_weight_expr) : n(body.raw_weight);
     const boneWeight = body.bone_weight_expr ? safeCalcExpression(body.bone_weight_expr) : n(body.bone_weight);
 
-    const totalAnimals = n(body.total_animals);
-    const femaleAnimals = n(body.female_animals);
-    const maleAnimals = Math.max(0, n(body.male_animals) || (totalAnimals - femaleAnimals));
+    const totalAnimals = floor1(body.total_animals);
+    const femaleAnimals = floor1(body.female_animals);
+    const maleAnimals = floor1(Math.max(0, n(body.male_animals) || (totalAnimals - femaleAnimals)));
     const deductMode = body.deduct_mode || 'PER_ANIMAL';
     const deductKgPerAnimal = n(body.deduct_kg_per_animal);
 
@@ -44,13 +45,16 @@ class SupplierAgent {
 
     const damageWeight = n(body.damage_weight);
     const fatWeight = n(body.fat_weight);
+    const fragmentWeight = n(body.fragment_weight);
     const otherDeductWeight = n(body.other_deduct_weight);
 
     const ribToMeatWeight = boneWeight / 2;
+    // V65.13: Thịt vụn là dòng tính tiền riêng, không trừ khỏi kg bò xô.
     const totalWeight = rawWeight + ribToMeatWeight - deductedWeight - damageWeight - fatWeight - otherDeductWeight;
 
     const malePrice = n(body.male_price || body.purchase_price);
     const femalePrice = n(body.female_price || body.purchase_price);
+    const fragmentPrice = n(body.fragment_price);
     const purchasePrice = n(body.purchase_price || malePrice);
 
     const maleRatio = totalAnimals > 0 ? maleAnimals / totalAnimals : 1;
@@ -58,7 +62,9 @@ class SupplierAgent {
     const maleWeight = totalWeight * maleRatio;
     const femaleWeight = totalWeight * femaleRatio;
 
-    const totalCost = maleWeight * malePrice + femaleWeight * femalePrice;
+    const cattleCost = maleWeight * malePrice + femaleWeight * femalePrice;
+    const fragmentCost = fragmentWeight * fragmentPrice;
+    const totalCost = cattleCost + fragmentCost;
 
     return {
       rawWeight,
@@ -67,6 +73,7 @@ class SupplierAgent {
       deductedWeight,
       damageWeight,
       fatWeight,
+      fragmentWeight,
       otherDeductWeight,
       totalAnimals,
       maleAnimals,
@@ -76,6 +83,9 @@ class SupplierAgent {
       malePrice,
       femalePrice,
       purchasePrice,
+      fragmentPrice,
+      fragmentCost,
+      cattleCost,
       maleWeight,
       femaleWeight,
       totalWeight,
@@ -91,13 +101,13 @@ class SupplierAgent {
   async addSupplier(data) {
     if (!data.name) throw new Error('Thiếu tên nhà cung cấp');
     const code=data.supplier_code||('NCC'+Date.now());
-    await pool.query(`INSERT INTO suppliers(supplier_code,name,phone,address,note,billing_calendar_type,is_active,del_flg) VALUES(?,?,?,?,?,?,1,0)`, [code,data.name,data.phone||'',data.address||'',data.note||'',normalizeCalendarType(data.billing_calendar_type)]);
+    await pool.query(`INSERT INTO suppliers(supplier_code,name,phone,address,note,billing_calendar_type,male_price,female_price,fragment_price,is_active,del_flg) VALUES(?,?,?,?,?,?,?,?,?,1,0)`, [code,data.name,data.phone||'',data.address||'',data.note||'',normalizeCalendarType(data.billing_calendar_type),n(data.male_price),n(data.female_price),n(data.fragment_price)]);
     return {message:'Đã tạo nhà cung cấp', supplier_code:code};
   }
 
   async updateSupplier(id,data) {
     if (!data.name) throw new Error('Thiếu tên nhà cung cấp');
-    await pool.query(`UPDATE suppliers SET name=?,phone=?,address=?,note=?,billing_calendar_type=?,is_active=? WHERE id=? AND del_flg=0`, [data.name,data.phone||'',data.address||'',data.note||'',normalizeCalendarType(data.billing_calendar_type),data.is_active?1:0,id]);
+    await pool.query(`UPDATE suppliers SET name=?,phone=?,address=?,note=?,billing_calendar_type=?,male_price=?,female_price=?,fragment_price=?,is_active=? WHERE id=? AND del_flg=0`, [data.name,data.phone||'',data.address||'',data.note||'',normalizeCalendarType(data.billing_calendar_type),n(data.male_price),n(data.female_price),n(data.fragment_price),data.is_active?1:0,id]);
     return {message:'Đã sửa nhà cung cấp'};
   }
 
@@ -155,19 +165,19 @@ class SupplierAgent {
           lot_code,lot_name,supplier_id,purchase_date,calendar_type,lunar_date_text,
           raw_weight,bone_weight,deducted_weight,total_weight,purchase_price,total_cost,
           raw_weight_expr,bone_weight_expr,deducted_weight_expr,
-          damage_weight,fat_weight,other_deduct_weight,deduct_note,
+          damage_weight,fat_weight,fragment_weight,fragment_price,fragment_cost,other_deduct_weight,deduct_note,
           total_animals,male_animals,female_animals,deduct_mode,deduct_kg_per_animal,
           male_price,female_price,male_weight,female_weight,
           status,note,created_by,del_flg
         )
-         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN',?,?,0)`,
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN',?,?,0)`,
         [
           code,data.lot_name||code,data.supplier_id||null,data.purchase_date,calendarType,lunarDateText,
           c.rawWeight,c.boneWeight,c.deductedWeight,c.totalWeight,c.purchasePrice,c.totalCost,
           data.raw_weight_expr||String(c.rawWeight),
           data.bone_weight_expr||String(c.boneWeight),
           c.deductMode==='TOTAL_KG' ? (data.deducted_weight_expr||String(c.deductedWeight)) : '',
-          c.damageWeight,c.fatWeight,c.otherDeductWeight,data.deduct_note||'',
+          c.damageWeight,c.fatWeight,c.fragmentWeight,c.fragmentPrice,c.fragmentCost,c.otherDeductWeight,data.deduct_note||'',
           c.totalAnimals,c.maleAnimals,c.femaleAnimals,c.deductMode,c.deductKgPerAnimal,
           c.malePrice,c.femalePrice,c.maleWeight,c.femaleWeight,
           data.note||'',user.id

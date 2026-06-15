@@ -1907,3 +1907,561 @@ button,.btn,.menu-item,.input,.select,textarea{
 
 /* V44 - Voice POS mobile production: avoid repeated speech results */
 .ai-live-preview b{word-break:break-word;}
+
+
+/* =========================================================
+   V65 - Bill edit/view modal scroll fix
+   Bill bán hàng nhiều mặt hàng phải xem/sửa được hết.
+   ========================================================= */
+
+.bill-edit-modal,
+.bill-view-modal,
+.order-edit-modal,
+.order-view-modal,
+.ai-bill-edit-modal,
+[class*="bill"][class*="modal"],
+[class*="order"][class*="modal"] {
+  max-height: 94vh !important;
+  height: min(94vh, 980px) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+
+.bill-edit-modal .modal-body,
+.bill-view-modal .modal-body,
+.order-edit-modal .modal-body,
+.order-view-modal .modal-body,
+.ai-bill-edit-modal .modal-body,
+.bill-edit-body,
+.bill-view-body,
+.order-edit-body,
+.order-view-body,
+.bill-modal-body,
+.order-modal-body {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 96px !important;
+}
+
+.bill-edit-items,
+.bill-view-items,
+.order-edit-items,
+.order-view-items,
+.bill-items-scroll,
+.order-items-scroll {
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+.bill-edit-footer,
+.bill-view-footer,
+.order-edit-footer,
+.order-view-footer,
+.bill-save-footer,
+.order-save-footer {
+  position: sticky !important;
+  bottom: 0 !important;
+  z-index: 20 !important;
+  background: linear-gradient(180deg, rgba(255,255,255,.92), #fff 45%) !important;
+  padding: 12px 0 4px !important;
+  border-top: 1px solid rgba(255, 184, 114, .35) !important;
+}
+
+.bill-edit-table-wrap,
+.order-edit-table-wrap,
+.bill-edit-list-wrap,
+.order-edit-list-wrap {
+  width: 100% !important;
+  overflow-x: auto !important;
+  overflow-y: visible !important;
+  -webkit-overflow-scrolling: touch;
+}
+
+.bill-edit-table,
+.order-edit-table {
+  width: 100% !important;
+  min-width: 680px;
+}
+
+@media (max-width: 768px) {
+  .bill-edit-modal,
+  .bill-view-modal,
+  .order-edit-modal,
+  .order-view-modal,
+  .ai-bill-edit-modal,
+  [class*="bill"][class*="modal"],
+  [class*="order"][class*="modal"] {
+    width: calc(100vw - 18px) !important;
+    height: calc(100dvh - 22px) !important;
+    max-height: calc(100dvh - 22px) !important;
+    border-radius: 24px !important;
+  }
+
+  .bill-edit-table,
+  .order-edit-table {
+    min-width: 560px;
+  }
+
+  .bill-edit-body,
+  .bill-view-body,
+  .order-edit-body,
+  .order-view-body,
+  .bill-modal-body,
+  .order-modal-body {
+    padding-bottom: 116px !important;
+  }
+
+  .bill-edit-footer,
+  .bill-view-footer,
+  .order-edit-footer,
+  .order-view-footer,
+  .bill-save-footer,
+  .order-save-footer {
+    padding: 12px 10px calc(10px + env(safe-area-inset-bottom)) !important;
+  }
+}
+
+/* V65.1 - Bill bán hàng edit: show all items on mobile/tablet */
+.orders-page{
+  align-items:start;
+}
+.bill-edit-panel.detail-card{
+  display:flex !important;
+  flex-direction:column !important;
+  min-height:0 !important;
+  overflow:hidden !important;
+}
+.bill-edit-shell{
+  display:flex !important;
+  flex-direction:column !important;
+  min-height:0 !important;
+  height:100% !important;
+}
+.bill-edit-head{
+  flex:0 0 auto !important;
+  padding-bottom:12px !important;
+}
+.bill-edit-body{
+  flex:1 1 auto !important;
+  min-height:0 !important;
+  overflow-y:auto !important;
+  overflow-x:hidden !important;
+  -webkit-overflow-scrolling:touch;
+  padding-bottom:18px !important;
+}
+.bill-edit-table-wrap{
+  max-height:none !important;
+  overflow:auto !important;
+  -webkit-overflow-scrolling:touch;
+}
+.bill-edit-table thead th{
+  position:sticky;
+  top:0;
+  z-index:5;
+}
+.bill-edit-footer{
+  flex:0 0 auto !important;
+  position:sticky !important;
+  bottom:0 !important;
+  z-index:10 !important;
+  background:linear-gradient(180deg,rgba(255,255,255,.94),#fff 42%) !important;
+  border-top:1px solid #fed7aa !important;
+  padding:12px 0 4px !important;
+}
+.bill-edit-footer h3{
+  margin:0 0 10px !important;
+}
+
+@media(max-width:1100px){
+  .orders-page{
+    grid-template-columns:1fr !important;
+  }
+  .bill-edit-panel.detail-card{
+    position:relative !important;
+    top:auto !important;
+    max-height:calc(100dvh - 28px) !important;
+    height:calc(100dvh - 28px) !important;
+  }
+}
+
+@media(max-width:768px){
+  .bill-edit-panel.detail-card{
+    max-height:calc(100dvh - 18px) !important;
+    height:calc(100dvh - 18px) !important;
+    border-radius:20px !important;
+  }
+  .bill-edit-body{
+    padding-bottom:22px !important;
+  }
+  .bill-edit-table{
+    min-width:560px !important;
+  }
+  .bill-edit-footer{
+    padding:10px 0 calc(8px + env(safe-area-inset-bottom)) !important;
+  }
+  .bill-edit-footer .actions{
+    display:grid !important;
+    grid-template-columns:1fr 1fr !important;
+    gap:8px !important;
+  }
+  .bill-edit-footer .btn{
+    width:100% !important;
+    justify-content:center !important;
+  }
+}
+
+/* V65.2 - Bill bán hàng: mở rộng màn hình xem/sửa + thêm mặt hàng thiếu */
+.bill-edit-overlay{
+  position:fixed !important;
+  inset:10px !important;
+  z-index:999 !important;
+  display:flex !important;
+  align-items:stretch !important;
+  justify-content:center !important;
+  background:rgba(15,23,42,.28) !important;
+  padding:10px !important;
+}
+.bill-edit-wide.detail-card{
+  position:relative !important;
+  top:auto !important;
+  width:min(1280px, calc(100vw - 20px)) !important;
+  max-width:1280px !important;
+  height:calc(100dvh - 40px) !important;
+  max-height:calc(100dvh - 40px) !important;
+  overflow:hidden !important;
+  border-radius:22px !important;
+}
+.bill-edit-wide .bill-edit-head{
+  display:grid !important;
+  grid-template-columns:1fr auto auto !important;
+  gap:14px !important;
+  align-items:start !important;
+}
+.bill-edit-wide .bill-qr{
+  width:110px !important;
+  max-width:110px !important;
+}
+.bill-add-item{
+  flex:0 0 auto !important;
+  background:#fff7ed !important;
+  border:1px solid #fed7aa !important;
+  border-radius:18px !important;
+  padding:12px !important;
+  margin-bottom:12px !important;
+}
+.bill-add-item h3{margin:0 0 10px !important;}
+.bill-add-grid{
+  display:grid !important;
+  grid-template-columns:1.4fr 1.2fr .55fr .75fr auto !important;
+  gap:10px !important;
+  align-items:end !important;
+}
+.bill-edit-wide .bill-edit-table{
+  min-width:0 !important;
+}
+.bill-edit-wide .bill-edit-table th:nth-child(1),
+.bill-edit-wide .bill-edit-table td:nth-child(1){min-width:190px;}
+.bill-edit-wide .bill-edit-table th:nth-child(2),
+.bill-edit-wide .bill-edit-table td:nth-child(2){width:130px;}
+.bill-edit-wide .bill-edit-table th:nth-child(3),
+.bill-edit-wide .bill-edit-table td:nth-child(3){width:160px;}
+.bill-edit-wide .bill-edit-table th:nth-child(4),
+.bill-edit-wide .bill-edit-table td:nth-child(4){width:160px;white-space:nowrap;}
+.bill-edit-wide .bill-edit-table th:nth-child(5),
+.bill-edit-wide .bill-edit-table td:nth-child(5){width:110px;}
+.bill-edit-wide .bill-edit-table input{width:100% !important;min-width:0 !important;}
+@media(max-width:900px){
+  .bill-edit-overlay{inset:4px !important;padding:4px !important;}
+  .bill-edit-wide.detail-card{width:calc(100vw - 8px) !important;height:calc(100dvh - 8px) !important;max-height:calc(100dvh - 8px) !important;border-radius:16px !important;}
+  .bill-edit-wide .bill-edit-head{grid-template-columns:1fr auto !important;}
+  .bill-edit-wide .bill-qr{display:none !important;}
+  .bill-add-grid{grid-template-columns:1fr 1fr !important;}
+  .bill-add-grid .btn{grid-column:1 / -1 !important;}
+  .bill-edit-wide .bill-edit-table{min-width:720px !important;}
+}
+
+/* V65.4 - Bill list full width, keep edit as dialog */
+.orders-page-full{
+  display:block !important;
+  width:100% !important;
+  max-width:none !important;
+}
+.orders-page-full > .card:first-child{
+  width:100% !important;
+  max-width:none !important;
+}
+.orders-page-full .filter-row{
+  grid-template-columns:180px 180px minmax(220px,1fr) auto !important;
+  align-items:end !important;
+}
+.orders-page-full .table-wrap{
+  max-width:100% !important;
+  overflow-x:auto !important;
+}
+.orders-page-full .orders-table{
+  width:100% !important;
+  min-width:980px !important;
+  table-layout:auto !important;
+}
+.orders-page-full .orders-table th,
+.orders-page-full .orders-table td{
+  white-space:nowrap;
+}
+.orders-page-full .orders-table th:nth-child(1),
+.orders-page-full .orders-table td:nth-child(1){width:230px;}
+.orders-page-full .orders-table th:nth-child(2),
+.orders-page-full .orders-table td:nth-child(2){width:150px;}
+.orders-page-full .orders-table th:nth-child(3),
+.orders-page-full .orders-table td:nth-child(3){min-width:220px;}
+.orders-page-full .orders-table th:nth-child(4),
+.orders-page-full .orders-table td:nth-child(4){width:160px;text-align:right;}
+.orders-page-full .orders-table th:nth-child(5),
+.orders-page-full .orders-table td:nth-child(5){width:150px;}
+.orders-page-full .orders-table th:nth-child(6),
+.orders-page-full .orders-table td:nth-child(6){min-width:210px;}
+.orders-page-full .pager-bar{
+  margin-top:12px !important;
+}
+@media(max-width:900px){
+  .orders-page-full .filter-row{grid-template-columns:1fr 1fr !important;}
+}
+@media(max-width:640px){
+  .orders-page-full .filter-row{grid-template-columns:1fr !important;}
+  .orders-page-full .orders-table{min-width:860px !important;}
+}
+
+/* V65.5 - Bill dialog compact, collapsed add item, keyboard navigation, save toast */
+.bill-edit-compact.detail-card{
+  width:min(1120px, calc(100vw - 24px)) !important;
+  max-width:1120px !important;
+}
+.bill-edit-compact .bill-edit-head{
+  display:grid !important;
+  grid-template-columns:1fr auto auto !important;
+  gap:12px !important;
+  align-items:start !important;
+  padding-bottom:10px !important;
+  border-bottom:1px solid #e5e7eb !important;
+}
+.bill-edit-title h2{margin:2px 0 4px !important;font-size:26px !important;line-height:1.1 !important;}
+.bill-edit-title p{margin:0 !important;color:#475569 !important;}
+.bill-edit-title .eyebrow{font-size:12px !important;font-weight:900 !important;text-transform:uppercase !important;color:#9f1239 !important;letter-spacing:.05em !important;}
+.bill-edit-head-actions{display:flex !important;gap:8px !important;align-items:center !important;flex-wrap:wrap !important;justify-content:flex-end !important;}
+.bill-edit-compact .bill-qr{width:82px !important;max-width:82px !important;}
+.bill-edit-compact .bill-edit-body{padding-top:10px !important;padding-bottom:10px !important;}
+.bill-edit-compact .bill-edit-table-wrap{max-height:calc(100dvh - 340px) !important;border:1px solid #eef2f7 !important;border-radius:14px !important;}
+.bill-edit-compact .bill-edit-table th,
+.bill-edit-compact .bill-edit-table td{padding:9px 12px !important;vertical-align:middle !important;}
+.bill-edit-compact .bill-edit-table th:nth-child(1),
+.bill-edit-compact .bill-edit-table td:nth-child(1){min-width:220px !important;}
+.bill-edit-compact .bill-edit-table th:nth-child(2),
+.bill-edit-compact .bill-edit-table td:nth-child(2){width:150px !important;}
+.bill-edit-compact .bill-edit-table th:nth-child(3),
+.bill-edit-compact .bill-edit-table td:nth-child(3){width:180px !important;}
+.bill-edit-compact .bill-edit-table th:nth-child(4),
+.bill-edit-compact .bill-edit-table td:nth-child(4){width:170px !important;text-align:right !important;}
+.bill-keyboard-help{margin:6px 0 10px !important;padding:7px 10px !important;border-radius:10px !important;background:#eff6ff !important;color:#2563eb !important;font-size:13px !important;}
+.bill-add-collapsible{padding:0 !important;margin:0 0 10px !important;overflow:hidden !important;}
+.bill-add-toggle{width:100% !important;border:0 !important;background:transparent !important;padding:11px 14px !important;display:flex !important;align-items:center !important;justify-content:space-between !important;font-weight:900 !important;font-size:16px !important;color:#111827 !important;cursor:pointer !important;}
+.bill-add-toggle span:last-child{font-size:13px !important;color:#be123c !important;}
+.bill-add-inner{padding:0 12px 12px !important;}
+.bill-add-grid-compact{grid-template-columns:1.2fr 1.1fr .45fr .65fr auto !important;gap:10px !important;}
+.bill-add-grid-compact .btn{white-space:nowrap !important;padding-inline:18px !important;}
+.bill-edit-compact .bill-edit-footer{display:flex !important;align-items:center !important;justify-content:space-between !important;gap:12px !important;padding:10px 0 0 !important;}
+.bill-edit-compact .bill-edit-footer h3{font-size:20px !important;color:#9f1239 !important;}
+.bill-edit-compact .bill-edit-footer .actions{display:flex !important;gap:10px !important;align-items:center !important;}
+.bill-toast{position:absolute !important;left:50% !important;bottom:22px !important;transform:translateX(-50%) !important;z-index:1005 !important;min-width:300px !important;max-width:min(420px, calc(100vw - 40px)) !important;background:#fff !important;border:1px solid #e5e7eb !important;border-left:5px solid #22c55e !important;border-radius:14px !important;box-shadow:0 18px 45px rgba(15,23,42,.18) !important;padding:12px 42px 12px 14px !important;display:grid !important;gap:3px !important;}
+.bill-toast.error{border-left-color:#ef4444 !important;}
+.bill-toast b{font-size:15px !important;color:#111827 !important;}
+.bill-toast span{font-size:14px !important;color:#475569 !important;}
+.bill-toast button{position:absolute !important;right:10px !important;top:8px !important;border:0 !important;background:transparent !important;font-size:22px !important;line-height:1 !important;cursor:pointer !important;color:#64748b !important;}
+@media(max-width:900px){
+  .bill-edit-compact.detail-card{width:calc(100vw - 8px) !important;}
+  .bill-edit-compact .bill-edit-head{grid-template-columns:1fr !important;}
+  .bill-edit-head-actions{justify-content:stretch !important;}
+  .bill-edit-head-actions .btn{flex:1 !important;justify-content:center !important;}
+  .bill-add-grid-compact{grid-template-columns:1fr 1fr !important;}
+  .bill-add-grid-compact .btn{grid-column:1/-1 !important;}
+  .bill-edit-compact .bill-edit-footer{display:block !important;}
+  .bill-edit-compact .bill-edit-footer .actions{display:grid !important;grid-template-columns:1fr 1fr !important;}
+}
+
+/* ===== V65.6 Compact AI blocks + shorter page hero ===== */
+.page-hero{
+  padding:14px 22px!important;
+  border-radius:24px!important;
+  margin-bottom:14px!important;
+  min-height:0!important;
+}
+.page-hero h1{
+  font-size:26px!important;
+  margin:3px 0 3px!important;
+  line-height:1.08!important;
+}
+.page-hero p{
+  font-size:14px!important;
+  line-height:1.35!important;
+}
+.page-eyebrow{
+  font-size:11px!important;
+  letter-spacing:.06em!important;
+}
+.page-hero-badge{
+  padding:8px 13px!important;
+  font-size:15px!important;
+  box-shadow:0 10px 22px rgba(15,23,42,.16)!important;
+}
+.ai-business-panel.ai-compact,
+.ai-business-panel.ai-collapsed{
+  padding:12px 16px!important;
+  margin-bottom:10px!important;
+  border-radius:20px!important;
+}
+.ai-collapsible-head{
+  cursor:pointer;
+  margin-bottom:0!important;
+  align-items:center!important;
+}
+.ai-collapsible-head h3{
+  margin:0 0 2px!important;
+  font-size:20px!important;
+}
+.ai-collapsible-head .muted{
+  margin:0!important;
+  font-size:14px!important;
+  line-height:1.35!important;
+}
+.ai-head-actions{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex-wrap:wrap;
+  justify-content:flex-end;
+}
+.ai-toggle-btn{
+  min-height:36px!important;
+  padding:8px 12px!important;
+  border-radius:14px!important;
+}
+.ai-business-panel.ai-collapsed .ai-panel-head{
+  margin-bottom:0!important;
+}
+.ai-business-panel.ai-collapsed .ai-session{
+  display:none!important;
+}
+.ai-voice-pos-card.collapsed{
+  margin:10px 0 12px!important;
+  padding:12px 16px!important;
+  border-radius:20px!important;
+  min-height:0!important;
+  box-shadow:0 12px 28px rgba(15,23,42,.14)!important;
+}
+.ai-voice-pos-card.collapsed .ai-voice-pos-head{
+  align-items:center!important;
+}
+.ai-voice-pos-card.collapsed .ai-voice-pos-head h3{
+  font-size:20px!important;
+  margin:2px 0 0!important;
+}
+.ai-voice-pos-card.collapsed .ai-voice-pos-head p{
+  display:none!important;
+}
+.ai-voice-pos-card.collapsed .ai-kicker{
+  font-size:11px!important;
+  line-height:1!important;
+}
+.ai-voice-pos-card.collapsed .btn.secondary{
+  min-height:36px!important;
+  padding:8px 12px!important;
+  border-radius:14px!important;
+  background:#fff!important;
+}
+.pos-agent-shell{
+  gap:10px!important;
+}
+@media(max-width:760px){
+  .page-hero{padding:12px 14px!important;border-radius:18px!important;}
+  .page-hero h1{font-size:23px!important;}
+  .ai-business-panel.ai-compact,.ai-business-panel.ai-collapsed,.ai-voice-pos-card.collapsed{padding:10px 12px!important;border-radius:16px!important;}
+  .ai-collapsible-head,.ai-voice-pos-head{gap:8px!important;}
+  .ai-head-actions,.ai-voice-pos-head .actions{width:100%;justify-content:flex-start;}
+}
+
+/* V65.7 - POS manual-first: keep AI tools at bottom, collapsed by default */
+.pos-bottom-ai-tools{
+  margin-top:16px;
+  display:flex;
+  flex-direction:column;
+  gap:12px;
+}
+.pos-bottom-ai-tools .ai-business-panel,
+.pos-bottom-ai-tools .ai-voice-pos-card{
+  margin:0;
+}
+.pos-real-shell > .pos-agent-layout{
+  margin-top:12px;
+}
+
+/* V65.9 - Sticky customer session after saving POS bill */
+.pos-customer-session-banner{
+  position:sticky;
+  top:84px;
+  z-index:110;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:14px;
+  padding:12px 14px;
+  border:1px solid #fed7aa;
+  border-radius:18px;
+  background:linear-gradient(135deg,#fff7ed,#ffffff);
+  box-shadow:0 12px 28px rgba(15,23,42,.08);
+}
+.pos-customer-session-banner b{
+  color:#7f1d1d;
+  font-size:18px;
+  margin-left:6px;
+}
+.pos-session-label{
+  color:#64748b;
+  font-weight:800;
+  font-size:12px;
+  text-transform:uppercase;
+  letter-spacing:.03em;
+}
+.pos-save-session-notice{
+  margin:0!important;
+  border-radius:16px!important;
+}
+@media(max-width:760px){
+  .pos-customer-session-banner{
+    position:static;
+    align-items:flex-start;
+    flex-direction:column;
+  }
+  .pos-customer-session-banner .actions{
+    width:100%;
+  }
+  .pos-customer-session-banner .btn{
+    flex:1;
+  }
+}
+
+/* V65.10 - Payment overpay old debt allocation dialog */
+.payment-overpay-overlay{
+  position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:9999;
+  display:flex;align-items:center;justify-content:center;padding:18px;
+}
+.payment-overpay-dialog{width:min(900px,96vw);max-height:90vh;overflow:auto;margin:0;}
+.payment-overpay-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;}
+.payment-overpay-head h3{margin:0 0 4px 0;}
+.payment-overpay-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:12px 0;}
+.payment-overpay-summary span{background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;padding:10px;}
+.payment-overpay-table-wrap{max-height:48vh;overflow:auto;border:1px solid #e5e7eb;border-radius:12px;}
+.payment-overpay-table{margin:0;}
+.payment-overpay-table thead th{position:sticky;top:0;background:#fff;z-index:1;}
+@media(max-width:760px){.payment-overpay-summary{grid-template-columns:1fr 1fr}.payment-overpay-head{display:block}.payment-overpay-dialog{width:98vw;padding:12px}}

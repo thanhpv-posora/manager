@@ -1,6 +1,20 @@
 const QRCode = require('qrcode');
 
-function money(n) { return Number(n || 0).toLocaleString('vi-VN') + 'đ'; }
+function money(n) { return Number(n || 0).toLocaleString('en-US') + 'đ'; }
+const floor1=v=>Math.floor((Number(v)||0)*10)/10;
+const animal=v=>floor1(v).toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1});
+const kg1=v=>Number(v||0).toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1});
+
+function publicAppUrl(){
+  const raw = process.env.PUBLIC_APP_URL || process.env.FRONTEND_PUBLIC_URL || process.env.SITE_URL || process.env.APP_URL || process.env.FRONTEND_URL || 'https://meatbiz.posora.vn';
+  try {
+    const u = new URL(String(raw));
+    if (/^(localhost|127\.0\.0\.1|0\.0\.0\.0)$/i.test(u.hostname)) return 'https://meatbiz.posora.vn';
+    return String(raw).replace(/\/$/, '');
+  } catch (_) {
+    return 'https://meatbiz.posora.vn';
+  }
+}
 
 class PrintService {
   async settings() {
@@ -16,7 +30,7 @@ class PrintService {
   }
   async billHtml(order) {
     const settings = await this.settings();
-    const app = process.env.PUBLIC_APP_URL || process.env.FRONTEND_URL || 'https://meatbiz.posora.vn';
+    const app = publicAppUrl();
     const url = `${app}/bill/${order.private_token || order.order_code}`;
     const qr = await QRCode.toDataURL(url);
     const pay=order.payment||{};
@@ -162,11 +176,13 @@ ${showInstallment ? `<div class="right total">Góp nợ/ngày: ${money(monthlyIn
     const lotDate = lot.calendar_type === 'LUNAR' && lot.lunar_date_text
       ? `${lot.lunar_date_text} ÂL`
       : (lot.purchase_date || '');
+    const lotUrl = `${publicAppUrl()}/api/lots/public/${lot.id}/print`;
+    const lotQr = await QRCode.toDataURL(lotUrl);
 
     return `<!doctype html><html><head><meta charset="utf-8"><title>${lot.lot_code}</title><style>
-body{font-family:Arial;margin:28px;color:#111}.header{border-bottom:3px solid #7f1d1d;padding-bottom:12px}.logo{font-size:28px;font-weight:900;color:#7f1d1d}
+body{font-family:Arial;margin:28px;color:#111}.header{display:flex;justify-content:space-between;gap:18px;border-bottom:3px solid #7f1d1d;padding-bottom:12px}.logo{font-size:28px;font-weight:900;color:#7f1d1d}.qr{width:120px;height:120px}.sub{color:#666;font-size:12px;text-align:center}
 table{width:100%;border-collapse:collapse;margin-top:18px}td,th{border:1px solid #ddd;padding:10px}th{background:#7f1d1d;color:white}.right{text-align:right}.total{font-size:22px;font-weight:900;text-align:right;margin-top:18px}.print{position:fixed;right:20px;top:20px;padding:12px 18px;background:#7f1d1d;color:#fff;border:0;border-radius:10px}.note{white-space:pre-wrap}.muted{color:#666}@media print{.print{display:none}}</style></head><body>
-<button class="print" onclick="window.print()">IN PHIẾU</button><div class="header"><div class="logo">PHIẾU NHẬP LÔ / NHÀ CUNG CẤP</div><div>Mã lô: <b>${lot.lot_code}</b></div><div>Ngày tính bill NCC: ${lotDate}</div><div>Lịch tính bill: ${lot.calendar_type==='LUNAR'?'Âm lịch':'Dương lịch'}</div></div>
+<button class="print" onclick="window.print()">IN PHIẾU</button><div class="header"><div><div class="logo">PHIẾU NHẬP LÔ / NHÀ CUNG CẤP</div><div>Mã lô: <b>${lot.lot_code}</b></div><div>Ngày tính bill NCC: ${lotDate}</div><div>Lịch tính bill: ${lot.calendar_type==='LUNAR'?'Âm lịch':'Dương lịch'}</div></div><div><img class="qr" src="${lotQr}"><div class="sub">Quét QR xem phiếu NCC</div></div></div>
 <p><b>Nhà cung cấp:</b> ${lot.supplier_name||''} - ${lot.supplier_phone||''}<br><b>Địa chỉ:</b> ${lot.supplier_address||''}</p>
 <table><tbody>
 <tr><th>Nội dung</th><th>Cách nhập</th><th class="right">Giá trị</th></tr>
@@ -176,13 +192,14 @@ table{width:100%;border-collapse:collapse;margin-top:18px}td,th{border:1px solid
 <tr><td>Trừ bò hư</td><td></td><td class="right">-${lot.damage_weight||0} kg</td></tr>
 <tr><td>Trừ mỡ</td><td></td><td class="right">-${lot.fat_weight||0} kg</td></tr>
 <tr><td>Trừ khác</td><td>${lot.deduct_note||''}</td><td class="right">-${lot.other_deduct_weight||0} kg</td></tr>
-<tr><td><b>Kg tính tiền</b></td><td></td><td class="right"><b>${lot.total_weight} kg</b></td></tr>
+<tr><td><b>Kg bò xô tính tiền</b></td><td></td><td class="right"><b>${lot.total_weight} kg</b></td></tr>
 </tbody></table>
 
 <table><tbody>
 <tr><th>Phân loại bò</th><th class="right">Số con</th><th class="right">Kg phân bổ</th><th class="right">Đơn giá</th></tr>
-<tr><td>Bò đực</td><td class="right">${lot.male_animals||0}</td><td class="right">${Number(lot.male_weight||0).toFixed(3)} kg</td><td class="right">${money(lot.male_price||lot.purchase_price)} / kg</td></tr>
-<tr><td>Bò cái</td><td class="right">${lot.female_animals||0}</td><td class="right">${Number(lot.female_weight||0).toFixed(3)} kg</td><td class="right">${money(lot.female_price||lot.purchase_price)} / kg</td></tr>
+<tr><td>Bò đực</td><td class="right">${animal(lot.male_animals)}</td><td class="right">${kg1(lot.male_weight)} kg</td><td class="right">${money(lot.male_price||lot.purchase_price)} / kg</td></tr>
+<tr><td>Bò cái</td><td class="right">${animal(lot.female_animals)}</td><td class="right">${kg1(lot.female_weight)} kg</td><td class="right">${money(lot.female_price||lot.purchase_price)} / kg</td></tr>
+<tr><td>Thịt vụn</td><td class="right"></td><td class="right">${Number(lot.fragment_weight||0).toFixed(3)} kg</td><td class="right">${money(lot.fragment_price||0)} / kg</td></tr>
 </tbody></table>
 
 <table><tbody>

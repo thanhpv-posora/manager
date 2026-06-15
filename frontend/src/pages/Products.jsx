@@ -4,6 +4,7 @@ import SafePage from'../components/SafePage';
 import MoneyInput from'../components/MoneyInput';
 import {moneyVnd}from'../utils/money';
 import {showSuccess,showError,showWarning}from'../utils/toast';
+import {handlePosInputKeyNavigation}from'../utils/focusNavigation';
 
 const PREF_KEY='product_defaults';
 const LOCAL_KEY='meatbiz_product_defaults';
@@ -186,11 +187,11 @@ export default function Products(){
 
           <label className="field-label"><span>Đơn vị tính</span><input className="input" placeholder="kg / con / cái" value={form.unit||'kg'} onChange={e=>updateForm({unit:e.target.value},true)}/></label>
 
-          <label className="field-label"><span>Giá bán mặc định</span><MoneyInput placeholder="Ví dụ: 120,000" value={form.sale_price??''} onChange={v=>updateForm({sale_price:v})}/></label>
-          <label className="field-label"><span>Giá vốn / giá nhập</span><MoneyInput placeholder="Ví dụ: 90,000" value={form.cost_price??''} onChange={v=>updateForm({cost_price:v})}/></label>
+          <label className="field-label"><span>Giá bán mặc định</span><MoneyInput placeholder="Ví dụ: 120,000" value={form.sale_price??''} onChange={v=>updateForm({sale_price:v})} data-pos-nav="true" onKeyDown={handlePosInputKeyNavigation}/></label>
+          <label className="field-label"><span>Giá vốn / giá nhập</span><MoneyInput placeholder="Ví dụ: 90,000" value={form.cost_price??''} onChange={v=>updateForm({cost_price:v})} data-pos-nav="true" onKeyDown={handlePosInputKeyNavigation}/></label>
 
-          <label className="field-label"><span>Tồn kho ban đầu</span><input className="input" placeholder="Ví dụ: 0" value={form.stock_quantity??''} onChange={e=>updateForm({stock_quantity:e.target.value})}/></label>
-          <label className="field-label"><span>Ngưỡng cảnh báo tồn thấp</span><input className="input" placeholder="Ví dụ: 5" value={form.low_stock_threshold??''} onChange={e=>updateForm({low_stock_threshold:e.target.value})}/></label>
+          <label className="field-label"><span>Tồn kho ban đầu</span><input className="input" placeholder="Ví dụ: 0" value={form.stock_quantity??''} onChange={e=>updateForm({stock_quantity:e.target.value})} inputMode="decimal" data-pos-nav="true" onKeyDown={handlePosInputKeyNavigation}/></label>
+          <label className="field-label"><span>Ngưỡng cảnh báo tồn thấp</span><input className="input" placeholder="Ví dụ: 5" value={form.low_stock_threshold??''} onChange={e=>updateForm({low_stock_threshold:e.target.value})} inputMode="decimal" data-pos-nav="true" onKeyDown={handlePosInputKeyNavigation}/></label>
 
           <label className="field-label"><span>Kiểu quản tồn kho</span><select className="select" value={form.inventory_mode||'STOCK'} onChange={e=>updateForm({inventory_mode:e.target.value},true)}>
             <option value="STOCK">Quản tồn kho chuẩn: gà/vịt/thịt đông lạnh</option>
@@ -243,7 +244,7 @@ export default function Products(){
             </select>
           </td>
           <td><input className="input" value={rowValue(x,'unit')} onChange={e=>updateGrid(x.id,{unit:e.target.value})}/></td>
-          <td><MoneyInput value={rowValue(x,'sale_price')} onChange={v=>updateGrid(x.id,{sale_price:v})}/></td>
+          <td><MoneyInput value={rowValue(x,'sale_price')} onChange={v=>updateGrid(x.id,{sale_price:v})} data-pos-nav="true" onKeyDown={handlePosInputKeyNavigation}/></td>
           <td>
             <select className="select" value={rowValue(x,'inventory_mode')} onChange={e=>updateGrid(x.id,{inventory_mode:e.target.value,allow_negative_stock:e.target.value==='STOCK'?0:1})}>
               <option value="STOCK">STOCK</option>

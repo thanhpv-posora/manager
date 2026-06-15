@@ -36,7 +36,7 @@ export default function POSProductTableAgent({
             }
           }}
         />
-        <button className="btn secondary" onClick={saveOrder} disabled={!cid}>
+        <button type="button" className="btn secondary" onClick={saveOrder} disabled={!cid}>
           Lưu thứ tự
         </button>
       </div>

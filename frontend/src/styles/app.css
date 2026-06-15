@@ -99,3 +99,13 @@
   .sidebar-toggle{right:16px;top:22px;min-width:116px;font-size:14px;}
   .app-shell.mobile-menu-open .menu{grid-template-columns:1fr!important;}
 }
+
+/* V65.15 Supplier/NCC reports */
+.report-tabs{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 12px}
+.supplier-report-filter{align-items:end;margin-bottom:12px}
+.table-scroll{width:100%;overflow:auto;border:1px solid #eef0f4;border-radius:16px;background:#fff}
+.table.compact th,.table.compact td{font-size:13px;padding:10px 12px;vertical-align:top;white-space:nowrap}
+.table.compact tfoot td{font-weight:800;background:#fff7ed;color:#8b1a1a}
+.supplier-report-table{max-height:520px;margin:12px 0 20px}
+.supplier-report-table thead th{position:sticky;top:0;z-index:2;background:#fff7ed}
+@media(max-width:900px){.table.compact th,.table.compact td{font-size:12px;padding:8px}.report-tabs .btn{flex:1}.supplier-report-filter{grid-template-columns:1fr}}

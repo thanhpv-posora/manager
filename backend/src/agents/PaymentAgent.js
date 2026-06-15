@@ -2,6 +2,20 @@ const pool = require('../config/db');
 const { nextCode } = require('../utils/code');
 
 class PaymentAgent {
+  async transactionStatus(key) {
+    if (!key) throw new Error('Thiếu mã giao dịch');
+    const [rows] = await pool.query(
+      `SELECT idempotency_key,status,response_json,error_message,created_at,updated_at
+       FROM payment_transaction_requests WHERE idempotency_key=? LIMIT 1`,
+      [key]
+    );
+    if (!rows.length) return { idempotency_key:key, status:'NOT_FOUND' };
+    const row = rows[0];
+    let response = null;
+    try { response = row.response_json ? JSON.parse(row.response_json) : null; } catch (_) {}
+    return { ...row, response_json: undefined, response };
+  }
+
   async list(user, query={}) {
     const where=[], params=[];
     if (user.role==='CUSTOMER') { where.push('p.customer_id=?'); params.push(user.customer_id); }
@@ -63,6 +77,47 @@ class PaymentAgent {
     return allocations.join(', ');
   }
 
+
+  async allocateSelected(conn, customerId, amount, orderIds=[], excludeOrderId=null) {
+    let remaining=Number(amount||0);
+    const allocations=[];
+    const ids=[...new Set((orderIds||[]).map(x=>Number(x)).filter(Boolean))].filter(id=>!excludeOrderId || Number(id)!==Number(excludeOrderId));
+    if(!ids.length || remaining<=0) return { allocations, note:'' , remaining };
+    const placeholders=ids.map(()=>'?').join(',');
+    const [orders]=await conn.query(
+      `SELECT id,order_code,order_date,debt_amount,total_amount,paid_amount
+       FROM orders
+       WHERE customer_id=? AND status<>'CANCELLED' AND debt_amount>0 AND id IN (${placeholders})
+       FOR UPDATE`,
+      [customerId, ...ids]
+    );
+    const byId=new Map(orders.map(o=>[Number(o.id),o]));
+    for(const id of ids){
+      if(remaining<=0) break;
+      const o=byId.get(Number(id));
+      if(!o) continue;
+      const beforeDebt=Number(o.debt_amount||0);
+      const want=Math.min(remaining,beforeDebt);
+      const applied=await this.applyPaymentToOrder(conn,o.id,want);
+      if(applied>0){
+        remaining-=applied;
+        allocations.push({
+          order_id:o.id,
+          order_code:o.order_code,
+          order_date:o.order_date,
+          debt_before:beforeDebt,
+          applied_amount:applied,
+          debt_after:Math.max(0,beforeDebt-applied)
+        });
+      }
+    }
+    return {
+      allocations,
+      note:allocations.map(a=>`${a.order_code}:${a.applied_amount}`).join(', '),
+      remaining
+    };
+  }
+
   async ensureOrderPayableTotal(conn, orderId, customerId, paymentDate, currentBillAmount, installmentAmount, monthlyInstallmentId, userId) {
     if (!orderId) return;
     const bill = Number(currentBillAmount || 0);
@@ -109,7 +164,89 @@ class PaymentAgent {
     }
   }
 
+
+  async getIdempotentResult(key) {
+    if (!key) return null;
+    try {
+      const [rows] = await pool.query(
+        `SELECT status,response_json,error_message FROM payment_transaction_requests WHERE idempotency_key=? LIMIT 1`,
+        [key]
+      );
+      if (!rows.length) return null;
+      const row = rows[0];
+      if (row.status === 'SUCCESS') {
+        try { return JSON.parse(row.response_json || '{}'); } catch (_) { return { message:'Giao dịch đã xử lý', idempotency_key:key }; }
+      }
+      if (row.status === 'PROCESSING') {
+        const err = new Error('Giao dịch đang xử lý. Vui lòng bấm kiểm tra lại, không bấm thu tiền thêm lần nữa.');
+        err.code = 'PAYMENT_PROCESSING';
+        throw err;
+      }
+      if (row.status === 'FAILED') {
+        const err = new Error(row.error_message || 'Giao dịch trước đó bị lỗi. Vui lòng kiểm tra log trước khi thực hiện lại.');
+        err.code = 'PAYMENT_PREVIOUS_FAILED';
+        throw err;
+      }
+    } catch (e) {
+      if (e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146)) return null;
+      throw e;
+    }
+    return null;
+  }
+
+  async beginIdempotentRequest(key, data, user) {
+    if (!key) return false;
+    try {
+      await pool.query(
+        `INSERT INTO payment_transaction_requests
+         (idempotency_key,status,request_json,created_by,created_at,updated_at)
+         VALUES(?,?,?,?,NOW(),NOW())`,
+        [key,'PROCESSING',JSON.stringify(data||{}),user?.id||null]
+      );
+      return true;
+    } catch (e) {
+      if (e && (e.code === 'ER_DUP_ENTRY' || e.errno === 1062)) {
+        const existing = await this.getIdempotentResult(key);
+        if (existing) return false;
+      }
+      if (e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146)) return false;
+      throw e;
+    }
+  }
+
+  async finishIdempotentRequest(key, status, payload) {
+    if (!key) return;
+    try {
+      await pool.query(
+        `UPDATE payment_transaction_requests
+         SET status=?, response_json=?, error_message=?, updated_at=NOW()
+         WHERE idempotency_key=?`,
+        [status, status==='SUCCESS'?JSON.stringify(payload||{}):null, status==='FAILED'?String(payload?.message||payload||''):null, key]
+      );
+    } catch (e) {
+      if (!(e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146))) throw e;
+    }
+  }
+
+  async insertPaymentAllocationSafe(conn, paymentId, orderId, customerId, amount, allocationType, note, userId) {
+    if (!paymentId || !orderId || Number(amount||0)<=0) return;
+    try {
+      await conn.query(
+        `INSERT INTO payment_allocations(payment_id,order_id,customer_id,amount,allocation_type,note,created_by,created_at)
+         VALUES(?,?,?,?,?,?,?,NOW())`,
+        [paymentId,orderId,customerId,amount,allocationType,note||'',userId||null]
+      );
+    } catch (e) {
+      if (!(e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146))) throw e;
+    }
+  }
+
   async create(data, user) {
+    const idempotencyKey = String(data.idempotency_key || data.idempotencyKey || '').trim();
+    const existingIdempotentResult = await this.getIdempotentResult(idempotencyKey);
+    if (existingIdempotentResult) return existingIdempotentResult;
+    const idempotencyStarted = await this.beginIdempotentRequest(idempotencyKey, data, user);
+
     const cashAmount=Number(data.cash_amount||0);
     const bankAmount=Number(data.bank_amount||0);
     const paidTotal=cashAmount+bankAmount;
@@ -205,12 +342,29 @@ class PaymentAgent {
 
       let billApplied=0;
       let remainingPaid=amount;
+      let oldDebtAllocations=[];
+      let unusedAmount=0;
       if(data.order_id){
-        // Apply total money to the order debt. The order total already includes installment.
+        // Apply total money to the selected/current bill first. The order total already includes installment.
         const orderPayLimit=orderDebtBefore>0 ? Math.min(remainingPaid, orderDebtBefore) : remainingPaid;
         if(orderPayLimit>0){
           billApplied=await this.applyPaymentToOrder(conn,data.order_id,orderPayLimit);
           remainingPaid=Math.max(0,remainingPaid-billApplied);
+        }
+
+        // If customer pays more than current bill, only allocate the surplus to old bills explicitly selected by the user.
+        const selectedOldBillIds=Array.isArray(data.allocate_order_ids) ? data.allocate_order_ids : [];
+        if(remainingPaid>0 && selectedOldBillIds.length){
+          const allocResult=await this.allocateSelected(conn,data.customer_id,remainingPaid,selectedOldBillIds,data.order_id);
+          oldDebtAllocations=allocResult.allocations;
+          remainingPaid=allocResult.remaining;
+          if(allocResult.note){
+            note = note ? `${note} / Trừ nợ cũ: ${allocResult.note}` : `Trừ nợ cũ: ${allocResult.note}`;
+          }
+        }
+        unusedAmount=remainingPaid;
+        if(unusedAmount>0){
+          note = note ? `${note} / Tiền dư chưa phân bổ: ${unusedAmount}` : `Tiền dư chưa phân bổ: ${unusedAmount}`;
         }
       }
 
@@ -239,6 +393,21 @@ class PaymentAgent {
         insertId=r.insertId;
       }
 
+      if (data.order_id && billApplied > 0) {
+        await this.insertPaymentAllocationSafe(
+          conn, insertId, data.order_id, data.customer_id, billApplied, 'CURRENT_BILL',
+          `Thu bill hiện tại ${code}`, user.id
+        );
+      }
+      if (Array.isArray(oldDebtAllocations) && oldDebtAllocations.length) {
+        for (const a of oldDebtAllocations) {
+          await this.insertPaymentAllocationSafe(
+            conn, insertId, a.order_id, data.customer_id, a.applied_amount, 'OLD_DEBT',
+            `Trừ nợ cũ ${a.order_code}`, user.id
+          );
+        }
+      }
+
       await conn.query(
         `INSERT INTO debt_transactions(customer_id,order_id,payment_id,transaction_date,type,amount,note,created_by)
          VALUES(?,?,?,?, 'PAYMENT', ?, ?, ?)`,
@@ -254,9 +423,11 @@ class PaymentAgent {
       }
 
       await conn.commit();
-      return {
+      const response = {
         message:'Đã thu tiền và cập nhật công nợ',
         payment_code:code,
+        payment_id: insertId,
+        idempotency_key: idempotencyKey || null,
         amount,
         cash_amount:cashAmount,
         bank_amount:bankAmount,
@@ -272,9 +443,17 @@ class PaymentAgent {
         payment_calendar_type:paymentCalendarType,
         payment_lunar_date_text:paymentLunarDateText,
         allocation_note:note,
+        old_debt_allocations:oldDebtAllocations||[],
+        unused_amount:unusedAmount||0,
         monthly_installment_id:monthlyInstallmentId
       };
-    } catch(e) { await conn.rollback(); throw e; } finally { conn.release(); }
+      if (idempotencyStarted) await this.finishIdempotentRequest(idempotencyKey, 'SUCCESS', response);
+      return response;
+    } catch(e) {
+      await conn.rollback();
+      if (idempotencyStarted) await this.finishIdempotentRequest(idempotencyKey, 'FAILED', e);
+      throw e;
+    } finally { conn.release(); }
   }
 }
 module.exports = new PaymentAgent();

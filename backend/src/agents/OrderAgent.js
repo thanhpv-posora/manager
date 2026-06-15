@@ -159,7 +159,107 @@ const orderId = r.insertId;
     } catch(e) { await conn.rollback(); throw e; } finally { conn.release(); }
   }
 
-  async updateItem(orderId, itemId, data) {
+
+  async recalcOrderTotals(conn, orderId) {
+    const [sumRows] = await conn.query(`SELECT COALESCE(SUM(total_price),0) total FROM order_items WHERE order_id=?`, [orderId]);
+    const itemTotal = Number(sumRows[0].total || 0);
+    const [orderRows] = await conn.query(`SELECT paid_amount, installment_amount FROM orders WHERE id=? FOR UPDATE`, [orderId]);
+    const paid = Number(orderRows[0]?.paid_amount || 0);
+    const installmentAmount = Number(orderRows[0]?.installment_amount || 0);
+    const total = itemTotal + installmentAmount;
+    const debt = Math.max(0, total - paid);
+    const status = paid <= 0 ? 'UNPAID' : paid >= total ? 'PAID' : 'PARTIAL';
+    await conn.query(
+      `UPDATE orders SET current_bill_amount=?, total_amount=?, debt_amount=?, payment_status=? WHERE id=?`,
+      [itemTotal, total, debt, status, orderId]
+    );
+    return { item_total:itemTotal, total_amount:total, debt_amount:debt, payment_status:status };
+  }
+
+  async resolveAddItemProduct(conn, order, data) {
+    const productId = Number(data.product_id || 0);
+    if (productId > 0) {
+      const [rows] = await conn.query(
+        `SELECT p.id product_id,p.name product_name,p.unit,p.default_sale_price,p.inventory_mode,p.allow_negative_stock,
+                COALESCE(cpp.sale_price,p.default_sale_price,0) sale_price,
+                CASE WHEN cpp.sale_price IS NOT NULL THEN 'PRIVATE_PRICE' ELSE 'COMMON_PRICE' END price_type
+         FROM products p
+         LEFT JOIN customer_product_prices cpp ON cpp.product_id=p.id AND cpp.customer_id=? AND cpp.is_active=1
+         WHERE p.id=? AND p.del_flg=0 AND p.is_active=1 LIMIT 1`,
+        [order.customer_id, productId]
+      );
+      if(!rows.length) throw new Error('Không tìm thấy mặt hàng đã chọn');
+      return rows[0];
+    }
+
+    const name = String(data.product_name || data.name || '').trim();
+    if(!name) throw new Error('Thiếu tên mặt hàng cần thêm');
+
+    const [exists] = await conn.query(
+      `SELECT p.id product_id,p.name product_name,p.unit,p.default_sale_price,p.inventory_mode,p.allow_negative_stock,
+              COALESCE(cpp.sale_price,p.default_sale_price,0) sale_price,
+              CASE WHEN cpp.sale_price IS NOT NULL THEN 'PRIVATE_PRICE' ELSE 'COMMON_PRICE' END price_type
+       FROM products p
+       LEFT JOIN customer_product_prices cpp ON cpp.product_id=p.id AND cpp.customer_id=? AND cpp.is_active=1
+       WHERE p.del_flg=0 AND p.is_active=1 AND LOWER(TRIM(p.name))=LOWER(TRIM(?)) LIMIT 1`,
+      [order.customer_id, name]
+    );
+    if(exists.length) return exists[0];
+
+    const salePrice = Number(data.sale_price || data.price || 0);
+    if(!(salePrice > 0)) throw new Error('Mặt hàng mới cần nhập giá bán');
+    const code = 'QK' + Date.now().toString().slice(-10);
+    const unit = data.unit || 'kg';
+    const [r] = await conn.query(
+      `INSERT INTO products(category_id,product_code,name,unit,default_sale_price,default_purchase_price,stock_quantity,low_stock_threshold,note,is_active,del_flg,inventory_mode,allow_negative_stock)
+       VALUES(NULL,?,?,?,?,0,0,5,'Tạo nhanh từ sửa bill',1,0,?,1)`,
+      [code, name, unit, salePrice, data.inventory_mode || 'CARCASS_PART']
+    );
+    const newId = r.insertId;
+    try{
+      await conn.query(
+        `INSERT INTO customer_product_catalogs(customer_id,product_id,sort_order,is_default,is_active,del_flg)
+         VALUES(?,?,999,1,1,0)
+         ON DUPLICATE KEY UPDATE is_default=1,is_active=1,del_flg=0`,
+        [order.customer_id, newId]
+      );
+      await conn.query(
+        `INSERT INTO customer_product_prices(customer_id,product_id,sale_price,effective_from,is_active)
+         VALUES(?,?,?,CURDATE(),1)`,
+        [order.customer_id, newId, salePrice]
+      );
+    }catch(e){}
+    return {product_id:newId, product_name:name, unit, sale_price:salePrice, price_type:'MANUAL_PRICE', inventory_mode:data.inventory_mode || 'CARCASS_PART', allow_negative_stock:1};
+  }
+
+  async addItem(orderId, data, user={}) {
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [orders] = await conn.query(`SELECT * FROM orders WHERE id=? FOR UPDATE`, [orderId]);
+      if(!orders.length) throw new Error('Không tìm thấy bill');
+      const order = orders[0];
+      if(order.status === 'CANCELLED') throw new Error('Bill đã hủy, không thể thêm hàng');
+
+      const p = await this.resolveAddItemProduct(conn, order, data);
+      const qty = Number(data.quantity || data.qty || 0);
+      if(!(qty > 0)) throw new Error('Số lượng phải lớn hơn 0');
+      const salePrice = Number(data.sale_price || data.price || p.sale_price || 0);
+      if(!(salePrice >= 0)) throw new Error('Giá bán không hợp lệ');
+      const line = qty * salePrice;
+      const inv = await InventoryService.out(conn, p.product_id, qty, order.order_date, 'SALE', orderId, `Thêm hàng vào bill ${order.order_code}`, user.id || order.created_by || null);
+      await conn.query(
+        `INSERT INTO order_items(order_id,product_id,product_name,unit,quantity,sale_price,total_price,price_type,note,inventory_mode,stock_checked)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+        [orderId, p.product_id, p.product_name, p.unit || data.unit || 'kg', qty, salePrice, line, data.price_type || p.price_type || 'MANUAL_PRICE', data.note || null, inv.inventory_mode, inv.stock_checked?1:0]
+      );
+      const totals = await this.recalcOrderTotals(conn, orderId);
+      await conn.commit();
+      return {message:'Đã thêm mặt hàng vào bill', ...totals};
+    } catch(e) { await conn.rollback(); throw e; } finally { conn.release(); }
+  }
+
+  async updateItem(orderId, itemId, data, user={}) {
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
@@ -171,13 +271,7 @@ const orderId = r.insertId;
       const newTotal = newQty * newPrice;
       await conn.query(`UPDATE order_items SET quantity=?, sale_price=?, total_price=? WHERE id=?`, [newQty,newPrice,newTotal,itemId]);
       await InventoryService.adjustOrderItem(conn, old.product_id, Number(old.quantity), newQty);
-      const [sumRows] = await conn.query(`SELECT COALESCE(SUM(total_price),0) total FROM order_items WHERE order_id=?`, [orderId]);
-      const total = Number(sumRows[0].total);
-      const [orderRows] = await conn.query(`SELECT paid_amount FROM orders WHERE id=?`, [orderId]);
-      const paid = Number(orderRows[0].paid_amount||0);
-      const debt = Math.max(0,total-paid);
-      const status = paid<=0?'UNPAID':paid>=total?'PAID':'PARTIAL';
-      await conn.query(`UPDATE orders SET total_amount=?,debt_amount=?,payment_status=? WHERE id=?`, [total,debt,status,orderId]);
+      await this.recalcOrderTotals(conn, orderId);
       await conn.commit();
       return {message:'Đã sửa dòng bill'};
     } catch(e) { await conn.rollback(); throw e; } finally { conn.release(); }

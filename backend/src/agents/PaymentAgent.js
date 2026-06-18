@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { nextCode } = require('../utils/code');
+const { assertCustomerScope, customerScopeWhere }=require('../middleware/scope');
 
 class PaymentAgent {
   async transactionStatus(key) {
@@ -18,7 +19,10 @@ class PaymentAgent {
 
   async list(user, query={}) {
     const where=[], params=[];
-    if (user.role==='CUSTOMER') { where.push('p.customer_id=?'); params.push(user.customer_id); }
+    if (user.role==='CUSTOMER') {
+      const scope=await customerScopeWhere(user,'p.customer_id');
+      where.push(scope.clause); params.push(...scope.params);
+    }
     if (query.from_date || query.from) { where.push('DATE(p.payment_date)>=?'); params.push(String(query.from_date||query.from).slice(0,10)); }
     if (query.to_date || query.to) { where.push('DATE(p.payment_date)<=?'); params.push(String(query.to_date||query.to).slice(0,10)); }
     if (query.customer_name || query.customer) { where.push('c.name LIKE ?'); params.push('%'+String(query.customer_name||query.customer).trim()+'%'); }
@@ -74,7 +78,7 @@ class PaymentAgent {
   }
 
   async summary(customerId, user) {
-    if (user.role==='CUSTOMER' && Number(user.customer_id)!==Number(customerId)) throw new Error('Không có quyền');
+    await assertCustomerScope(user, customerId);
     const [customers]=await pool.query(`SELECT id,name,phone,address FROM customers WHERE id=?`, [customerId]);
     if (!customers.length) throw new Error('Không tìm thấy khách');
     const [debtRows]=await pool.query(
@@ -512,6 +516,7 @@ class PaymentAgent {
     const amount=paidTotal>0 ? paidTotal : (explicitAmount>0 ? explicitAmount : 0);
 
     if (!data.customer_id || amount<=0) throw new Error('Thiếu khách hoặc số tiền thu không hợp lệ');
+    await assertCustomerScope(user, data.customer_id);
 
     const conn=await pool.getConnection();
     try {

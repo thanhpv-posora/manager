@@ -1,4 +1,5 @@
 const pool=require('../config/db');
+const { assertCustomerScope, customerScopeWhere }=require('../middleware/scope');
 
 async function nextCustomerCode(){
   const [rows]=await pool.query(`SELECT customer_code FROM customers WHERE customer_code REGEXP '^KH[0-9]+$' ORDER BY CAST(SUBSTRING(customer_code,3) AS UNSIGNED) DESC LIMIT 1`);
@@ -32,12 +33,9 @@ class CustomerAgent{
   }
 
   async list(user){
-    const params=[];
-    let where='WHERE c.del_flg=0';
-    if(user&&user.role==='CUSTOMER'){
-      where+=' AND (c.id=? OR c.parent_customer_id=?)';
-      params.push(user.customer_id,user.customer_id);
-    }
+    const scope=await customerScopeWhere(user,'c.id');
+    const where='WHERE c.del_flg=0'+(scope.clause?' AND '+scope.clause:'');
+    const params=[...scope.params];
     const [rows]=await pool.query(
       `SELECT c.*,
         pc.name parent_customer_name,
@@ -75,10 +73,7 @@ class CustomerAgent{
     const name=cleanName(data);
     if(!name) throw new Error('Tên khách hàng không được để trống');
 
-    if(user&&user.role==='CUSTOMER'){
-      const [check]=await pool.query(`SELECT id FROM customers WHERE id=? AND (id=? OR parent_customer_id=?) AND del_flg=0`,[id,user.customer_id,user.customer_id]);
-      if(!check.length) throw new Error('Không có quyền sửa khách hàng này');
-    }
+    await assertCustomerScope(user,id);
 
     await pool.query(
       `UPDATE customers SET name=?,phone=?,address=?,price_mode=?,billing_calendar_type=?,note=?,is_active=? WHERE id=? AND del_flg=0`,
@@ -89,8 +84,8 @@ class CustomerAgent{
 
   async remove(id,reason,user){
     if(user&&user.role==='CUSTOMER'){
-      const [check]=await pool.query(`SELECT id FROM customers WHERE id=? AND parent_customer_id=? AND del_flg=0`,[id,user.customer_id]);
-      if(!check.length) throw new Error('User khách chỉ được xóa khách con do mình tạo');
+      if(Number(id)===Number(user.customer_id)) throw new Error('Không thể xóa tài khoản chính của mình');
+      await assertCustomerScope(user,id);
     }
     await pool.query(`UPDATE customers SET del_flg=1,note=CONCAT(COALESCE(note,''),'\nXóa: ',?) WHERE id=?`,[reason||'',id]);
     return {message:'Đã xóa mềm khách hàng'};

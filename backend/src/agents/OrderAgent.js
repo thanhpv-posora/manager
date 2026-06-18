@@ -6,14 +6,7 @@ const PrintService = require('../services/PrintService');
 const DebtMonthlyInstallmentAgent=require('./DebtMonthlyInstallmentAgent');
 const { resolveBillSolarDate }=require('../utils/lunarDate');
 const PriceBookService = require('../services/PriceBookService');
-
-function customerScopeFilterV625(user, baseWhere, params) {
-  if(user && user.role==='CUSTOMER') {
-    return {where: baseWhere + ' AND o.customer_id=?', params:[...params, user.customer_id]};
-  }
-  return {where:baseWhere, params};
-}
-
+const { assertCustomerScope, customerScopeWhere }=require('../middleware/scope');
 
 function parseLunarDateParts(text){
   const m=String(text||'').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
@@ -65,7 +58,7 @@ class OrderAgent {
   constructor(){this.version='65.55.0';this.responsibility='Order POS blocks future shipping dates and uses shipping-date effective price book';}
 
   async ensureOrderEditable(conn, orderId) {
-    const [rows] = await conn.query(`SELECT id,status,is_locked,locked_at,payment_status FROM orders WHERE id=? FOR UPDATE`, [orderId]);
+    const [rows] = await conn.query(`SELECT id,status,is_locked,locked_at,payment_status,customer_id FROM orders WHERE id=? FOR UPDATE`, [orderId]);
     if (!rows.length) throw new Error('Không tìm thấy bill');
     const o = rows[0];
     if (String(o.status || '').toUpperCase() === 'CANCELLED') throw new Error('Bill đã hủy, không thể sửa');
@@ -149,7 +142,10 @@ return await this.loadLegacyDirectPayments(orderId);
 
   async list(user, query={}) {
     const where=[], params=[];
-    if (user.role==='CUSTOMER') { where.push('o.customer_id=?'); params.push(user.customer_id); }
+    if (user.role==='CUSTOMER') {
+      const scope=await customerScopeWhere(user,'o.customer_id');
+      where.push(scope.clause); params.push(...scope.params);
+    }
     if (query.from_date || query.from) { where.push('DATE(o.order_date)>=?'); params.push(String(query.from_date||query.from).slice(0,10)); }
     if (query.to_date || query.to) { where.push('DATE(o.order_date)<=?'); params.push(String(query.to_date||query.to).slice(0,10)); }
     if (query.customer_name || query.customer) { where.push('c.name LIKE ?'); params.push('%'+String(query.customer_name||query.customer).trim()+'%'); }
@@ -167,8 +163,9 @@ return await this.loadLegacyDirectPayments(orderId);
       [id]
     );
     if (!orders.length) throw new Error('Không tìm thấy bill');
-    const [items] = await pool.query(`SELECT * FROM order_items WHERE order_id=? ORDER BY id`, [id]);
     const order = orders[0];
+    await assertCustomerScope(user, order.customer_id);
+    const [items] = await pool.query(`SELECT * FROM order_items WHERE order_id=? ORDER BY id`, [id]);
     const [oldDebts] = await pool.query(
       `SELECT id,order_code,order_date,total_amount,paid_amount,debt_amount,calendar_type,lunar_date_text
        FROM orders
@@ -223,6 +220,7 @@ return await this.loadLegacyDirectPayments(orderId);
 
   async create(data, user) {
     if (!data.items || !data.items.length) throw new Error('Bill phải có ít nhất 1 mặt hàng');
+    await assertCustomerScope(user, data.customer_id);
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
@@ -416,6 +414,7 @@ const orderId = r.insertId;
       if(!orders.length) throw new Error('Không tìm thấy bill');
       const order = orders[0];
       if(order.status === 'CANCELLED') throw new Error('Bill đã hủy, không thể thêm hàng');
+      await assertCustomerScope(user, order.customer_id);
       await this.ensureOrderEditable(conn, orderId);
 
       const p = await this.resolveAddItemProduct(conn, order, data);
@@ -450,7 +449,8 @@ const orderId = r.insertId;
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
-      await this.ensureOrderEditable(conn, orderId);
+      const o = await this.ensureOrderEditable(conn, orderId);
+      await assertCustomerScope(user, o.customer_id);
       const [items] = await conn.query(`SELECT * FROM order_items WHERE id=? AND order_id=? FOR UPDATE`, [itemId,orderId]);
       if (!items.length) throw new Error('Không tìm thấy dòng bill');
       const old = items[0];
@@ -471,7 +471,7 @@ const orderId = r.insertId;
     return PrintService.billK80Html(await this.getByToken(token));
   }
 
-  async printHtmlById(id) { return PrintService.billHtml(await this.get(id)); }
+  async printHtmlById(id, user) { return PrintService.billHtml(await this.get(id, user)); }
   async printHtmlByToken(token) { return PrintService.billHtml(await this.getByToken(token)); }
 }
 module.exports = new OrderAgent();

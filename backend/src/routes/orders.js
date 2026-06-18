@@ -18,7 +18,7 @@ function getPublicAppUrl(req){
   return `${proto}://${host}`.replace(/\/$/,'');
 }
 router.get('/:id/qrcode', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{const o=await OrderAgent.get(req.params.id,req.user); const app=getPublicAppUrl(req); const token=o.private_token||o.order_code; const url=`${app}/bill/${token}`; res.json({url,token,qrcode:await QRCode.toDataURL(url)})}catch(e){next(e)}});
-router.get('/:id/print', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.setHeader('Content-Type','text/html; charset=utf-8');res.send(await OrderAgent.printHtmlById(req.params.id))}catch(e){next(e)}});
+router.get('/:id/print', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.setHeader('Content-Type','text/html; charset=utf-8');res.send(await OrderAgent.printHtmlById(req.params.id,req.user))}catch(e){next(e)}});
 router.post('/:id/lock', auth(['ADMIN','STAFF']), async (req,res,next)=>{try{res.json(await OrderAgent.lock(req.params.id,req.body,req.user))}catch(e){next(e)}});
 router.post('/:id/items', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await OrderAgent.addItem(req.params.id,req.body,req.user))}catch(e){next(e)}});
 router.put('/:id/items/:itemId', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await OrderAgent.updateItem(req.params.id,req.params.itemId,req.body,req.user))}catch(e){next(e)}});

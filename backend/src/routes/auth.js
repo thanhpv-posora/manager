@@ -1,13 +1,22 @@
 const express=require('express');
 const bcrypt=require('bcryptjs');
 const jwt=require('jsonwebtoken');
+const rateLimit=require('express-rate-limit');
 const pool=require('../config/db');
 const router=express.Router();
 const UserPermissionAgent=require('../agents/UserPermissionAgent');
 const notification=require('../services/notification.service');
 
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Quá nhiều yêu cầu. Vui lòng thử lại sau 15 phút.' },
+});
+
 function signUser(u){
-  const token=jwt.sign({id:u.id,username:u.username,full_name:u.full_name,role:u.role,customer_id:u.customer_id}, process.env.JWT_SECRET||'dev_secret', {expiresIn:'7d'});
+  const token=jwt.sign({id:u.id,username:u.username,full_name:u.full_name,role:u.role,customer_id:u.customer_id}, process.env.JWT_SECRET, {expiresIn:'7d'});
   return {token,user:{id:u.id,username:u.username,full_name:u.full_name,role:u.role,customer_id:u.customer_id}};
 }
 
@@ -60,7 +69,7 @@ async function findUserByLogin(username){
   return rows[0]||null;
 }
 
-router.post('/login', async (req,res,next)=>{
+router.post('/login', authLimiter, async (req,res,next)=>{
   try {
     await ensureAuthSchema();
     const {username,password}=req.body;
@@ -77,14 +86,14 @@ router.post('/login', async (req,res,next)=>{
   } catch(e) { next(e); }
 });
 
-router.post('/request-otp',async(req,res,next)=>{
+router.post('/request-otp', authLimiter, async(req,res,next)=>{
   try{
     await ensureAuthSchema();
     res.status(501).json({message:'Đăng nhập bằng OTP điện thoại đang phát triển. Vui lòng đăng nhập bằng mật khẩu hoặc dùng quên mật khẩu qua email.', developing:true});
   }catch(e){next(e)}
 });
 
-router.post('/verify-otp',async(req,res,next)=>{
+router.post('/verify-otp', authLimiter, async(req,res,next)=>{
   try{
     await ensureAuthSchema();
     const phone=String(req.body.phone||'').trim();
@@ -102,7 +111,7 @@ router.post('/verify-otp',async(req,res,next)=>{
   }catch(e){next(e)}
 });
 
-router.post('/forgot-password',async(req,res,next)=>{
+router.post('/forgot-password', authLimiter, async(req,res,next)=>{
   try{
     await ensureAuthSchema();
     const identifier=String(req.body.identifier||req.body.username||req.body.phone||req.body.email||'').trim();
@@ -127,7 +136,7 @@ router.post('/forgot-password',async(req,res,next)=>{
   }catch(e){next(e)}
 });
 
-router.post('/reset-password',async(req,res,next)=>{
+router.post('/reset-password', authLimiter, async(req,res,next)=>{
   try{
     await ensureAuthSchema();
     const identifier=String(req.body.identifier||req.body.username||req.body.phone||req.body.email||'').trim();

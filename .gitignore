@@ -6,3 +6,5 @@ node_modules/
 ./backend/package-lock.json
 *.zip
 *package-lock.json
+backend/logs/
+.claude/

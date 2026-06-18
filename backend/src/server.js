@@ -1,16 +1,41 @@
 require('dotenv').config();
 require('dns').setDefaultResultOrder('ipv4first');
 const express=require('express');
+const cors=require('cors');
+const rateLimit=require('express-rate-limit');
 const AutoMigrationAgent=require('./agents/AutoMigrationAgent');
 const SchemaMigrationAgent=require('./agents/SchemaMigrationAgent');
-const cors=require('cors');
 const { ensureSchema }=require('./config/bootstrap');
 const { errorHandler }=require('./middleware/errorHandler');
 const { requestFileLogger } = require('./middleware/requestFileLogger');
 const fileLogger = require('./services/fileLogger.service');
+const { validateStartupConfig, parseAllowedOrigins } = require('./config/startupValidator');
+
+function buildCorsOptions() {
+  const isProd = process.env.NODE_ENV === 'production';
+  const allowed = parseAllowedOrigins();
+  if (!isProd && allowed.length === 0) {
+    return { origin: ['http://localhost:5173', 'http://localhost:3000'], credentials: true };
+  }
+  return {
+    origin: (origin, callback) => {
+      if (!origin || allowed.includes(origin)) return callback(null, true);
+      callback(null, false);
+    },
+    credentials: true,
+  };
+}
+
+const aiRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Quá nhiều yêu cầu AI. Vui lòng thử lại sau.' },
+});
 
 const app=express();
-app.use(cors());
+app.use(cors(buildCorsOptions()));
 app.use(express.json({ limit: '10mb', type: ['application/json', 'application/*+json'] }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(express.text({ type: ['text/plain', 'text/*'], limit: '10mb' }));
@@ -47,7 +72,7 @@ app.use('/api/ocr-providers',require('./routes/ocrProviders'));
 app.use('/api/preferences',require('./routes/preferences'));
 app.use('/api/permissions',require('./routes/permissions'));
 const aiRoutes = require('./routes/ai.routes');
-app.use('/api/ai', aiRoutes);
+app.use('/api/ai', aiRateLimit, aiRoutes);
 app.use('/api/logs', require('./routes/logs.routes'));
 
 app.use(errorHandler);
@@ -63,6 +88,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const port=Number(process.env.PORT||4000);
-ensureSchema()
+validateStartupConfig()
+  .then(()=>ensureSchema())
   .then(()=>app.listen(port,()=>{ console.log(`API running on http://localhost:${port}`); fileLogger.logSystem('SERVER_STARTED', { port }); }))
   .catch(e=>{ fileLogger.logError('DB_BOOTSTRAP_FAILED', { error: e }); console.error('DB bootstrap failed',e);process.exit(1);});

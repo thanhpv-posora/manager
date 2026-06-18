@@ -48,6 +48,9 @@ export default function Products(){
   const[error,setError]=useState('');
   const[productSearch,setProductSearch]=useState('');
   const[gridEdits,setGridEdits]=useState({});
+  const[pendingDelete,setPendingDelete]=useState(null);
+  const[deleteReason,setDeleteReason]=useState('');
+  const[deleting,setDeleting]=useState(false);
 
   const saveDefaults=async(nextDefaults)=>{
     setDefaults(nextDefaults);
@@ -113,17 +116,36 @@ export default function Products(){
     setForm({...buildEmptyForm(defaults),...x,is_active:x.is_active?1:0,allow_negative_stock:x.allow_negative_stock?1:0});
   };
 
-  const remove=async x=>{
-    const reason=prompt('Lý do xóa mặt hàng?');
-    if(reason!==null){
-      try{
-        await api.delete('/products/'+x.id,{data:{reason}});
-        showSuccess('Đã xóa mềm mặt hàng');
-        await load();
-      }catch(e){
-        const msg=e.response?.data?.message||e.message||'Không thể xóa mặt hàng';
-        showWarning(msg);
-      }
+  const remove=x=>{
+    setPendingDelete(x);
+    setDeleteReason('');
+  };
+
+  const closeDeleteDialog=()=>{
+    if(deleting)return;
+    setPendingDelete(null);
+    setDeleteReason('');
+  };
+
+  const confirmDeleteProduct=async()=>{
+    if(!pendingDelete)return;
+    const reason=String(deleteReason||'').trim();
+    if(!reason){
+      showWarning('Vui lòng nhập lý do xóa mặt hàng');
+      return;
+    }
+    try{
+      setDeleting(true);
+      await api.delete('/products/'+pendingDelete.id,{data:{reason}});
+      showSuccess('Đã xóa mềm mặt hàng');
+      setPendingDelete(null);
+      setDeleteReason('');
+      await load();
+    }catch(e){
+      const msg=e.response?.data?.message||e.message||'Không thể xóa mặt hàng';
+      showWarning(msg);
+    }finally{
+      setDeleting(false);
     }
   };
 
@@ -261,5 +283,37 @@ export default function Products(){
         </tbody>
       </table>
     </div>
+
+
+    {pendingDelete&&<div className="app-dialog-backdrop" role="dialog" aria-modal="true">
+      <div className="app-dialog app-dialog-danger">
+        <div className="app-dialog-head">
+          <div className="app-dialog-icon">⚠️</div>
+          <div className="app-dialog-title">Xóa mềm mặt hàng</div>
+        </div>
+        <div className="app-dialog-message">
+          Bạn đang xóa mềm mặt hàng <b>{pendingDelete.name||pendingDelete.product_name||pendingDelete.product_code||('#'+pendingDelete.id)}</b>.<br/>
+          Mặt hàng sẽ không bị xóa khỏi dữ liệu lịch sử, nhưng sẽ không còn dùng để tạo bill mới.
+        </div>
+        <label className="field-label" style={{marginTop:8}}>
+          <span>Lý do xóa</span>
+          <textarea
+            className="input"
+            autoFocus
+            rows={3}
+            placeholder="Ví dụ: nhập nhầm, không còn kinh doanh mặt hàng này..."
+            value={deleteReason}
+            onChange={e=>setDeleteReason(e.target.value)}
+            onKeyDown={e=>{if(e.key==='Escape')closeDeleteDialog();}}
+            style={{resize:'vertical',minHeight:88}}
+          />
+        </label>
+        <div className="app-dialog-actions" style={{marginTop:18}}>
+          <button className="app-dialog-btn app-dialog-btn-cancel" onClick={closeDeleteDialog} disabled={deleting}>Hủy</button>
+          <button className="app-dialog-btn app-dialog-btn-confirm danger" onClick={confirmDeleteProduct} disabled={deleting}>{deleting?'Đang xóa...':'Xóa mặt hàng'}</button>
+        </div>
+      </div>
+    </div>}
+
   </SafePage>
 }

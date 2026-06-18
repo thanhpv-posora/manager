@@ -2,6 +2,7 @@ import React,{useEffect,useState}from'react';
 import api from'../api/api';
 import SafePage from'../components/SafePage';
 import {moneyVnd}from'../utils/money';
+import {showSuccess,showError,showWarning}from'../utils/toast';
 
 export default function Customers(){
   const[rows,setRows]=useState([]);
@@ -9,6 +10,9 @@ export default function Customers(){
   const[editing,setEditing]=useState(null);
   const[loading,setLoading]=useState(true);
   const[error,setError]=useState('');
+  const[pendingDelete,setPendingDelete]=useState(null);
+  const[deleteReason,setDeleteReason]=useState('');
+  const[deleting,setDeleting]=useState(false);
   const user=JSON.parse(localStorage.getItem('user')||'{}');
   const isCustomer=user.role==='CUSTOMER';
 
@@ -33,13 +37,18 @@ export default function Customers(){
 
   const save=async()=>{
     if(!String(form.name||'').trim()){
-      alert('Nhập tên khách hàng');
+      showWarning('Nhập tên khách hàng');
       return;
     }
-    if(editing) await api.put('/customers/'+editing,form);
-    else await api.post('/customers',form);
-    reset();
-    await load();
+    try{
+      if(editing) await api.put('/customers/'+editing,form);
+      else await api.post('/customers',form);
+      showSuccess(editing?'Đã sửa khách hàng':'Đã tạo khách hàng');
+      reset();
+      await load();
+    }catch(e){
+      showError(e.response?.data?.message||e.message||'Lưu khách hàng thất bại');
+    }
   };
 
   const edit=x=>{
@@ -47,11 +56,35 @@ export default function Customers(){
     setForm({...x,is_active:x.is_active?1:0});
   };
 
-  const remove=async x=>{
-    const reason=prompt('Lý do xóa khách hàng?');
-    if(reason!==null){
-      await api.delete('/customers/'+x.id,{data:{reason}});
+  const remove=x=>{
+    setPendingDelete(x);
+    setDeleteReason('');
+  };
+
+  const closeDeleteDialog=()=>{
+    if(deleting)return;
+    setPendingDelete(null);
+    setDeleteReason('');
+  };
+
+  const confirmDeleteCustomer=async()=>{
+    if(!pendingDelete)return;
+    const reason=String(deleteReason||'').trim();
+    if(!reason){
+      showWarning('Vui lòng nhập lý do xóa khách hàng');
+      return;
+    }
+    try{
+      setDeleting(true);
+      await api.delete('/customers/'+pendingDelete.id,{data:{reason}});
+      showSuccess('Đã xóa mềm khách hàng');
+      setPendingDelete(null);
+      setDeleteReason('');
       await load();
+    }catch(e){
+      showWarning(e.response?.data?.message||e.message||'Không thể xóa khách hàng');
+    }finally{
+      setDeleting(false);
     }
   };
 
@@ -115,5 +148,35 @@ export default function Customers(){
         </tr>)}</tbody>
       </table>
     </div>
+
+    {pendingDelete&&<div className="app-dialog-backdrop" role="dialog" aria-modal="true">
+      <div className="app-dialog app-dialog-danger">
+        <div className="app-dialog-head">
+          <div className="app-dialog-icon">⚠️</div>
+          <div className="app-dialog-title">Xóa mềm khách hàng</div>
+        </div>
+        <div className="app-dialog-message">
+          Bạn đang xóa mềm khách hàng <b>{pendingDelete.name||pendingDelete.customer_name||pendingDelete.customer_code||('#'+pendingDelete.id)}</b>.<br/>
+          Khách hàng sẽ không bị xóa khỏi dữ liệu lịch sử, nhưng sẽ không còn dùng để tạo bill mới.
+        </div>
+        <label className="field-label" style={{marginTop:8}}>
+          <span>Lý do xóa</span>
+          <textarea
+            className="input"
+            autoFocus
+            rows={3}
+            placeholder="Ví dụ: nhập nhầm, khách ngừng giao dịch, trùng khách hàng..."
+            value={deleteReason}
+            onChange={e=>setDeleteReason(e.target.value)}
+            onKeyDown={e=>{if(e.key==='Escape')closeDeleteDialog();}}
+            style={{resize:'vertical',minHeight:88}}
+          />
+        </label>
+        <div className="app-dialog-actions" style={{marginTop:18}}>
+          <button className="app-dialog-btn app-dialog-btn-cancel" onClick={closeDeleteDialog} disabled={deleting}>Hủy</button>
+          <button className="app-dialog-btn app-dialog-btn-confirm danger" onClick={confirmDeleteCustomer} disabled={deleting}>{deleting?'Đang xóa...':'Xóa khách hàng'}</button>
+        </div>
+      </div>
+    </div>}
   </SafePage>
 }

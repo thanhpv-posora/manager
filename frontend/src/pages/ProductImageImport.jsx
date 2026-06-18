@@ -61,7 +61,7 @@ Sườn bò kg 180,000`);
  const save=async()=>{
   const chosen=rows.filter(x=>x.selected&&x.status!=='ERROR');
   if(!chosen.length)return alert('Không có dòng hợp lệ để lưu');
-  if(chosen.some(x=>x.status==='WARN')&&!confirm('Có dòng màu vàng cần kiểm tra. Bạn chắc chắn muốn lưu?'))return;
+  if(chosen.some(x=>x.status==='WARN')&&!await window.appConfirm('Có dòng màu vàng cần kiểm tra. Bạn chắc chắn muốn lưu?',{title:'Xác nhận lưu dữ liệu',confirmText:'Lưu',variant:'warning'}))return;
   const r=await api.post('/product-import/save',{rows:chosen});
   alert(`${r.data.message}. Lưu ${r.data.saved.length}, bỏ qua ${r.data.skipped.length}`);
   setRows([]);setRawText('');

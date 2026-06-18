@@ -2,9 +2,7 @@ import React,{useEffect,useMemo,useRef,useState}from'react';
 import api from'../api/api';
 import SafePage from'../components/SafePage';
 import MoneyInput from'../components/MoneyInput';
-import POSHeaderAgent from'../components/pos/POSHeaderAgent';
 import POSProductTableAgent from'../components/pos/POSProductTableAgent';
-import POSPaymentPanelAgent from'../components/pos/POSPaymentPanelAgent';
 import AIBusinessPanel from'../components/ai/AIBusinessPanel';
 import AIVoicePOSPanel from'../components/ai/AIVoicePOSPanel';
 import {calcQtyExpression}from'../utils/qtyExpression';
@@ -28,12 +26,18 @@ const solarMonthYearLocal=(dateText)=>{
 };
 
 export default function CreateOrder(){
-  const today=new Date().toISOString().slice(0,10);
+  const toLocalIsoDate=(d=new Date())=>{
+    const y=d.getFullYear();
+    const m=String(d.getMonth()+1).padStart(2,'0');
+    const day=String(d.getDate()).padStart(2,'0');
+    return `${y}-${m}-${day}`;
+  };
+  const today=toLocalIsoDate();
 
   const[orderDate,setOrderDate]=useState(today);
   const[billCalendarType,setBillCalendarType]=useState('SOLAR');
   const[billLunarDateText,setBillLunarDateText]=useState('');
-  const[dateOpen,setDateOpen]=useState(false);
+  const[shipDateModalOpen,setShipDateModalOpen]=useState(false);
 
   const[customers,setCustomers]=useState([]);
   const[categories,setCategories]=useState([]);
@@ -51,6 +55,7 @@ export default function CreateOrder(){
   const[filter,setFilter]=useState('');
   const[customerOpen,setCustomerOpen]=useState(false);
   const[saveNotice,setSaveNotice]=useState('');
+  const[saving,setSaving]=useState(false);
   const[pendingFocusQty,setPendingFocusQty]=useState(false);
 
   const[quickOpen,setQuickOpen]=useState(false);
@@ -71,8 +76,14 @@ export default function CreateOrder(){
   const[allProducts,setAllProducts]=useState([]);
   const[ocrAliases,setOcrAliases]=useState([]);
   const[importApplyMode,setImportApplyMode]=useState('REPLACE');
+  const[importSheetFilter,setImportSheetFilter]=useState('');
+  const[excelBillQueue,setExcelBillQueue]=useState([]);
+  const[excelBillIndex,setExcelBillIndex]=useState(-1);
 
   const qtyRefs=useRef({});
+  const importExcelFileRef=useRef(null);
+  const importImageFileRef=useRef(null);
+  const importReadSeqRef=useRef(0);
 
   const isBusinessCustomer=(customer)=>{
     if(!customer)return false;
@@ -120,7 +131,33 @@ export default function CreateOrder(){
   };
 
 
+  const isFutureIsoDate=(dateText)=>String(dateText||'').slice(0,10)>today;
+  const validateShippingDate=(calendarType=billCalendarType,solarDate=orderDate,lunarText=billLunarDateText,{showAlert=true}={})=>{
+    const ct=String(calendarType||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
+    let resolvedSolar=String(solarDate||today).slice(0,10);
+    if(ct==='LUNAR'){
+      const parsed=parseLunarText(lunarText);
+      const converted=lunarToSolarDate(parsed);
+      if(!converted){
+        if(showAlert)alert('Ngày âm lịch không hợp lệ. Vui lòng nhập dạng dd/mm/yyyy.');
+        return {ok:false,solarDate:resolvedSolar,reason:'INVALID_LUNAR_DATE'};
+      }
+      resolvedSolar=converted;
+    }
+    if(isFutureIsoDate(resolvedSolar)){
+      if(showAlert)alert('Không thể tạo bill cho ngày xuất hàng lớn hơn ngày hiện tại.');
+      return {ok:false,solarDate:resolvedSolar,reason:'FUTURE_BILL_DATE'};
+    }
+    return {ok:true,solarDate:resolvedSolar};
+  };
+
+
   useEffect(()=>{loadMonthlyInstallment(cid,orderDate,billCalendarType,billLunarDateText)},[cid,orderDate,billCalendarType,billLunarDateText]);
+
+  useEffect(()=>{
+    if(cid&&items.length)refreshCurrentItemPrices();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[cid,orderDate,billCalendarType,billLunarDateText]);
 
   useEffect(()=>{
     let mounted=true;
@@ -154,6 +191,47 @@ export default function CreateOrder(){
     }
   },[cid,currentCustomer,orderDate]);
 
+  const loadEffectivePriceMap=async(productList,context={})=>{
+    const customerId=context.customer_id||cid;
+    if(!customerId||!productList?.length)return {};
+    const product_ids=[...new Set(productList.map(x=>Number(x.product_id)).filter(Boolean))];
+    if(!product_ids.length)return {};
+    const calendarType=String(context.calendar_type||billCalendarType||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
+    try{
+      const r=await api.post(`/price-matrix/${customerId}/effective-prices`,{
+        product_ids,
+        order_date:context.order_date||orderDate,
+        calendar_type:calendarType,
+        lunar_date_text:calendarType==='LUNAR'?(context.lunar_date_text||billLunarDateText):''
+      });
+      return r.data?.prices||{};
+    }catch(e){
+      // If backend is not yet upgraded, do not block POS; save endpoint will still validate.
+      return {};
+    }
+  };
+
+  const applyEffectivePrices=async(productList,context={})=>{
+    const priceMap=await loadEffectivePriceMap(productList,context);
+    return (productList||[]).map(p=>{
+      const price=priceMap[String(p.product_id)]||priceMap[p.product_id];
+      if(price&&Number(price.sale_price)>0&&!p.manual_price){
+        return {...p,sale_price:Number(price.sale_price),price_type:price.price_type,price_book_id:price.price_book_id||null};
+      }
+      return p;
+    });
+  };
+
+  const refreshCurrentItemPrices=async(context={})=>{
+    if(!cid||!items.length)return;
+    const updated=await applyEffectivePrices(items,context);
+    setItems(prev=>prev.map(x=>{
+      const hit=updated.find(u=>String(u.product_id)===String(x.product_id));
+      return hit?{...x,sale_price:hit.sale_price,price_type:hit.price_type,price_book_id:hit.price_book_id}:x;
+    }));
+  };
+
+
   const reloadCustomerCatalogKeepQty=async(id)=>{
     const oldByProduct=new Map(items.map(x=>[
       String(x.product_id),
@@ -162,7 +240,7 @@ export default function CreateOrder(){
 
     const r=(await api.get('/price-matrix/'+id+'/catalog/order')).data;
     setSource(r.source);
-    setItems((r.products||[]).map((p,idx)=>{
+    const mapped=(r.products||[]).map((p,idx)=>{
       const old=oldByProduct.get(String(p.product_id));
       return {
         ...p,
@@ -172,7 +250,8 @@ export default function CreateOrder(){
         selected:old?.selected||false,
         sort_order:p.sort_order||idx+1
       };
-    }));
+    });
+    setItems(await applyEffectivePrices(mapped));
   };
 
 
@@ -180,14 +259,15 @@ export default function CreateOrder(){
     if(!id){setItems([]);return;}
     const r=(await api.get('/price-matrix/'+id+'/catalog/order')).data;
     setSource(r.source);
-    setItems((r.products||[]).map((p,idx)=>({
+    const mapped=(r.products||[]).map((p,idx)=>({
       ...p,
       quantity_expr:'',
       quantity:0,
       sale_price:p.sale_price,
       selected:false,
       sort_order:p.sort_order||idx+1
-    })));
+    }));
+    setItems(await applyEffectivePrices(mapped,{customer_id:id,calendar_type:billCalendarType,order_date:orderDate,lunar_date_text:billCalendarType==='LUNAR'?billLunarDateText:''}));
     setPendingFocusQty(true);
   };
 
@@ -201,9 +281,36 @@ export default function CreateOrder(){
     },80);
   };
 
+
+  const openShipDateModalForCustomer=(customer)=>{
+    if(!customer)return;
+    const preferred=String(customer.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
+    setBillCalendarType(preferred);
+    if(preferred==='LUNAR'){
+      setBillLunarDateText(formatLunarDate(orderDate||today).replace(/^ÂL\s*/,''));
+    }else{
+      setBillLunarDateText('');
+    }
+    setShipDateModalOpen(true);
+  };
+
+  const applyShipDateModal=()=>{
+    if(!cid)return setShipDateModalOpen(false);
+    if(billCalendarType==='LUNAR'&&!String(billLunarDateText||'').trim()){
+      alert('Vui lòng chọn ngày xuất hàng âm lịch');
+      return;
+    }
+    const checked=validateShippingDate(billCalendarType,orderDate,billLunarDateText);
+    if(!checked.ok)return;
+    if(checked.solarDate&&checked.solarDate!==orderDate)setOrderDate(checked.solarDate);
+    setShipDateModalOpen(false);
+    setSaveNotice(`Đã chọn ngày xuất hàng ${billCalendarType==='LUNAR'?`${billLunarDateText} ÂL`:(orderDate||today)}. Bảng giá sẽ lấy theo đúng ngày này.`);
+    refreshCurrentItemPrices({calendar_type:billCalendarType,order_date:orderDate,lunar_date_text:billCalendarType==='LUNAR'?billLunarDateText:''});
+  };
+
   const loadCustomerCatalog=async(id)=>{
     if(selected.length && id && String(id)!==String(cid)){
-      const ok=confirm('Bill hiện tại đang có số lượng. Đổi khách sẽ xóa bill đang nhập. Tiếp tục?');
+      const ok=await window.appConfirm('Bill hiện tại đang có số lượng. Đổi khách sẽ xóa bill đang nhập. Tiếp tục?',{title:'Đổi khách hàng',confirmText:'Tiếp tục',variant:'warning'});
       if(!ok)return;
     }
     setCid(id);
@@ -228,16 +335,22 @@ export default function CreateOrder(){
       return;
     }
 
+    const pickedCustomer=customers.find(c=>String(c.id)===String(id));
+    const pickedCalendarType=String(pickedCustomer?.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
+    const pickedLunarText=pickedCalendarType==='LUNAR'?formatLunarDate(orderDate||today).replace(/^ÂL\s*/,''):'';
+    openShipDateModalForCustomer(pickedCustomer);
+
     const r=(await api.get('/price-matrix/'+id+'/catalog/order')).data;
     setSource(r.source);
-    setItems((r.products||[]).map((p,idx)=>({
+    const mapped=(r.products||[]).map((p,idx)=>({
       ...p,
       quantity_expr:'',
       quantity:0,
       sale_price:p.sale_price,
       selected:false,
       sort_order:p.sort_order||idx+1
-    })));
+    }));
+    setItems(await applyEffectivePrices(mapped,{customer_id:id,calendar_type:billCalendarType,order_date:orderDate,lunar_date_text:billCalendarType==='LUNAR'?billLunarDateText:''}));
     setPendingFocusQty(true);
   };
 
@@ -282,9 +395,14 @@ export default function CreateOrder(){
 
 
   const changeOrderDate=(v)=>{
-    setOrderDate(v);
+    const next=String(v||today).slice(0,10);
+    if(isFutureIsoDate(next)){
+      alert('Không thể chọn ngày xuất hàng lớn hơn ngày hiện tại.');
+      return;
+    }
+    setOrderDate(next);
     if(billCalendarType==='LUNAR'){
-      setBillLunarDateText(formatLunarDate(v||today).replace(/^ÂL\s*/,''));
+      setBillLunarDateText(formatLunarDate(next||today).replace(/^ÂL\s*/,''));
     }
   };
 
@@ -299,7 +417,13 @@ export default function CreateOrder(){
   const changeBillLunarDateText=(v)=>{
     setBillLunarDateText(v);
     const solar=lunarToSolarDate(parseLunarText(v));
-    if(solar)setOrderDate(solar);
+    if(solar){
+      if(isFutureIsoDate(solar)){
+        alert('Không thể chọn ngày xuất hàng âm lịch lớn hơn ngày hiện tại.');
+        return;
+      }
+      setOrderDate(solar);
+    }
   };
 
   useEffect(()=>{
@@ -316,7 +440,13 @@ export default function CreateOrder(){
   };
 
   const save=async()=>{
+    if(saving)return;
+    setError('');
+    setSaveNotice('');
     if(!cid)return alert('Chọn khách hàng');
+    const checkedDate=validateShippingDate(billCalendarType,orderDate,billLunarDateText);
+    if(!checkedDate.ok)return;
+    if(checkedDate.solarDate&&checkedDate.solarDate!==orderDate)setOrderDate(checkedDate.solarDate);
     if(!selected.length)return alert('Nhập số lượng ít nhất 1 mặt hàng');
 
     const payloadItems=selected.map(i=>({
@@ -326,6 +456,7 @@ export default function CreateOrder(){
       quantity:Number(i.quantity||0),
       sale_price:Number(i.sale_price||0),
       price_type:i.price_type||'MANUAL_PRICE',
+      price_book_id:i.price_book_id||null,
       note:i.quantity_expr&&i.quantity_expr!==String(i.quantity)?`SL nhập: ${i.quantity_expr}`:''
     }));
 
@@ -341,49 +472,49 @@ export default function CreateOrder(){
       return;
     }
 
-    const r=await api.post('/orders',{
-      customer_id:cid,
-      order_date:orderDate,
-      calendar_type:billCalendarType,
-      lunar_date_text:billCalendarType==='LUNAR'?billLunarDateText:'',
-      current_bill_amount:total,
-      monthly_installment_amount:monthlyInstallment,
-      installment_amount:monthlyInstallment,
-      monthly_installment_id:monthlyInstallmentId,
-      paid_amount:0,
-      items:payloadItems
-    });
-
-    if(actualPaid>0){
-      const actualInstallmentPaid = Math.max(0, Math.min(Number(monthlyInstallment||0), actualPaid - Number(total||0)));
-      await api.post('/payments',{
+    setSaving(true);
+    try{
+      const r=await api.post('/orders',{
         customer_id:cid,
-        order_id:r.data.order_id,
-        payment_date:orderDate,
+        order_date:checkedDate.solarDate||orderDate,
         calendar_type:billCalendarType,
+        lunar_date_text:billCalendarType==='LUNAR'?billLunarDateText:'',
         current_bill_amount:total,
         monthly_installment_amount:monthlyInstallment,
         installment_amount:monthlyInstallment,
-        installment_paid_amount:actualInstallmentPaid,
         monthly_installment_id:monthlyInstallmentId,
-        cash_amount:cashAmount,
-        bank_amount:bankAmount,
-        amount:actualPaid,
-        note:`Thu tiền POS ${r.data.order_code}`
+        paid_amount:0,
+        items:payloadItems
       });
-    }
 
-    const code=r.data.order_code;
-    setMsg(code);
-    setSaveNotice(`Đã lưu ${code}. Đang giữ khách ${currentCustomer?.name||''}, có thể nhập bill tiếp theo ngay.`);
-    await reloadCustomerCatalogClearQty(cid);
-    setPaid(0);
-    setCashAmount(0);
-    setBankAmount(0);
-    setImportText('');
-    setImportPreview([]);
-    setImportMsg('');
-    focusFirstQtyInput();
+      // V65.47: Bill bán hàng không ghi tiền. Tiền mặt/chuyển khoản xử lý riêng ở menu Thu tiền.
+
+      const code=r.data.order_code;
+      setMsg(code);
+      setSaveNotice(`Đã lưu ${code}. Đang giữ khách ${currentCustomer?.name||''}, có thể nhập bill tiếp theo ngay.`);
+      await reloadCustomerCatalogClearQty(cid);
+      setPaid(0);
+      setCashAmount(0);
+      setBankAmount(0);
+      if(excelBillQueue.length&&excelBillIndex>=0){
+        await goNextExcelSheetAfterSave();
+      }else{
+        setImportText('');
+        setImportPreview([]);
+        setImportMsg('');
+      }
+      focusFirstQtyInput();
+    }catch(e){
+      const data=e.response?.data||{};
+      let message=data.message||e.message||'Không thể lưu bill';
+      if(data.code==='PRICE_NOT_FOUND' && data.details?.items?.length){
+        message='Không thể lưu bill. Khách hàng chưa có giá cho: '+data.details.items.map(x=>x.product_name||('ID '+x.product_id)).join(', ')+'. Vui lòng cập nhật bảng giá riêng trước.';
+      }
+      setError(message);
+      alert(message);
+    }finally{
+      setSaving(false);
+    }
   };
 
   const loadNextCode=async(categoryId)=>{
@@ -513,10 +644,80 @@ export default function CreateOrder(){
     setImportText('');
     setImportPreview([]);
     setImportMsg('');
+    setExcelBillQueue([]);
+    setExcelBillIndex(-1);
   };
 
-  const clearCurrentBillQty=()=>{
-    if(!confirm('Xóa toàn bộ số lượng đang nhập trong bill hiện tại?'))return;
+  const resetImportFileInputs=()=>{
+    if(importExcelFileRef.current)importExcelFileRef.current.value='';
+    if(importImageFileRef.current)importImageFileRef.current.value='';
+  };
+
+  const startFreshImportSession=()=>{
+    importReadSeqRef.current+=1;
+    resetImportSession();
+    resetImportFileInputs();
+    setImportApplyMode('REPLACE');
+  };
+
+  const applyExcelBillDate=(bill)=>{
+    if(!bill?.date)return '';
+    const customerCalendar=String(currentCustomer?.billing_calendar_type||billCalendarType||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
+    if(customerCalendar==='LUNAR'){
+      const solar=lunarToSolarDate(parseLunarText(bill.date.ddmmyyyy));
+      if(!solar){alert('Ngày âm lịch trong Excel không hợp lệ: '+bill.date.ddmmyyyy);return '';}
+      if(isFutureIsoDate(solar)){alert('Không thể import bill có ngày xuất hàng lớn hơn ngày hiện tại: '+bill.date.ddmmyyyy+' Âm lịch');return '';}
+      setBillCalendarType('LUNAR');
+      setBillLunarDateText(bill.date.ddmmyyyy);
+      setOrderDate(solar);
+      setTimeout(()=>refreshCurrentItemPrices({calendar_type:'LUNAR',order_date:solar,lunar_date_text:bill.date.ddmmyyyy}),0);
+      return `${bill.date.ddmmyyyy} Âm lịch`;
+    }
+    const solar=String(bill.date.iso||'').slice(0,10);
+    if(solar&&isFutureIsoDate(solar)){alert('Không thể import bill có ngày xuất hàng lớn hơn ngày hiện tại: '+bill.date.ddmmyyyy+' Dương lịch');return '';}
+    setBillCalendarType('SOLAR');
+    setBillLunarDateText('');
+    if(solar)setOrderDate(solar);
+    setTimeout(()=>refreshCurrentItemPrices({calendar_type:'SOLAR',order_date:solar||orderDate,lunar_date_text:''}),0);
+    return `${bill.date.ddmmyyyy} Dương lịch`;
+  };
+
+  const loadExcelBillToPreview=(queue,index)=>{
+    const bill=queue?.[index];
+    if(!bill)return;
+    const dateText=applyExcelBillDate(bill);
+    setImportText((bill.rows||[]).map(r=>`${r.name} ${r.qtyExpr}`).join('\n'));
+    setImportPreview(bill.matched||[]);
+    const ok=(bill.matched||[]).filter(x=>x.canApply).length;
+    const fail=(bill.matched||[]).length-ok;
+    setImportMsg(`Excel sheet ${index+1}/${queue.length}: ${bill.sheetName}. Ngày xuất hàng: ${dateText||'không tìm thấy trong file'}. Đọc ${(bill.rows||[]).length} dòng, khớp ${ok}, chưa mapping ${fail}. Bấm "Đưa dòng đã chọn vào bill" để nạp bill này, sau đó bấm "Lưu bill". Sau khi lưu sẽ hỏi xử lý sheet tiếp theo.`);
+    if(!importOpen)setImportOpen(true);
+  };
+
+  const goNextExcelSheetAfterSave=async()=>{
+    if(!excelBillQueue.length||excelBillIndex<0)return;
+    const nextIndex=excelBillIndex+1;
+    if(nextIndex>=excelBillQueue.length){
+      setExcelBillQueue([]);
+      setExcelBillIndex(-1);
+      setImportMsg('Đã xử lý hết tất cả sheet trong file Excel.');
+      return;
+    }
+    const next=excelBillQueue[nextIndex];
+    const ok=await window.appConfirm(`Đã lưu bill hiện tại. Tiếp tục xử lý sheet tiếp theo?\n\nSheet: ${next.sheetName}${next.date?.ddmmyyyy?`\nNgày trong Excel: ${next.date.ddmmyyyy}`:''}`,{title:'Import Excel nhiều sheet',confirmText:'Xử lý sheet tiếp',cancelText:'Dừng import',variant:'info'});
+    if(!ok){
+      setExcelBillQueue([]);
+      setExcelBillIndex(-1);
+      setImportMsg('Đã dừng import Excel theo yêu cầu.');
+      return;
+    }
+    setExcelBillIndex(nextIndex);
+    loadExcelBillToPreview(excelBillQueue,nextIndex);
+  };
+
+
+  const clearCurrentBillQty=async()=>{
+    if(!await window.appConfirm('Xóa toàn bộ số lượng đang nhập trong bill hiện tại?',{title:'Xóa số lượng bill',confirmText:'Xóa',variant:'danger'}))return;
     setItems(prev=>prev.map(x=>({...x,quantity_expr:'',quantity:0,selected:false})));
     setPaid(0);
     setCashAmount(0);
@@ -525,9 +726,9 @@ export default function CreateOrder(){
   };
 
 
-  const startChangeCustomer=()=>{
+  const startChangeCustomer=async()=>{
     if(selected.length){
-      const ok=confirm('Bill hiện tại đang có số lượng. Đổi khách sẽ xóa bill đang nhập. Tiếp tục?');
+      const ok=await window.appConfirm('Bill hiện tại đang có số lượng. Đổi khách sẽ xóa bill đang nhập. Tiếp tục?',{title:'Đổi khách hàng',confirmText:'Tiếp tục',variant:'warning'});
       if(!ok)return;
     }
     setCid('');
@@ -559,7 +760,12 @@ export default function CreateOrder(){
     }));
   };
 
-  const applyImport=()=>{
+  const getProductKey=(obj)=>{
+    const id=obj?.product_id??obj?.id??obj?.productId;
+    return id===undefined||id===null?'':String(id);
+  };
+
+  const applyImport=async()=>{
     if(!importPreview.length)return;
     const rowsToApply=importPreview.filter(x=>x.selected&&x.canApply);
     if(!rowsToApply.length){
@@ -569,51 +775,268 @@ export default function CreateOrder(){
 
     const warnRows=rowsToApply.filter(x=>x.warnings&&x.warnings.length);
     if(warnRows.length){
-      const ok=confirm('Có dòng import cảnh báo. Bạn đã kiểm tra kỹ chưa?');
+      const ok=await window.appConfirm('Có dòng import cảnh báo. Bạn đã kiểm tra kỹ chưa?',{title:'Xác nhận import',confirmText:'Đã kiểm tra',variant:'warning'});
       if(!ok)return;
     }
 
-    let arr=[...items];
+    // Gom theo product_id trước khi đưa vào bill.
+    // Tránh lỗi file Excel có 2 dòng cùng mặt hàng (ví dụ Rìa) bị ghi đè hoặc lệch dòng.
+    const grouped=new Map();
     for(const r of rowsToApply){
-      const idx=arr.findIndex(x=>x.product_id===(r.product?.product_id||r.product_id));
+      const product=r.product||{};
+      const key=getProductKey(product)||String(r.product_id||'');
+      if(!key)continue;
+      const old=grouped.get(key)||{product,row:r,qty:0,count:0,names:[]};
+      old.qty=Number((Number(old.qty||0)+Number(r.qty||0)).toFixed(3));
+      old.count+=1;
+      old.names.push(r.name||r.raw||product.product_name||'');
+      grouped.set(key,old);
+    }
+
+    let arr=[...items];
+    let applied=0;
+    let missing=0;
+    for(const [key,g] of grouped.entries()){
+      const idx=arr.findIndex(x=>getProductKey(x)===key);
       if(idx>=0){
         const oldQty=importApplyMode==='ADD'?Number(arr[idx].quantity||0):0;
-        const newQty=Number((oldQty+Number(r.qty||0)).toFixed(3));
+        const newQty=Number((oldQty+Number(g.qty||0)).toFixed(3));
         arr[idx]={...arr[idx],quantity:newQty,quantity_expr:String(newQty),selected:newQty>0};
+        applied+=g.count;
+      }else{
+        missing+=g.count;
       }
     }
     setItems(arr);
-    setImportMsg(`Đã đưa ${rowsToApply.length} dòng đã chọn vào bill (${importApplyMode==='ADD'?'cộng thêm':'ghi đè'})`);
+    setImportPreview(prev=>prev.map(x=>rowsToApply.includes(x)?{...x,selected:false,applied:true}:x));
+    const duplicateCount=rowsToApply.length-grouped.size;
+    setImportMsg(`Đã đưa ${applied} dòng đã chọn vào bill (${grouped.size} mặt hàng${duplicateCount>0?', đã gộp '+duplicateCount+' dòng trùng':''}, ${importApplyMode==='ADD'?'cộng thêm':'ghi đè'}). Đã bỏ chọn các dòng vừa đưa vào bill để tránh bấm nhầm lần 2.${missing?` Có ${missing} dòng không tìm thấy trong danh mục khách.`:''}`);
   };
 
   const readExcelFile=async(file)=>{
     if(!file)return;
+    if(!cid){
+      resetImportFileInputs();
+      return alert('Chọn khách trước khi import Excel');
+    }
+    const readSeq=importReadSeqRef.current+1;
+    importReadSeqRef.current=readSeq;
     resetImportSession();
+    setImportApplyMode('REPLACE');
+    setImportMsg('Đang đọc file Excel mới, đã xóa cache import cũ...');
     try{
       const XLSX=await import('xlsx');
       const buf=await file.arrayBuffer();
-      const wb=XLSX.read(buf);
-      const ws=wb.Sheets[wb.SheetNames[0]];
-      const data=XLSX.utils.sheet_to_json(ws,{header:1});
-      const text=data.map(r=>`${r[0]||''} ${r[1]||''}`.trim()).filter(Boolean).join('\n');
-      setImportText(text);
-      setImportMsg('Đã đọc file Excel. Bấm Xem trước import text/excel.');
+      if(readSeq!==importReadSeqRef.current)return;
+      const wb=XLSX.read(buf,{cellDates:true});
+      if(readSeq!==importReadSeqRef.current)return;
+
+      const pickSheetNames=(allNames,filterText)=>{
+        const raw=String(filterText||'').trim();
+        if(!raw)return {names:allNames,missing:[]};
+        const requested=raw.split(',').map(x=>x.trim()).filter(Boolean);
+        const byLower=new Map(allNames.map(n=>[String(n).trim().toLowerCase(),n]));
+        const names=[];
+        const missing=[];
+        requested.forEach(x=>{
+          const found=byLower.get(x.toLowerCase());
+          if(found){
+            if(!names.includes(found))names.push(found);
+          }else missing.push(x);
+        });
+        return {names,missing};
+      };
+      const sheetPick=pickSheetNames(wb.SheetNames,importSheetFilter);
+      if(readSeq!==importReadSeqRef.current)return;
+      if(sheetPick.missing.length){
+        setImportMsg(`Không tìm thấy sheet: ${sheetPick.missing.join(', ')}. Các sheet có trong file: ${wb.SheetNames.join(', ')}`);
+        return;
+      }
+      if(!sheetPick.names.length){
+        setImportMsg(`Không có sheet nào được chọn. Các sheet có trong file: ${wb.SheetNames.join(', ')}`);
+        return;
+      }
+
+      const normalizeHeader=(v)=>String(v||'')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g,'')
+        .replace(/đ/g,'d')
+        .replace(/[^a-z0-9]+/g,' ')
+        .trim();
+
+      const isQtyHeader=(v)=>{
+        const h=normalizeHeader(v);
+        return h==='so luong'||h==='sl'||h.includes('so luong')||h.includes('s luong')||h.includes('quantity');
+      };
+      const isNameHeader=(v)=>{
+        const h=normalizeHeader(v);
+        return h==='danh muc'||h==='mat hang'||h==='hang'||h==='ten hang'||h.includes('danh muc')||h.includes('mat hang')||h.includes('ten hang');
+      };
+      const toNumberText=(v)=>String(v??'')
+        .replace(/[，]/g,'.')
+        .replace(/,/g,'')
+        .replace(/kg|đ|vnd/gi,'')
+        .trim();
+      const isNumericCell=(v)=>{
+        const t=toNumberText(v);
+        return /^-?\d+(?:\.\d+)?$/.test(t) && Number(t)>0;
+      };
+      const isMoneyLike=(v)=>{
+        const n=Number(toNumberText(v));
+        return Number.isFinite(n)&&n>=1000;
+      };
+      const pad=n=>String(n).padStart(2,'0');
+      const ddmmyyyyToIso=(text)=>{
+        const m=String(text||'').match(/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})/);
+        if(!m)return '';
+        return `${m[3]}-${pad(Number(m[2]))}-${pad(Number(m[1]))}`;
+      };
+      const isoToDdmmyyyy=(iso)=>{
+        const m=String(iso||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if(!m)return '';
+        return `${m[3]}/${m[2]}/${m[1]}`;
+      };
+      const parseExcelDate=(v)=>{
+        if(v instanceof Date&&!Number.isNaN(v.getTime())){
+          const iso=`${v.getFullYear()}-${pad(v.getMonth()+1)}-${pad(v.getDate())}`;
+          return {iso,ddmmyyyy:isoToDdmmyyyy(iso)};
+        }
+        if(typeof v==='number'&&Number.isFinite(v)){
+          const d=XLSX.SSF?.parse_date_code?.(v);
+          if(d&&d.y&&d.m&&d.d){
+            const iso=`${d.y}-${pad(d.m)}-${pad(d.d)}`;
+            return {iso,ddmmyyyy:isoToDdmmyyyy(iso)};
+          }
+        }
+        const text=String(v||'').trim();
+        const m=text.match(/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})/);
+        if(m){
+          const ddmmyyyy=`${pad(Number(m[1]))}/${pad(Number(m[2]))}/${m[3]}`;
+          return {iso:ddmmyyyyToIso(ddmmyyyy),ddmmyyyy};
+        }
+        return null;
+      };
+      const findSheetBillDate=(data)=>{
+        // Ưu tiên vùng đầu phiếu: thường là tên khách + ngày + loại lịch ở dòng 2.
+        for(let r=0;r<Math.min(data.length,8);r++){
+          const row=data[r]||[];
+          for(let c=0;c<row.length;c++){
+            const d=parseExcelDate(row[c]);
+            if(d)return d;
+          }
+        }
+        for(let r=0;r<data.length;r++){
+          const row=data[r]||[];
+          for(let c=0;c<row.length;c++){
+            const d=parseExcelDate(row[c]);
+            if(d)return d;
+          }
+        }
+        return null;
+      };
+
+      const parseSheetRows=(sheetName)=>{
+        const ws=wb.Sheets[sheetName];
+        const data=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:true});
+        let headerRow=-1,nameCol=-1,qtyCol=-1;
+        for(let r=0;r<data.length;r++){
+          const row=data[r]||[];
+          let rowNameCol=-1,rowQtyCol=-1;
+          for(let c=0;c<row.length;c++){
+            if(rowNameCol<0&&isNameHeader(row[c]))rowNameCol=c;
+            if(rowQtyCol<0&&isQtyHeader(row[c]))rowQtyCol=c;
+          }
+          if(rowNameCol>=0&&rowQtyCol>=0){headerRow=r;nameCol=rowNameCol;qtyCol=rowQtyCol;break;}
+        }
+
+        // Fallback: tìm cặp cột text + số lượng, tránh cột đơn giá/thành tiền.
+        if(nameCol<0||qtyCol<0){
+          let best={score:-1,nameCol:-1,qtyCol:-1};
+          const maxCols=Math.max(...data.map(r=>(r||[]).length),0);
+          for(let nc=0;nc<maxCols;nc++){
+            for(let qc=0;qc<maxCols;qc++){
+              if(nc===qc)continue;
+              let score=0;
+              for(let r=0;r<data.length;r++){
+                const name=String((data[r]||[])[nc]||'').trim();
+                const qty=(data[r]||[])[qc];
+                if(name&&!isNumericCell(name)&&isNumericCell(qty)&&!isMoneyLike(qty))score++;
+              }
+              if(score>best.score)best={score,nameCol:nc,qtyCol:qc};
+            }
+          }
+          if(best.score>0){nameCol=best.nameCol;qtyCol=best.qtyCol;headerRow=-1;}
+        }
+
+        if(nameCol<0||qtyCol<0)return {sheetName,rows:[],date:findSheetBillDate(data),error:`Sheet ${sheetName}: không tìm thấy cột Danh mục/Số lượng`};
+
+        const rows=[];
+        for(let r=(headerRow>=0?headerRow+1:0);r<data.length;r++){
+          const row=data[r]||[];
+          const name=String(row[nameCol]||'').trim();
+          const qtyText=toNumberText(row[qtyCol]);
+          if(!name||!isNumericCell(qtyText))continue;
+          if(isNameHeader(name)||isQtyHeader(name))continue;
+          rows.push({
+            name,
+            qtyExpr:String(qtyText),
+            qty:Number(qtyText),
+            raw:`[${sheetName}] ${name} ${qtyText}`,
+            sourceType:'excel',
+            sheetName,
+            warnings:[],
+            errors:[],
+            selected:true
+          });
+        }
+        return {sheetName,rows,date:findSheetBillDate(data),error:''};
+      };
+
+      const sheetResults=sheetPick.names.map(parseSheetRows);
+      const billQueue=sheetResults
+        .filter(x=>x.rows&&x.rows.length)
+        .map(x=>({
+          sheetName:x.sheetName||x.rows?.[0]?.sheetName||'',
+          rows:x.rows,
+          date:x.date,
+          error:x.error||'',
+          matched:matchImportedRows(x.rows,items)
+        }));
+      if(!billQueue.length){
+        setImportMsg('Không tìm thấy dòng hàng hợp lệ trong Excel. Kiểm tra lại cột Danh mục/Số lượng ở các sheet.');
+        return;
+      }
+      if(readSeq!==importReadSeqRef.current)return;
+      const errText=sheetResults.filter(x=>x.error).map(x=>x.error).join(' ');
+      setExcelBillQueue(billQueue);
+      setExcelBillIndex(0);
+      loadExcelBillToPreview(billQueue,0);
+      setImportMsg(prev=>`${prev} Đã đọc ${sheetPick.names.length}/${wb.SheetNames.length} sheet${importSheetFilter?` theo chỉ định: ${sheetPick.names.join(', ')}`:''}. Có ${billQueue.length} sheet có dữ liệu = ${billQueue.length} bill riêng. ${errText?' '+errText:''}`);
     }catch(e){
-      setImportMsg('Không đọc được Excel: '+e.message);
+      if(readSeq===importReadSeqRef.current)setImportMsg('Không đọc được Excel: '+e.message);
+    }finally{
+      resetImportFileInputs();
     }
   };
 
   const readImageFile=async(file)=>{
     if(!file)return;
+    const readSeq=importReadSeqRef.current+1;
+    importReadSeqRef.current=readSeq;
     resetImportSession();
+    setImportApplyMode('REPLACE');
     try{
-      setImportMsg('Đang OCR hình ảnh, vui lòng chờ...');
+      setImportMsg('Đang OCR hình ảnh mới, đã xóa cache import cũ...');
       const Tesseract=await import('tesseract.js');
       const res=await Tesseract.recognize(file,'vie+eng');
+      if(readSeq!==importReadSeqRef.current)return;
       setImportText(res.data.text||'');
       setImportMsg('Đã OCR ảnh. Kiểm tra lại text rồi bấm Xem trước OCR ảnh.');
     }catch(e){
-      setImportMsg('OCR ảnh chưa chạy được trên máy này: '+e.message+'. Có thể nhập/copy text vào ô bên dưới.');
+      if(readSeq===importReadSeqRef.current)setImportMsg('OCR ảnh chưa chạy được trên máy này: '+e.message+'. Có thể nhập/copy text vào ô bên dưới.');
+    }finally{
+      resetImportFileInputs();
     }
   };
 
@@ -635,16 +1058,50 @@ export default function CreateOrder(){
   return (
     <SafePage loading={loading} error={error}>
       <div className="pos-agent-shell pos-real-shell">
-        <POSHeaderAgent
-          orderDate={orderDate}
-          setOrderDate={changeOrderDate}
-          calendarType={billCalendarType}
-          setCalendarType={changeBillCalendarType}
-          lunarDateText={billLunarDateText}
-          setLunarDateText={changeBillLunarDateText}
-          dateOpen={dateOpen}
-          setDateOpen={setDateOpen}
-        />
+        {shipDateModalOpen&&currentCustomer&&(
+          <div className="modal-backdrop pos-ship-date-backdrop">
+            <div className="modal-card pos-ship-date-modal">
+              <div className="modal-header">
+                <div>
+                  <h2>Chọn ngày xuất hàng</h2>
+                  <p className="muted">Khách <b>{currentCustomer.name}</b> tính bill theo <b>{billCalendarType==='LUNAR'?'Âm lịch':'Dương lịch'}</b>. Bảng giá riêng sẽ lấy theo ngày xuất hàng này.</p>
+                </div>
+                <button type="button" className="btn secondary" onClick={()=>setShipDateModalOpen(false)}>Đóng</button>
+              </div>
+
+              {billCalendarType==='LUNAR'?(
+                <div className="form-grid">
+                  <label className="field-label">
+                    <span>Ngày xuất hàng âm lịch</span>
+                    <input className="input" value={billLunarDateText||''} onChange={e=>changeBillLunarDateText(e.target.value)} placeholder="VD: 08/01/2026" autoFocus/>
+                  </label>
+                  <label className="field-label">
+                    <span>Ngày dương quy đổi</span>
+                    <input className="input" type="date" max={today} value={orderDate||today} onChange={e=>changeOrderDate(e.target.value)}/>
+                  </label>
+                  <div className="ai-alert" style={{gridColumn:'1 / -1'}}>
+                    POS sẽ lấy bảng giá âm lịch gần nhất trước hoặc bằng <b>{billLunarDateText||'ngày âm đã chọn'}</b>.
+                  </div>
+                </div>
+              ):(
+                <div className="form-grid">
+                  <label className="field-label">
+                    <span>Ngày xuất hàng dương lịch</span>
+                    <input className="input" type="date" max={today} value={orderDate||today} onChange={e=>changeOrderDate(e.target.value)} autoFocus/>
+                  </label>
+                  <div className="ai-alert" style={{gridColumn:'1 / -1'}}>
+                    POS sẽ lấy bảng giá dương lịch gần nhất trước hoặc bằng <b>{orderDate||today}</b>.
+                  </div>
+                </div>
+              )}
+
+              <div className="modal-footer">
+                <button type="button" className="btn secondary" onClick={()=>setShipDateModalOpen(false)}>Chọn sau</button>
+                <button type="button" className="btn" onClick={applyShipDateModal}>Áp dụng ngày xuất hàng</button>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="pos-agent-layout pos-real-layout">
           <main className="pos-agent-main pos-real-main">
@@ -666,6 +1123,22 @@ export default function CreateOrder(){
               </div>
 
               {currentCustomer&&(<div className={walkInCustomer?'ai-alert warn':'ai-alert'} style={{marginTop:12}}>{paymentPolicyText}</div>)}
+              {currentCustomer&&(
+                <div className="pos-bill-context-row">
+                  <div className="pos-bill-context-pill" title="Ngày xuất hàng dùng để lấy bảng giá riêng đúng thời gian bill">
+                    <span className="pos-bill-context-icon">📅</span>
+                    <span>
+                      <b>Ngày bill:</b>{' '}
+                      {billCalendarType==='LUNAR'
+                        ? `${billLunarDateText||'chưa chọn'} ÂL${orderDate ? ' / DL '+String(orderDate).slice(0,10).split('-').reverse().join('/') : ''}`
+                        : `${String(orderDate||today).slice(0,10).split('-').reverse().join('/')} DL`}
+                    </span>
+                  </div>
+                  <button type="button" className="btn tiny secondary" onClick={()=>openShipDateModalForCustomer(currentCustomer)}>
+                    Đổi ngày
+                  </button>
+                </div>
+              )}
 
               {customerOpen&&(
                 <div className="pos-customer-collapse-body">
@@ -718,8 +1191,9 @@ export default function CreateOrder(){
                     File chỉ cần 2 cột: <b>Tên mặt hàng</b> và <b>Số lượng</b>.
                   </p>
                   <div className="actions">
-                    <input type="file" accept=".xlsx,.xls,.csv" onChange={e=>readExcelFile(e.target.files?.[0])}/>
-                    <input type="file" accept="image/*" onChange={e=>readImageFile(e.target.files?.[0])}/>
+                    <input className="input" style={{maxWidth:360}} placeholder="Sheet cần đọc (trống = tất cả, nhiều sheet cách nhau dấu phẩy)" value={importSheetFilter} onChange={e=>setImportSheetFilter(e.target.value)}/>
+                    <input ref={importExcelFileRef} type="file" accept=".xlsx,.xls,.csv" onClick={e=>{e.currentTarget.value='';startFreshImportSession();}} onChange={e=>{const file=e.target.files?.[0];e.target.value='';readExcelFile(file);}}/>
+                    <input ref={importImageFileRef} type="file" accept="image/*" onClick={e=>{e.currentTarget.value='';startFreshImportSession();}} onChange={e=>{const file=e.target.files?.[0];e.target.value='';readImageFile(file);}}/>
                   </div>
                   <textarea className="input" style={{minHeight:120,marginTop:10}} placeholder={"Bò búp 10+12\nĐùi bò 5.5"} value={importText} onChange={e=>setImportText(e.target.value)}/>
                   <div className="actions" style={{marginTop:10}}>
@@ -815,22 +1289,13 @@ export default function CreateOrder(){
             />
           </main>
 
-          <POSPaymentPanelAgent
-            total={total}
-            monthlyInstallment={monthlyInstallment}
-            cashAmount={cashAmount}
-            bankAmount={bankAmount}
-            setCashAmount={setCashAmount}
-            setBankAmount={setBankAmount}
-            paid={paid}
-            setPaid={setPaid}
-            onSave={save}
-            onClear={clearCurrentBillQty}
-            paymentPolicyText={paymentPolicyText}
-            walkInCustomer={walkInCustomer}
-            disabled={!cid||!selected.length}
-            message={msg}
-          />
+          <aside className="card pos-payment-panel">
+            <h3>Thông tin thanh toán</h3>
+            <p className="muted">Từ V65.47, Bill chỉ quản lý hàng và giá. Tiền mặt/chuyển khoản xử lý ở menu <b>Thu tiền</b> để công nợ và phân bổ bill cũ không bị rối.</p>
+            <div className="payment-total-box"><div>Tổng bill</div><b>{money(total)}</b><span>Góp/ngày: {money(monthlyInstallment)}</span><span>Thanh toán: vào menu Thu tiền</span></div>
+            <div className="actions" style={{marginTop:12}}><button type="button" className="btn" disabled={saving||!cid||!selected.length} onClick={save}>{saving?'Đang lưu...':'Lưu bill'}</button><button type="button" className="btn secondary" onClick={clearCurrentBillQty}>Xóa số lượng</button></div>
+            {msg&&<div className="ai-alert success" style={{marginTop:12}}>Đã lưu: <b>{msg}</b></div>}
+          </aside>
         </div>
 
         <div className="pos-bottom-ai-tools">

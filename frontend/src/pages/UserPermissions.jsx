@@ -5,7 +5,7 @@ import SafePage from'../components/SafePage';
 const labels={
  dashboard:'Dashboard','create-order':'Tạo bill POS',orders:'Bill bán hàng',payments:'Thu tiền',
  installments:'Góp nợ hằng ngày',customers:'Khách hàng',products:'Mặt hàng',prices:'Giá riêng',
- 'price-matrix':'Bảng giá riêng',lots:'Nhập lô / NCC',revenue:'Doanh thu',agents:'Agent AI',
+ 'price-matrix':'Bảng giá riêng',lots:'Nhập lô / NCC',revenue:'Doanh thu',profit:'Lợi nhuận',agents:'Agent AI',
  trash:'Đã xóa / lịch sử',settings:'Cấu hình cửa hàng',portal:'Trang thông tin / tài trợ',
  'user-permissions':'Phân quyền user'
 };

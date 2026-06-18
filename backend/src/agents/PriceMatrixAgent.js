@@ -9,6 +9,22 @@ function normalizeRowsV636(rows){
 }
 
 const pool = require('../config/db');
+const PriceBookService = require('../services/PriceBookService');
+
+function normalizeEffectiveFrom(value){
+  const s=String(value||new Date().toISOString().slice(0,10)).slice(0,10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new Error('Ngày hiệu lực dương lịch không hợp lệ. Định dạng đúng: YYYY-MM-DD');
+  return s;
+}
+function normalizeCalendarType(v){return String(v||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR'}
+async function customerCalendarType(conn,customerId){
+  const [rows]=await conn.query(`SELECT billing_calendar_type FROM customers WHERE id=? LIMIT 1`,[customerId]);
+  return normalizeCalendarType(rows[0]?.billing_calendar_type||'SOLAR');
+}
+async function resolvePriceBookMeta(conn,customerId,data={}){
+  const defaultCt=await customerCalendarType(conn,customerId);
+  return PriceBookService.resolveEffectiveMeta(data, defaultCt);
+}
 
 async function ensureCustomerAccessV626(customerId,user){
   if(user&&user.role==='CUSTOMER'){
@@ -50,10 +66,14 @@ class PriceMatrixAgent {
        ORDER BY COALESCE(cpc.is_default,0) DESC, COALESCE(cpc.sort_order,p.id), pc.sort_order, p.name`,
       [customerId, customerId]
     );
+    for (const r of rows) {
+      const price = await PriceBookService.getEffectivePrice(customerId, r.product_id, new Date().toISOString().slice(0,10), pool, customers[0].billing_calendar_type, '');
+      if (price) { r.private_price = price.price_type==='COMMON_PRICE' ? null : price.sale_price; r.effective_price = price.sale_price; r.price_type = price.price_type; r.price_book_id = price.price_book_id || null; }
+    }
     return {customer:customers[0], rows};
   }
 
-  async saveMatrix(customerId, items, userId) {
+  async saveMatrix(customerId, items, userId, effectiveMetaPayload = {}) {
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
@@ -87,15 +107,8 @@ class PriceMatrixAgent {
           );
           const oldPrice = oldRows.length ? oldRows[0].sale_price : null;
 
-          await conn.query(
-            `UPDATE customer_product_prices SET is_active=0 WHERE customer_id=? AND product_id=? AND is_active=1`,
-            [customerId, productId]
-          );
-          await conn.query(
-            `INSERT INTO customer_product_prices(customer_id,product_id,sale_price,effective_from,is_active)
-             VALUES(?,?,?,CURDATE(),1)`,
-            [customerId, productId, price]
-          );
+          // V65.44: keep legacy table untouched for fallback; active production price is stored in customer_price_books.
+          // A full book is created after catalog updates, so every product has a deterministic version.
           await conn.query(
             `INSERT INTO price_change_logs(customer_id,product_id,old_price,new_price,reason,changed_by)
              VALUES(?,?,?,?,?,?)`,
@@ -104,8 +117,25 @@ class PriceMatrixAgent {
         }
       }
 
+      const priceItems = (items || [])
+        .filter(it => it.private_price !== '' && it.private_price !== null && it.private_price !== undefined && !Number.isNaN(Number(it.private_price||0)))
+        .map(it => ({ product_id:it.product_id, sale_price:Number(it.private_price||0) }));
+      if (priceItems.length) {
+        // We are already inside a transaction for catalog/logs. Insert book rows with the same conn.
+        const meta = await resolvePriceBookMeta(conn, customerId, effectiveMetaPayload);
+        const [book] = await conn.query(
+          `INSERT INTO customer_price_books(customer_id,book_name,effective_from,effective_calendar_type,effective_lunar_date_text,effective_lunar_sort,status,note,created_by) VALUES(?,?,?,?,?,?,?,?,?)`,
+          [customerId, `Bảng giá từ ${meta.display_date}`, meta.effective_from, meta.effective_calendar_type, meta.effective_lunar_date_text, meta.effective_lunar_sort, 'ACTIVE', `V65.50 price matrix ${meta.effective_calendar_type} effective ${meta.display_date}`, userId || null]
+        );
+        for (const p of priceItems) {
+          await conn.query(
+            `INSERT INTO customer_price_book_items(price_book_id,customer_id,product_id,sale_price) VALUES(?,?,?,?)`,
+            [book.insertId, customerId, p.product_id, p.sale_price]
+          );
+        }
+      }
       await conn.commit();
-      return {message:'Đã lưu bảng giá riêng và gói danh mục khách hàng'};
+      return {message:'Đã lưu bảng giá riêng và tạo phiên bản bảng giá mới'};
     } catch(e) {
       await conn.rollback();
       throw e;
@@ -133,7 +163,13 @@ class PriceMatrixAgent {
       [customerId]
     );
 
-    if(catalogRows.length) return {customer:customers[0], products:catalogRows, source:'CUSTOMER_CATALOG'};
+    if(catalogRows.length) {
+      for (const r of catalogRows) {
+        const price = await PriceBookService.getEffectivePrice(customerId, r.product_id, new Date().toISOString().slice(0,10), pool, customers[0].billing_calendar_type, '');
+        if(price){ r.sale_price=price.sale_price; r.price_type=price.price_type; r.price_book_id=price.price_book_id || null; }
+      }
+      return {customer:customers[0], products:catalogRows, source:'CUSTOMER_CATALOG'};
+    }
 
     const [fallback] = await pool.query(
       `SELECT p.id product_id, p.product_code, p.name product_name, p.unit, p.stock_quantity,
@@ -148,6 +184,10 @@ class PriceMatrixAgent {
        ORDER BY pc.sort_order, p.name`,
       [customerId]
     );
+    for (const r of fallback) {
+      const price = await PriceBookService.getEffectivePrice(customerId, r.product_id, new Date().toISOString().slice(0,10), pool, customers[0].billing_calendar_type, '');
+      if(price){ r.sale_price=price.sale_price; r.price_type=price.price_type; r.price_book_id=price.price_book_id || null; }
+    }
     return {customer:customers[0], products:fallback, source:'ALL_PRODUCTS_FALLBACK'};
   }
 
@@ -171,7 +211,7 @@ class PriceMatrixAgent {
     }
   }
 
-  async copyCatalog(fromCustomerId, toCustomerId, userId) {
+  async copyCatalog(fromCustomerId, toCustomerId, userId, effectiveMetaPayload = {}) {
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
@@ -189,19 +229,37 @@ class PriceMatrixAgent {
         );
       }
 
+      const meta = await resolvePriceBookMeta(conn, toCustomerId, effectiveMetaPayload);
+      const srcCt = await customerCalendarType(conn, fromCustomerId);
       const [prices] = await conn.query(
-        `SELECT product_id, sale_price FROM customer_product_prices
-         WHERE customer_id=? AND is_active=1`,
-        [fromCustomerId]
+        `SELECT bi.product_id, bi.sale_price
+         FROM customer_price_books b
+         JOIN customer_price_book_items bi ON bi.price_book_id=b.id
+         WHERE b.customer_id=? AND COALESCE(b.status,'ACTIVE')='ACTIVE'
+           AND COALESCE(b.effective_calendar_type,'SOLAR')=?
+         ORDER BY CASE WHEN COALESCE(b.effective_calendar_type,'SOLAR')='LUNAR' THEN COALESCE(b.effective_lunar_sort,0) ELSE 0 END DESC,
+                  b.effective_from DESC,b.id DESC`,
+        [fromCustomerId, srcCt]
       );
-      for(const p of prices) {
-        await conn.query(`UPDATE customer_product_prices SET is_active=0 WHERE customer_id=? AND product_id=? AND is_active=1`, [toCustomerId, p.product_id]);
-        await conn.query(`INSERT INTO customer_product_prices(customer_id,product_id,sale_price,effective_from,is_active) VALUES(?,?,?,CURDATE(),1)`, [toCustomerId, p.product_id, p.sale_price]);
-        await conn.query(`INSERT INTO price_change_logs(customer_id,product_id,old_price,new_price,reason,changed_by) VALUES(?,?,?,?,?,?)`, [toCustomerId, p.product_id, null, p.sale_price, `Copy from customer ${fromCustomerId}`, userId || null]);
+      const priceMap = new Map();
+      prices.forEach(p => { if(!priceMap.has(String(p.product_id))) priceMap.set(String(p.product_id), p); });
+
+      if(priceMap.size) {
+        const [book] = await conn.query(
+          `INSERT INTO customer_price_books(customer_id,book_name,effective_from,effective_calendar_type,effective_lunar_date_text,effective_lunar_sort,status,note,created_by) VALUES(?,?,?,?,?,?,?,?,?)`,
+          [toCustomerId, `Bảng giá copy từ khách ${fromCustomerId} - ${meta.display_date}`, meta.effective_from, meta.effective_calendar_type, meta.effective_lunar_date_text, meta.effective_lunar_sort, 'ACTIVE', `Copy price book from customer ${fromCustomerId}`, userId || null]
+        );
+        for(const p of priceMap.values()) {
+          await conn.query(
+            `INSERT INTO customer_price_book_items(price_book_id,customer_id,product_id,sale_price,note) VALUES(?,?,?,?,?)`,
+            [book.insertId, toCustomerId, p.product_id, Number(p.sale_price||0), `Copy from customer ${fromCustomerId}`]
+          );
+          await conn.query(`INSERT INTO price_change_logs(customer_id,product_id,old_price,new_price,reason,changed_by) VALUES(?,?,?,?,?,?)`, [toCustomerId, p.product_id, null, p.sale_price, `Copy price book from customer ${fromCustomerId} effective ${meta.display_date}`, userId || null]);
+        }
       }
 
       await conn.commit();
-      return {message:'Đã copy gói danh mục và bảng giá sang khách mới'};
+      return {message:'Đã copy gói danh mục và bảng giá sang khách mới', effective_from:meta.effective_from, effective_calendar_type:meta.effective_calendar_type, effective_lunar_date_text:meta.effective_lunar_date_text, copied_prices:priceMap.size};
     } catch(e) {
       await conn.rollback();
       throw e;
@@ -209,6 +267,184 @@ class PriceMatrixAgent {
       conn.release();
     }
   }
+
+  async listBooks(customerId) {
+    const [books] = await pool.query(
+      `SELECT b.id,b.customer_id,b.book_name,b.effective_from,b.effective_to,b.effective_calendar_type,b.effective_lunar_date_text,b.effective_lunar_sort,b.status,b.note,b.created_at,b.updated_at,
+              COUNT(DISTINCT bi.product_id) item_count,
+              COUNT(DISTINCT oi.order_id) bill_count,
+              COUNT(DISTINCT CASE WHEN COALESCE(o.paid_amount,0)>0 OR o.payment_status IN ('PAID','PARTIAL') OR pa.id IS NOT NULL THEN oi.order_id END) paid_bill_count,
+              COUNT(DISTINCT CASE WHEN oi.order_id IS NOT NULL AND COALESCE(o.paid_amount,0)=0 AND (o.payment_status IS NULL OR o.payment_status NOT IN ('PAID','PARTIAL')) AND pa.id IS NULL THEN oi.order_id END) unpaid_bill_count
+       FROM customer_price_books b
+       LEFT JOIN customer_price_book_items bi ON bi.price_book_id=b.id
+       LEFT JOIN order_items oi ON oi.price_book_id=b.id
+       LEFT JOIN orders o ON o.id=oi.order_id AND o.status<>'CANCELLED'
+       LEFT JOIN payment_allocations pa ON pa.order_id=o.id
+       WHERE b.customer_id=? AND COALESCE(b.status,'ACTIVE')<>'DELETED'
+       GROUP BY b.id
+       ORDER BY COALESCE(b.effective_lunar_sort,0) DESC,b.effective_from DESC,b.id DESC`,
+      [customerId]
+    );
+    return books.map(x=>({
+      ...x,
+      can_edit: Number(x.paid_bill_count||0)===0,
+      can_delete: Number(x.paid_bill_count||0)===0,
+      lock_reason: Number(x.paid_bill_count||0)>0 ? `Đã có ${x.paid_bill_count} bill phát sinh thu tiền` : ''
+    }));
+  }
+
+  async getBook(bookId) {
+    const [books] = await pool.query(
+      `SELECT b.*,
+              COUNT(DISTINCT oi.order_id) bill_count,
+              COUNT(DISTINCT CASE WHEN COALESCE(o.paid_amount,0)>0 OR o.payment_status IN ('PAID','PARTIAL') OR pa.id IS NOT NULL THEN oi.order_id END) paid_bill_count,
+              COUNT(DISTINCT CASE WHEN oi.order_id IS NOT NULL AND COALESCE(o.paid_amount,0)=0 AND (o.payment_status IS NULL OR o.payment_status NOT IN ('PAID','PARTIAL')) AND pa.id IS NULL THEN oi.order_id END) unpaid_bill_count
+       FROM customer_price_books b
+       LEFT JOIN order_items oi ON oi.price_book_id=b.id
+       LEFT JOIN orders o ON o.id=oi.order_id AND o.status<>'CANCELLED'
+       LEFT JOIN payment_allocations pa ON pa.order_id=o.id
+       WHERE b.id=?
+       GROUP BY b.id`,
+      [bookId]
+    );
+    if(!books.length) throw new Error('Không tìm thấy bảng giá');
+    const [items] = await pool.query(
+      `SELECT bi.id,bi.price_book_id,bi.customer_id,bi.product_id,COALESCE(p.name,CONCAT('ID ',bi.product_id)) product_name,
+              p.product_code,p.unit,bi.sale_price,bi.note
+       FROM customer_price_book_items bi
+       LEFT JOIN products p ON p.id=bi.product_id
+       WHERE bi.price_book_id=?
+       ORDER BY p.name,bi.product_id`,
+      [bookId]
+    );
+    const b = books[0];
+    return {...b, items, can_edit:Number(b.paid_bill_count||0)===0, can_delete:Number(b.paid_bill_count||0)===0};
+  }
+
+  async recalcUnpaidOrdersForBook(conn, bookId) {
+    const [orders] = await conn.query(
+      `SELECT DISTINCT o.id
+       FROM orders o
+       JOIN order_items oi ON oi.order_id=o.id
+       LEFT JOIN payment_allocations pa ON pa.order_id=o.id
+       WHERE oi.price_book_id=? AND o.status<>'CANCELLED'
+         AND COALESCE(o.paid_amount,0)=0
+         AND (o.payment_status IS NULL OR o.payment_status NOT IN ('PAID','PARTIAL'))
+         AND pa.id IS NULL`,
+      [bookId]
+    );
+    for (const o of orders) {
+      await conn.query(
+        `UPDATE order_items oi
+         JOIN customer_price_book_items bi ON bi.price_book_id=oi.price_book_id AND bi.product_id=oi.product_id
+         SET oi.sale_price=bi.sale_price,
+             oi.total_price=ROUND(COALESCE(oi.quantity,0)*COALESCE(bi.sale_price,0),2)
+         WHERE oi.order_id=? AND oi.price_book_id=?`,
+        [o.id, bookId]
+      );
+      const [sumRows] = await conn.query(`SELECT COALESCE(SUM(total_price),0) total FROM order_items WHERE order_id=?`, [o.id]);
+      const itemTotal = Number(sumRows[0]?.total || 0);
+      const [orows] = await conn.query(`SELECT installment_amount FROM orders WHERE id=? FOR UPDATE`, [o.id]);
+      const installment = Number(orows[0]?.installment_amount || 0);
+      const total = itemTotal + installment;
+      await conn.query(
+        `UPDATE orders SET current_bill_amount=?, total_amount=?, debt_amount=?, payment_status='UNPAID' WHERE id=?`,
+        [itemTotal, total, total, o.id]
+      );
+    }
+    return orders.length;
+  }
+
+  async updateBook(bookId, data, userId) {
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [paid] = await conn.query(
+        `SELECT COUNT(DISTINCT o.id) cnt
+         FROM orders o
+         JOIN order_items oi ON oi.order_id=o.id
+         LEFT JOIN payment_allocations pa ON pa.order_id=o.id
+         WHERE oi.price_book_id=? AND o.status<>'CANCELLED'
+           AND (COALESCE(o.paid_amount,0)>0 OR o.payment_status IN ('PAID','PARTIAL') OR pa.id IS NOT NULL)`,
+        [bookId]
+      );
+      if(Number(paid[0]?.cnt||0)>0) throw new Error(`Bảng giá đã có ${paid[0].cnt} bill phát sinh thu tiền, không thể sửa`);
+      const [curBookRows]=await conn.query(`SELECT customer_id FROM customer_price_books WHERE id=? LIMIT 1`,[bookId]);
+      if(!curBookRows.length) throw new Error('Không tìm thấy bảng giá');
+      const meta = await resolvePriceBookMeta(conn, curBookRows[0].customer_id, data);
+      const status = data.status || 'ACTIVE';
+      await conn.query(
+        `UPDATE customer_price_books
+         SET book_name=COALESCE(?,book_name), effective_from=?, effective_to=NULL, effective_calendar_type=?, effective_lunar_date_text=?, effective_lunar_sort=?, status=?, note=?, updated_at=NOW()
+         WHERE id=?`,
+        [data.book_name || null, meta.effective_from, meta.effective_calendar_type, meta.effective_lunar_date_text, meta.effective_lunar_sort, status, data.note || null, bookId]
+      );
+      if(Array.isArray(data.items)) {
+        for(const it of data.items) {
+          if(!it.product_id) continue;
+          await conn.query(
+            `INSERT INTO customer_price_book_items(price_book_id,customer_id,product_id,sale_price,note)
+             SELECT ?,customer_id,?,?,? FROM customer_price_books WHERE id=?
+             ON DUPLICATE KEY UPDATE sale_price=VALUES(sale_price), note=VALUES(note)`,
+            [bookId, it.product_id, Number(it.sale_price||0), it.note || null, bookId]
+          );
+        }
+      }
+      const recalculated_orders = await this.recalcUnpaidOrdersForBook(conn, bookId);
+      await conn.commit();
+      return {message:'Đã cập nhật bảng giá', price_book_id:Number(bookId), recalculated_orders};
+    } catch(e) { await conn.rollback(); throw e; }
+    finally { conn.release(); }
+  }
+
+  async deleteBook(bookId, userId) {
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [paid] = await conn.query(
+        `SELECT COUNT(DISTINCT o.id) cnt
+         FROM orders o
+         JOIN order_items oi ON oi.order_id=o.id
+         LEFT JOIN payment_allocations pa ON pa.order_id=o.id
+         WHERE oi.price_book_id=? AND o.status<>'CANCELLED'
+           AND (COALESCE(o.paid_amount,0)>0 OR o.payment_status IN ('PAID','PARTIAL') OR pa.id IS NOT NULL)`,
+        [bookId]
+      );
+      if(Number(paid[0]?.cnt||0)>0) throw new Error(`Bảng giá đã có ${paid[0].cnt} bill phát sinh thu tiền, không thể xóa`);
+      // Nếu có bill chưa thu tiền, giữ nguyên giá trên bill nhưng bỏ liên kết price_book_id để tránh trỏ vào bảng giá đã xóa.
+      await conn.query(`UPDATE order_items oi JOIN orders o ON o.id=oi.order_id SET oi.price_type='MANUAL_PRICE', oi.price_book_id=NULL WHERE oi.price_book_id=?`, [bookId]);
+      await conn.query(`UPDATE customer_price_books SET status='DELETED', note=CONCAT(COALESCE(note,''),' | deleted V65.50'), updated_at=NOW() WHERE id=?`, [bookId]);
+      await conn.commit();
+      return {message:'Đã xóa mềm bảng giá', price_book_id:Number(bookId)};
+    } catch(e) { await conn.rollback(); throw e; }
+    finally { conn.release(); }
+  }
+
+  async copyBook(bookId, data, userId) {
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [books]=await conn.query(`SELECT * FROM customer_price_books WHERE id=? LIMIT 1`,[bookId]);
+      if(!books.length) throw new Error('Không tìm thấy bảng giá cần copy');
+      const src=books[0];
+      const toCustomerId=Number(data.customer_id || data.to_customer_id || src.customer_id);
+      const meta=await resolvePriceBookMeta(conn, toCustomerId, data);
+      const [r]=await conn.query(
+        `INSERT INTO customer_price_books(customer_id,book_name,effective_from,effective_calendar_type,effective_lunar_date_text,effective_lunar_sort,status,note,created_by)
+         VALUES(?,?,?,?,?,?,?,?,?)`,
+        [toCustomerId, data.book_name || `Copy từ bảng giá #${bookId} - ${meta.display_date}`, meta.effective_from, meta.effective_calendar_type, meta.effective_lunar_date_text, meta.effective_lunar_sort, 'ACTIVE', data.note || `Copy from price_book_id ${bookId}`, userId || null]
+      );
+      await conn.query(
+        `INSERT INTO customer_price_book_items(price_book_id,customer_id,product_id,sale_price,note)
+         SELECT ?,?,product_id,sale_price,CONCAT('Copy from price_book_id ',?) FROM customer_price_book_items WHERE price_book_id=?`,
+        [r.insertId,toCustomerId,bookId,bookId]
+      );
+      await conn.commit();
+      return {message:'Đã copy bảng giá', price_book_id:r.insertId, effective_from:meta.effective_from, effective_calendar_type:meta.effective_calendar_type, effective_lunar_date_text:meta.effective_lunar_date_text};
+    } catch(e) { await conn.rollback(); throw e; }
+    finally { conn.release(); }
+  }
+
 }
 
 module.exports = new PriceMatrixAgent();

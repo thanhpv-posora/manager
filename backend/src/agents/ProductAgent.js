@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const SoftDeleteAgent = require('./SoftDeleteAgent');
+const PriceBookService = require('../services/PriceBookService');
 
 class ProductAgent {
   async nextProductCode(categoryId) {
@@ -127,20 +128,21 @@ class ProductAgent {
        ORDER BY CASE WHEN cpp.sale_price IS NOT NULL THEN 0 ELSE 1 END,pc.sort_order,p.name`,
       [customerId]
     );
+    for (const r of rows) {
+      const price = await PriceBookService.getEffectivePrice(customerId, r.product_id, new Date().toISOString().slice(0,10));
+      if (price) { r.sale_price = price.sale_price; r.price_type = price.price_type; r.price_book_id = price.price_book_id || null; }
+    }
     return {customer:customers[0], products:rows};
   }
 
-  async updateCustomerPrice(customerId, productId, salePrice) {
-    const conn = await pool.getConnection();
-    try {
-      await conn.beginTransaction();
-      await conn.query(`UPDATE customer_product_prices SET is_active=0 WHERE customer_id=? AND product_id=? AND is_active=1`, [customerId,productId]);
-      await conn.query(`INSERT INTO customer_product_prices(customer_id,product_id,sale_price,effective_from,is_active) VALUES(?,?,?,CURDATE(),1)`, [customerId,productId,salePrice]);
-      await conn.commit();
-      return {message:'Đã sửa giá riêng'};
-    } catch(e) {
-      await conn.rollback(); throw e;
-    } finally { conn.release(); }
+  async updateCustomerPrice(customerId, productId, salePrice, effectiveFrom=null, userId=null) {
+    // V65.44: do not overwrite historical private price rows. Create a new price-book version.
+    const current = await this.customerProducts(customerId);
+    const items = (current.products || []).map(p => ({
+      product_id: p.product_id,
+      sale_price: Number(p.product_id)==Number(productId) ? Number(salePrice||0) : Number(p.sale_price||0)
+    }));
+    return PriceBookService.createOrReplaceBook(customerId, items, effectiveFrom || new Date().toISOString().slice(0,10), userId, 'Update single customer product price');
   }
 
   async markCarcassParts() {

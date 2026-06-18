@@ -5,11 +5,16 @@ const parseMoney=v=>Number(String(v??'').replace(/[^0-9.-]/g,'')||0);
 const money=n=>parseMoney(n).toLocaleString('en-US')+'đ';
 const moneyInput=v=>String(v??'')===''?'':parseMoney(v).toLocaleString('en-US');
 const pageSize=15;
-const ymd=v=>String(v||'').slice(0,10);
+const isoDate=v=>String(v||'').slice(0,10);
+const ymd=v=>{
+ const raw=isoDate(v);
+ const m=raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+ return m?`${m[3]}/${m[2]}/${m[1]}`:raw;
+};
 const billDateLabel=o=>{
  const ct=String(o?.calendar_type||'SOLAR').toUpperCase();
  const lunar=String(o?.lunar_date_text||'').trim();
- if(ct==='LUNAR'&&lunar)return `${lunar} ÂL`;
+ if(ct==='LUNAR'&&lunar)return `${lunar} ÂL / ${ymd(o?.order_date)} DL`;
  return ymd(o?.order_date);
 };
 const billDisplayTotal=o=>{
@@ -45,14 +50,25 @@ export default function Orders(){
  const[toast,setToast]=useState(null);
  const[ saving,setSaving]=useState(false);
  const[filters,setFilters]=useState({from:'',to:'',customer:''});
+ const[paymentReportRows,setPaymentReportRows]=useState([]);
  const[page,setPage]=useState(1);
  const base=import.meta.env.VITE_API_URL||(typeof window !== 'undefined' ? `${window.location.origin}/api` : '/api');
  const load=async()=>{try{setRows((await api.get('/orders')).data||[])}catch(e){setError(e.response?.data?.message||e.message)}finally{setLoading(false)}};
  useEffect(()=>{load()},[]);
+ const loadPaymentReport=async()=>{
+  try{
+   const params={};
+   if(filters.from)params.from=filters.from;
+   if(filters.to)params.to=filters.to;
+   if(filters.customer)params.customer=filters.customer;
+   setPaymentReportRows((await api.get('/payments',{params})).data||[]);
+  }catch(e){setPaymentReportRows([])}
+ };
+ useEffect(()=>{loadPaymentReport()},[filters.from,filters.to,filters.customer]);
  const filtered=useMemo(()=>{
   const name=String(filters.customer||'').trim().toLowerCase();
   return (rows||[]).filter(o=>{
-   const d=ymd(o.order_date);
+   const d=isoDate(o.order_date);
    if(filters.from&&d<filters.from)return false;
    if(filters.to&&d>filters.to)return false;
    if(name&&!String(o.customer_name||'').toLowerCase().includes(name))return false;
@@ -67,6 +83,8 @@ export default function Orders(){
  const getToken=async order=>{let token=qr?.token;if(!token||detail?.id!==order.id){token=(await api.get('/orders/'+order.id+'/qrcode')).data.token}return token};
  const print=async order=>{const token=await getToken(order);window.open(base+'/orders/public/'+encodeURIComponent(token)+'/print','_blank')};
  const printK80=async order=>{const token=await getToken(order);window.open(base+'/orders/public/'+encodeURIComponent(token)+'/k80','_blank')};
+ const isLocked=o=>Number(o?.is_locked||0)===1||!!o?.locked_at;
+ const lockOrder=async o=>{if(!await window.appConfirm(`Chốt sổ bill ${o.order_code}?\nSau khi chốt sẽ không sửa/thêm hàng.`,{title:'Chốt sổ bill',confirmText:'Chốt bill',variant:'warning'}))return;await api.post('/orders/'+o.id+'/lock',{});await load();if(detail?.id===o.id)await refreshDetail();showToast('success','Đã chốt bill','Bill chỉ còn xem/in.');};
  const refreshDetail=async()=>{const d=(await api.get('/orders/'+detail.id)).data;setDetail(d);load()};
  const showToast=(type,title,message)=>{setToast({type,title,message});setTimeout(()=>setToast(null),2600)};
  const focusBillInput=(row,col)=>{setTimeout(()=>document.querySelector(`[data-bill-input="${row}-${col}"]`)?.focus(),0)};
@@ -136,6 +154,16 @@ export default function Orders(){
   m[key].debt+=Number(o.debt_amount||0);
   return m;
  },{}));
+ const receiptRows=paymentReportRows||[];
+ const receiptTotals=receiptRows.reduce((a,p)=>({
+  receipts:a.receipts+1,
+  cash:a.cash+Number(p.cash_amount||0),
+  bank:a.bank+Number(p.bank_amount||0),
+  total:a.total+Number(p.amount||0),
+  allocated:a.allocated+Number(p.allocated_total||p.amount||0)
+ }),{receipts:0,cash:0,bank:0,total:0,allocated:0});
+ const paymentDateLabel=p=>ymd(p.payment_date||p.created_at);
+ const allocationText=p=>String(p.allocation_text||'').trim()||'Chưa phân bổ';
  const printReportHtml=(title,tableHtml)=>{
   const w=window.open('','_blank');
   if(!w)return;
@@ -149,13 +177,18 @@ export default function Orders(){
  };
  const printCustomerDetail=()=>{
   const body=reportRows.map((o,i)=>`<tr><td class="center">${i+1}</td><td class="center">${orderCreatedDate(o)}</td><td class="center">${billDateLabel(o)}</td><td class="center">${billCalendarLabel(o)}</td><td class="left">${o.order_code||''}</td><td class="left">${o.customer_name||''}</td><td>${money(o.total_amount)}</td><td>${money(o.paid_amount)}</td><td>${money(o.debt_amount)}</td><td class="center">${statusText(o)}</td></tr>`).join('');
-  const html=`<table><thead><tr><th>STT</th><th>Ngày lập phiếu</th><th>Ngày tính bill</th><th>Loại lịch</th><th>Mã bill</th><th>Khách hàng</th><th>Tổng tiền hàng</th><th>Đã thu</th><th>Còn nợ</th><th>Trạng thái</th></tr></thead><tbody>${body}</tbody><tfoot><tr><td colspan="6" class="center">TỔNG CỘNG</td><td>${money(reportTotals.total)}</td><td>${money(reportTotals.paid)}</td><td>${money(reportTotals.debt)}</td><td class="center">${reportTotals.bills} bill</td></tr></tfoot></table>`;
+  const html=`<table><thead><tr><th>STT</th><th>Ngày lập phiếu</th><th>Ngày xuất hàng</th><th>Loại lịch</th><th>Mã bill</th><th>Khách hàng</th><th>Tổng tiền hàng</th><th>Đã thu</th><th>Còn nợ</th><th>Trạng thái</th></tr></thead><tbody>${body}</tbody><tfoot><tr><td colspan="6" class="center">TỔNG CỘNG</td><td>${money(reportTotals.total)}</td><td>${money(reportTotals.paid)}</td><td>${money(reportTotals.debt)}</td><td class="center">${reportTotals.bills} bill</td></tr></tfoot></table>`;
   printReportHtml('THỐNG KÊ CHI TIẾT BILL BÁN HÀNG THEO KHÁCH HÀNG',html);
  };
  const printCustomerSummary=()=>{
   const body=customerSummaryRows.map((r,i)=>`<tr><td class="center">${i+1}</td><td class="left">${r.customer_name}</td><td class="center">${String(r.calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'Âm lịch':'Dương lịch'}</td><td>${r.bills}</td><td>${money(r.total)}</td><td>${money(r.paid)}</td><td>${money(r.debt)}</td></tr>`).join('');
   const html=`<table><thead><tr><th>STT</th><th>Khách hàng</th><th>Loại lịch tính</th><th>Số bill</th><th>Tổng tiền hàng</th><th>Tổng đã thu</th><th>Tổng còn nợ</th></tr></thead><tbody>${body}</tbody><tfoot><tr><td colspan="3" class="center">TỔNG CỘNG</td><td>${reportTotals.bills}</td><td>${money(reportTotals.total)}</td><td>${money(reportTotals.paid)}</td><td>${money(reportTotals.debt)}</td></tr></tfoot></table>`;
   printReportHtml('THỐNG KÊ TỔNG HỢP BILL BÁN HÀNG THEO KHÁCH HÀNG',html);
+ };
+ const printPaymentHistory=()=>{
+  const body=receiptRows.map((p,i)=>`<tr><td class="center">${i+1}</td><td class="center">${paymentDateLabel(p)}</td><td class="left">${p.payment_code||''}</td><td class="left">${p.customer_name||''}</td><td>${money(p.cash_amount)}</td><td>${money(p.bank_amount)}</td><td>${money(p.amount)}</td><td class="left">${allocationText(p)}</td><td class="left">${p.note||''}</td></tr>`).join('');
+  const html=`<table><thead><tr><th>STT</th><th>Ngày thu</th><th>Phiếu thu</th><th>Khách hàng</th><th>Tiền mặt</th><th>Chuyển khoản</th><th>Tổng khách đưa</th><th>Phân bổ vào bill</th><th>Ghi chú</th></tr></thead><tbody>${body}</tbody><tfoot><tr><td colspan="4" class="center">TỔNG CỘNG</td><td>${money(receiptTotals.cash)}</td><td>${money(receiptTotals.bank)}</td><td>${money(receiptTotals.total)}</td><td colspan="2">${receiptTotals.receipts} phiếu thu</td></tr></tfoot></table>`;
+  printReportHtml('LỊCH SỬ THU TIỀN THEO KHÁCH HÀNG',html);
  };
  return <SafePage loading={loading} error={error}>
   <div className="orders-page orders-page-full">
@@ -168,20 +201,29 @@ export default function Orders(){
      <button className="btn secondary" onClick={()=>{setFilters({from:'',to:'',customer:''});setPage(1)}}>Xóa lọc</button>
     </div>
     <Pager page={currentPage} totalPages={totalPages} total={filtered.length} label="bill" onChange={setPage}/>
-    <div className="table-wrap"><table className="table orders-table"><thead><tr><th>Thao tác</th><th>Ngày</th><th>Khách hàng</th><th>Tổng</th><th>Trạng thái</th><th>Bill</th></tr></thead><tbody>{pageRows.map(o=><tr key={o.id}><td><div className="row-actions bill-actions"><button className="btn secondary" onClick={()=>open(o.id)}>Xem</button><button className="btn" onClick={()=>print(o)}>In A4</button><button className="btn secondary" onClick={()=>printK80(o)}>K80</button></div></td><td>{billDateLabel(o)}</td><td>{o.customer_name}</td><td>{money(o.total_amount)}</td><td>{o.payment_status}</td><td><b>{o.order_code}</b></td></tr>)}</tbody></table></div>
+    <div className="table-wrap"><table className="table orders-table"><thead><tr><th>Thao tác</th><th>Ngày</th><th>Khách hàng</th><th>Tổng</th><th>Trạng thái</th><th>Bill</th></tr></thead><tbody>{pageRows.map(o=><tr key={o.id}><td><div className="row-actions bill-actions"><button className="btn secondary" onClick={()=>open(o.id)}>Xem</button><button className="btn" onClick={()=>print(o)}>In A4</button><button className="btn secondary" onClick={()=>printK80(o)}>K80</button><button className="btn secondary" disabled={isLocked(o)} onClick={()=>lockOrder(o)}>{isLocked(o)?'Đã chốt':'Chốt'}</button></div></td><td>{billDateLabel(o)}</td><td>{o.customer_name}</td><td>{money(o.total_amount)}</td><td>{o.payment_status}{isLocked(o)?' / Đã chốt':''}</td><td><b>{o.order_code}</b></td></tr>)}</tbody></table></div>
     <Pager page={currentPage} totalPages={totalPages} total={filtered.length} label="bill" onChange={setPage}/>
    </div>
 
    <div className="card customer-bill-report-card">
     <div className="section-head"><h3>Thống kê bill bán hàng theo khách hàng</h3><div className="row-actions"><button className="btn secondary" onClick={printCustomerDetail}>In chi tiết</button><button className="btn" onClick={printCustomerSummary}>In tổng hợp</button></div></div>
-    <p className="muted">Dùng bộ lọc phía trên. Báo cáo có cả Ngày lập phiếu và Ngày tính bill theo lịch âm/dương của khách hàng.</p>
+    <p className="muted">Dùng bộ lọc phía trên. Báo cáo có cả Ngày lập phiếu và Ngày xuất hàng theo lịch âm/dương của khách hàng.</p>
     <div className="summary-grid">
      <div><span>Số bill</span><b>{reportTotals.bills}</b></div>
      <div><span>Tổng tiền hàng</span><b>{money(reportTotals.total)}</b></div>
      <div><span>Đã thu</span><b>{money(reportTotals.paid)}</b></div>
      <div><span>Còn nợ</span><b>{money(reportTotals.debt)}</b></div>
     </div>
-    <div className="table-wrap"><table className="table compact"><thead><tr><th>Ngày lập</th><th>Ngày tính bill</th><th>Bill</th><th>Khách hàng</th><th>Tổng</th><th>Đã thu</th><th>Còn nợ</th><th>Trạng thái</th></tr></thead><tbody>{reportRows.map(o=><tr key={o.id}><td>{orderCreatedDate(o)}</td><td><b>{billDateLabel(o)}</b><br/><span className="muted">{billCalendarLabel(o)}</span></td><td>{o.order_code}</td><td>{o.customer_name}</td><td>{money(o.total_amount)}</td><td>{money(o.paid_amount)}</td><td>{money(o.debt_amount)}</td><td>{statusText(o)}</td></tr>)}</tbody><tfoot><tr><td colSpan="4">Tổng cộng</td><td>{money(reportTotals.total)}</td><td>{money(reportTotals.paid)}</td><td>{money(reportTotals.debt)}</td><td>{reportTotals.bills} bill</td></tr></tfoot></table></div>
+    <div className="section-head" style={{marginTop:16}}><h3>Lịch sử thu tiền thực tế</h3><button className="btn secondary" onClick={printPaymentHistory}>In lịch sử thu tiền</button></div>
+    <p className="muted">Phần này thể hiện mỗi lần bạn hàng đưa bao nhiêu tiền mặt/chuyển khoản. Cột phân bổ cho biết số tiền đó được trừ vào bill nào.</p>
+    <div className="summary-grid">
+     <div><span>Số phiếu thu</span><b>{receiptTotals.receipts}</b></div>
+     <div><span>Tổng tiền mặt</span><b>{money(receiptTotals.cash)}</b></div>
+     <div><span>Tổng chuyển khoản</span><b>{money(receiptTotals.bank)}</b></div>
+     <div><span>Tổng khách đưa</span><b>{money(receiptTotals.total)}</b></div>
+    </div>
+    <div className="table-wrap"><table className="table compact"><thead><tr><th>Ngày thu</th><th>Phiếu thu</th><th>Khách hàng</th><th>Tiền mặt</th><th>Chuyển khoản</th><th>Tổng khách đưa</th><th>Phân bổ vào bill</th></tr></thead><tbody>{receiptRows.map(p=><tr key={p.id}><td>{paymentDateLabel(p)}</td><td>{p.payment_code}</td><td>{p.customer_name}</td><td>{money(p.cash_amount)}</td><td>{money(p.bank_amount)}</td><td>{money(p.amount)}</td><td>{allocationText(p)}</td></tr>)}</tbody><tfoot><tr><td colSpan="3">Tổng cộng</td><td>{money(receiptTotals.cash)}</td><td>{money(receiptTotals.bank)}</td><td>{money(receiptTotals.total)}</td><td>{receiptTotals.receipts} phiếu thu</td></tr></tfoot></table></div>
+    <div className="table-wrap"><table className="table compact"><thead><tr><th>Ngày lập</th><th>Ngày xuất hàng</th><th>Bill</th><th>Khách hàng</th><th>Tổng</th><th>Đã thu</th><th>Còn nợ</th><th>Trạng thái</th></tr></thead><tbody>{reportRows.map(o=><tr key={o.id}><td>{orderCreatedDate(o)}</td><td><b>{billDateLabel(o)}</b><br/><span className="muted">{billCalendarLabel(o)}</span></td><td>{o.order_code}</td><td>{o.customer_name}</td><td>{money(o.total_amount)}</td><td>{money(o.paid_amount)}</td><td>{money(o.debt_amount)}</td><td>{statusText(o)}</td></tr>)}</tbody><tfoot><tr><td colSpan="4">Tổng cộng</td><td>{money(reportTotals.total)}</td><td>{money(reportTotals.paid)}</td><td>{money(reportTotals.debt)}</td><td>{reportTotals.bills} bill</td></tr></tfoot></table></div>
     <h3 style={{marginTop:16}}>Tổng hợp theo khách hàng</h3>
     <div className="table-wrap"><table className="table compact"><thead><tr><th>Khách hàng</th><th>Loại lịch</th><th>Số bill</th><th>Tổng tiền</th><th>Đã thu</th><th>Còn nợ</th></tr></thead><tbody>{customerSummaryRows.map(r=><tr key={r.customer_id}><td>{r.customer_name}</td><td>{String(r.calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'Âm lịch':'Dương lịch'}</td><td>{r.bills}</td><td>{money(r.total)}</td><td>{money(r.paid)}</td><td>{money(r.debt)}</td></tr>)}</tbody><tfoot><tr><td colSpan="2">Tổng cộng</td><td>{reportTotals.bills}</td><td>{money(reportTotals.total)}</td><td>{money(reportTotals.paid)}</td><td>{money(reportTotals.debt)}</td></tr></tfoot></table></div>
    </div>

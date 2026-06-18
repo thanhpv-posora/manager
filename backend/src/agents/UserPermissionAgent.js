@@ -2,18 +2,18 @@ const pool=require('../config/db');
 
 const DEFAULT_MENUS=[
  'dashboard','create-order','orders','payments','installments','customers','products','product-import','ocr-providers',
- 'prices','price-matrix','lots','revenue','agents','trash','settings','portal','user-permissions','user-mapping','sponsor-videos','production-check'
+ 'prices','price-matrix','lots','revenue','profit','agents','trash','settings','portal','user-permissions','user-mapping','sponsor-videos','production-check'
 ];
 
 function defaultsForRole(role){
   if(role==='CUSTOMER') return ['orders','payments','portal','customers'];
-  if(role==='STAFF') return ['create-order','orders','payments','customers','products','product-import','ocr-providers','price-matrix','lots','revenue','portal'];
+  if(role==='STAFF') return ['create-order','orders','payments','customers','products','product-import','ocr-providers','price-matrix','lots','revenue','profit','portal'];
   return DEFAULT_MENUS;
 }
 
 class UserPermissionAgent{
   constructor(){
-    this.version='6.24.0';
+    this.version='6.44.0';
     this.responsibility='Control menu/function visibility by role and by individual user';
   }
 

@@ -22,6 +22,35 @@ function normalizeOcrLine(line) {
     .trim();
 }
 
+
+function strictKey(s) {
+  return String(s || '')
+    .normalize('NFC')
+    .toLowerCase()
+    .replace(/[，]/g, '.')
+    .replace(/[\u00a0\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function strictExcelProductMatch(name, products) {
+  const key = strictKey(name);
+  if (!key) return null;
+
+  const candidates = [];
+  for (const p of products || []) {
+    const productNameKey = strictKey(p.product_name || p.name || '');
+    const productCodeKey = strictKey(p.product_code || p.code || '');
+    if (key === productNameKey || (productCodeKey && key === productCodeKey)) {
+      candidates.push(p);
+    }
+  }
+
+  // Production safety: nếu trùng nhiều mặt hàng cùng tên/code thì không tự chọn đại.
+  if (candidates.length !== 1) return null;
+  return candidates[0];
+}
+
 export function scoreProduct(name, product) {
   const a = norm(name);
   const b = norm(product.product_name || product.name || '');
@@ -140,24 +169,39 @@ export function parseOrderText(text, sourceType='text') {
 export function matchImportedRows(importRows, products) {
   return importRows.map(r => {
     let best = null, bestScore = 0, bestReason = '';
-    for (const p of products || []) {
-      const result = scoreProduct(r.name, p);
-      if (result.score > bestScore) {
-        best = p;
-        bestScore = result.score;
-        bestReason = result.reason;
-      }
-    }
-
     const warnings = [...(r.warnings || [])];
     const errors = [...(r.errors || [])];
 
-    // Strict threshold: avoid Bò sườn -> Bò phở.
-    if (!best || bestScore < 75) {
-      errors.push('Không khớp mặt hàng chắc chắn');
-    } else if (bestScore < 90) {
-      warnings.push('Tên khớp chưa chắc chắn');
+    // Excel import tuyệt đối KHÔNG dùng alias / fuzzy matching.
+    // Tên trong Excel phải khớp đúng tên hàng hoặc mã hàng trong database.
+    // Tránh rủi ro Nầm/Nạm/Lòng bị cộng nhầm số lượng sang mặt hàng khác.
+    if (String(r.sourceType || '').toLowerCase() === 'excel') {
+      best = strictExcelProductMatch(r.name, products);
+      if (best) {
+        bestScore = 100;
+        bestReason = 'EXCEL_EXACT_DB_NAME_OR_CODE';
+      } else {
+        errors.push('Không mapping đúng tên hàng trong database');
+      }
+    } else {
+      for (const p of products || []) {
+        const result = scoreProduct(r.name, p);
+        if (result.score > bestScore) {
+          best = p;
+          bestScore = result.score;
+          bestReason = result.reason;
+        }
+      }
+
+      // Strict threshold: avoid Bò sườn -> Bò phở.
+      if (!best || bestScore < 75) {
+        errors.push('Không khớp mặt hàng chắc chắn');
+      } else if (bestScore < 90) {
+        warnings.push('Tên khớp chưa chắc chắn');
+      }
     }
+
+    const matchedOk = !!best && errors.length === 0 && (String(r.sourceType || '').toLowerCase() === 'excel' ? bestScore === 100 : bestScore >= 75);
 
     return {
       ...r,
@@ -166,11 +210,11 @@ export function matchImportedRows(importRows, products) {
       product_name: best?.product_name,
       score: bestScore,
       match_reason: bestReason,
-      ok: !!best && bestScore >= 75 && errors.length === 0,
-      canApply: !!best && bestScore >= 75 && errors.length === 0,
+      ok: matchedOk,
+      canApply: matchedOk,
       warnings,
       errors,
-      selected: !!best && bestScore >= 75 && errors.length === 0 && r.selected !== false
+      selected: matchedOk && r.selected !== false
     };
   });
 }

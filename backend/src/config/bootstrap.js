@@ -203,7 +203,7 @@ CREATE TABLE IF NOT EXISTS order_items (
   quantity DECIMAL(15,3) NOT NULL DEFAULT 0,
   sale_price DECIMAL(15,2) NOT NULL DEFAULT 0,
   total_price DECIMAL(15,2) NOT NULL DEFAULT 0,
-  price_type ENUM('COMMON_PRICE','PRIVATE_PRICE','MANUAL_PRICE') NOT NULL DEFAULT 'COMMON_PRICE',
+  price_type ENUM('COMMON_PRICE','PRIVATE_PRICE','MANUAL_PRICE','PRICE_BOOK') NOT NULL DEFAULT 'COMMON_PRICE',
   note TEXT,
   INDEX idx_order_items_order(order_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -578,6 +578,8 @@ CREATE TABLE IF NOT EXISTS delete_logs (
     await safeAddColumn(conn, 'purchase_lots', 'raw_weight', 'raw_weight DECIMAL(15,3) NOT NULL DEFAULT 0 AFTER purchase_date');
     await safeAddColumn(conn, 'purchase_lots', 'bone_weight', 'bone_weight DECIMAL(15,3) NOT NULL DEFAULT 0 AFTER raw_weight');
     await safeAddColumn(conn, 'purchase_lots', 'deducted_weight', 'deducted_weight DECIMAL(15,3) NOT NULL DEFAULT 0 AFTER bone_weight');
+    await safeAddColumn(conn, 'purchase_lots', 'calendar_type', "ENUM('SOLAR','LUNAR') NOT NULL DEFAULT 'SOLAR' AFTER purchase_date");
+    await safeAddColumn(conn, 'purchase_lots', 'lunar_date_text', 'VARCHAR(50) NULL AFTER calendar_type');
 
     await safeAddColumn(conn, 'purchase_lots', 'raw_weight_expr', 'raw_weight_expr TEXT NULL');
     await safeAddColumn(conn, 'purchase_lots', 'bone_weight_expr', 'bone_weight_expr TEXT NULL');

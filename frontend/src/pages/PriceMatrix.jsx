@@ -1,4 +1,4 @@
-import React,{useEffect,useState}from'react';import api from'../api/api';import SafePage from'../components/SafePage';import MoneyInput from'../components/MoneyInput';import {moneyVnd} from'../utils/money';import {handlePosInputKeyNavigation} from'../utils/focusNavigation';
+import React,{useEffect,useRef,useState}from'react';import api from'../api/api';import SafePage from'../components/SafePage';import MoneyInput from'../components/MoneyInput';import {moneyVnd} from'../utils/money';import {handlePosInputKeyNavigation} from'../utils/focusNavigation';
 
 export default function PriceMatrix(){
   const[customers,setCustomers]=useState([]);
@@ -7,8 +7,23 @@ export default function PriceMatrix(){
   const[rows,setRows]=useState([]);
   const[copyTo,setCopyTo]=useState('');
   const[dragId,setDragId]=useState(null);
+  const[fileImport,setFileImport]=useState(null);
+  const[priceSheetFilter,setPriceSheetFilter]=useState('');
+  const todayIso=new Date().toISOString().slice(0,10);
+  const[effectiveFrom,setEffectiveFrom]=useState(todayIso);
+  const[effectiveLunarDateText,setEffectiveLunarDateText]=useState('01/01/2026');
+  const fileInputRef=useRef(null);const priceImportReadSeqRef=useRef(0);
+  const resetPriceImportFileInput=()=>{
+    priceImportReadSeqRef.current+=1;
+    if(fileInputRef.current) fileInputRef.current.value='';
+  };
   const[loading,setLoading]=useState(true);
   const[error,setError]=useState('');
+  const[books,setBooks]=useState([]);
+  const[bookDetail,setBookDetail]=useState(null);
+  const[bookItems,setBookItems]=useState([]);
+  const[bookBusy,setBookBusy]=useState(false);
+  const[showBookManager,setShowBookManager]=useState(false);
 
   const loadCustomers=async()=>{
     const c=(await api.get('/customers')).data||[];
@@ -24,14 +39,40 @@ export default function PriceMatrix(){
     const r=(await api.get('/price-matrix/'+id)).data;
     setData(r);
     setRows((r.rows||[]).map((x,i)=>({...x, sort_order:x.sort_order||i+1, in_catalog:!!x.in_catalog})));
+    await loadBooks(id);
+  };
+
+  const loadBooks=async(id=cid)=>{
+    if(!id)return;
+    const r=(await api.get('/price-matrix/'+id+'/books')).data||[];
+    setBooks(r);
   };
 
   useEffect(()=>{let m=true;(async()=>{try{await loadCustomers()}catch(e){if(m)setError(e.response?.data?.message||e.message)}finally{if(m)setLoading(false)}})();return()=>{m=false}},[]);
 
+  const selectedCustomer=customers.find(c=>String(c.id)===String(cid))||data?.customer||{};
+  const effectiveCalendarType=String(selectedCustomer.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
+  const effectivePayload=()=>effectiveCalendarType==='LUNAR'
+    ? {effective_calendar_type:'LUNAR',effective_lunar_date_text:effectiveLunarDateText}
+    : {effective_calendar_type:'SOLAR',effective_from:effectiveFrom};
+  const effectiveLabel=effectiveCalendarType==='LUNAR'?`${effectiveLunarDateText} ÂL`:effectiveFrom;
+
   const changeCustomer=async(id)=>{setCid(id);await loadMatrix(id)};
   const setRow=(idx,patch)=>setRows(rows.map((r,i)=>i===idx?{...r,...patch}:r));
-  const save=async()=>{await api.put('/price-matrix/'+cid,{items:rows.map((x,i)=>({...x,sort_order:i+1}))});alert('Đã lưu bảng giá riêng và thứ tự danh mục');await loadMatrix(cid)};
-  const copy=async()=>{if(!copyTo)return alert('Chọn khách nhận copy');await api.post('/price-matrix/copy',{from_customer_id:cid,to_customer_id:copyTo});alert('Đã copy');};
+  const save=async()=>{
+    if(effectiveCalendarType==='LUNAR'&&!/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(effectiveLunarDateText))return alert('Chọn ngày hiệu lực âm lịch dạng DD/MM/YYYY');
+    if(effectiveCalendarType==='SOLAR'&&!effectiveFrom)return alert('Chọn ngày hiệu lực cho bảng giá');
+    await api.put('/price-matrix/'+cid,{...effectivePayload(),items:rows.map((x,i)=>({...x,sort_order:i+1}))});
+    alert('Đã lưu bảng giá riêng và thứ tự danh mục. Ngày hiệu lực: '+effectiveLabel);
+    await loadMatrix(cid)
+  };
+  const copy=async()=>{
+    if(!copyTo)return alert('Chọn khách nhận copy');
+    if(effectiveCalendarType==='LUNAR'&&!/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(effectiveLunarDateText))return alert('Chọn ngày hiệu lực âm lịch dạng DD/MM/YYYY');
+    if(effectiveCalendarType==='SOLAR'&&!effectiveFrom)return alert('Chọn ngày hiệu lực cho bảng giá copy');
+    await api.post('/price-matrix/copy',{from_customer_id:cid,to_customer_id:copyTo,...effectivePayload()});
+    alert('Đã copy bảng giá. Ngày hiệu lực: '+effectiveLabel);
+  };
   const handleDrop=(targetId)=>{
     if(!dragId||dragId===targetId)return;
     const arr=[...rows];
@@ -42,6 +83,161 @@ export default function PriceMatrix(){
     arr.splice(to,0,moved);
     setRows(arr.map((x,i)=>({...x,sort_order:i+1,in_catalog:x.in_catalog})));
     setDragId(null);
+  };
+
+
+  const openBook=async(bookId)=>{
+    setBookBusy(true);
+    try{
+      const r=(await api.get('/price-matrix/books/'+bookId)).data;
+      setBookDetail(r);
+      setBookItems((r.items||[]).map(x=>({...x,sale_price:Number(x.sale_price||0)})));
+    }catch(e){alert(e.response?.data?.message||e.message)}
+    finally{setBookBusy(false)}
+  };
+  const setBookItem=(idx,patch)=>setBookItems(bookItems.map((r,i)=>i===idx?{...r,...patch}:r));
+  const saveBook=async()=>{
+    if(!bookDetail)return;
+    if(!bookDetail.can_edit)return alert(bookDetail.lock_reason||'Bảng giá đã khóa, không thể sửa');
+    setBookBusy(true);
+    try{
+      const r=(await api.put('/price-matrix/books/'+bookDetail.id,{...bookDetail,items:bookItems})).data;
+      alert((r.message||'Đã lưu')+(r.recalculated_orders?`\nĐã cập nhật lại ${r.recalculated_orders} bill chưa thu tiền.`:''));
+      setBookDetail(null);setBookItems([]);await loadBooks(cid);await loadMatrix(cid);
+    }catch(e){alert(e.response?.data?.message||e.message)}
+    finally{setBookBusy(false)}
+  };
+  const deleteBook=async(b)=>{
+    if(!b.can_delete)return alert(b.lock_reason||'Bảng giá đã khóa, không thể xóa');
+    if(!await window.appConfirm(`Xóa bảng giá #${b.id}?\n\nBảng giá sẽ được đánh dấu đã xóa. Các bill đã tạo nhưng chưa thu tiền sẽ giữ nguyên đơn giá hiện tại và không tự đổi theo bảng giá mới sau này.\n\nBạn có chắc muốn tiếp tục?`,{title:'Xóa bảng giá riêng',confirmText:'Xóa bảng giá',cancelText:'Hủy',variant:'danger'}))return;
+    setBookBusy(true);
+    try{await api.delete('/price-matrix/books/'+b.id);alert('Đã xóa mềm bảng giá');await loadBooks(cid);await loadMatrix(cid)}
+    catch(e){alert(e.response?.data?.message||e.message)}
+    finally{setBookBusy(false)}
+  };
+  const copyBook=async(b)=>{
+    const d=window.prompt(effectiveCalendarType==='LUNAR'?'Ngày hiệu lực bảng giá copy âm lịch (DD/MM/YYYY)':'Ngày hiệu lực bảng giá copy (YYYY-MM-DD)',effectiveCalendarType==='LUNAR'?effectiveLunarDateText:(effectiveFrom||todayIso));
+    if(!d)return;
+    setBookBusy(true);
+    try{await api.post('/price-matrix/books/'+b.id+'/copy',{customer_id:cid,...(effectiveCalendarType==='LUNAR'?{effective_calendar_type:'LUNAR',effective_lunar_date_text:d}:{effective_calendar_type:'SOLAR',effective_from:d})});alert('Đã copy bảng giá');effectiveCalendarType==='LUNAR'?setEffectiveLunarDateText(d):setEffectiveFrom(d);await loadBooks(cid);await loadMatrix(cid)}
+    catch(e){alert(e.response?.data?.message||e.message)}
+    finally{setBookBusy(false)}
+  };
+
+  const normalizeExcelText=(v)=>String(v??'').trim().replace(/\s+/g,' ').toLowerCase();
+  const parseMoneyNumber=(v)=>{
+    if(v===null||v===undefined)return 0;
+    if(typeof v==='number')return Number.isFinite(v)?v:0;
+    const cleaned=String(v).replace(/đ|₫|vnd/gi,'').replace(/\s/g,'').replace(/,/g,'').trim();
+    const n=Number(cleaned);
+    return Number.isFinite(n)?n:0;
+  };
+  const isProductHeader=(v)=>['mặt hàng','mat hang','danh mục','danh muc','tên hàng','ten hang'].includes(normalizeExcelText(v));
+  const isPriceHeader=(v)=>['đơn giá','don gia','giá','gia','giá riêng','gia rieng'].includes(normalizeExcelText(v));
+
+  const readPriceExcel=async(file)=>{
+    if(!cid)return alert('Chọn khách trước khi import bảng giá');
+    if(!file)return;
+    const readSeq=priceImportReadSeqRef.current+1;
+    priceImportReadSeqRef.current=readSeq;
+    setFileImport(null);
+    try{
+      const XLSX=await import('xlsx');
+      const buf=await file.arrayBuffer();
+      if(readSeq!==priceImportReadSeqRef.current)return;
+      const wb=XLSX.read(buf,{type:'array'});
+      if(readSeq!==priceImportReadSeqRef.current)return;
+      const pickSheetNames=(allNames,filterText)=>{
+        const raw=String(filterText||'').trim();
+        if(!raw)return {names:allNames,missing:[]};
+        const requested=raw.split(',').map(x=>x.trim()).filter(Boolean);
+        const byLower=new Map(allNames.map(n=>[String(n).trim().toLowerCase(),n]));
+        const names=[];
+        const missing=[];
+        requested.forEach(x=>{
+          const found=byLower.get(x.toLowerCase());
+          if(found){
+            if(!names.includes(found))names.push(found);
+          }else missing.push(x);
+        });
+        return {names,missing};
+      };
+      const sheetPick=pickSheetNames(wb.SheetNames,priceSheetFilter);
+      if(sheetPick.missing.length){
+        alert(`Không tìm thấy sheet: ${sheetPick.missing.join(', ')}. Các sheet có trong file: ${wb.SheetNames.join(', ')}`);
+        return;
+      }
+      if(!sheetPick.names.length){
+        alert(`Không có sheet nào được chọn. Các sheet có trong file: ${wb.SheetNames.join(', ')}`);
+        return;
+      }
+      const productMap=new Map();
+      const duplicateKeys=[];
+      rows.forEach((r,idx)=>{
+        const keys=[r.product_name,r.product_code].filter(Boolean).map(normalizeExcelText).filter(Boolean);
+        keys.forEach(k=>{
+          if(productMap.has(k)) duplicateKeys.push(k);
+          else productMap.set(k,{...r,rowIndex:idx});
+        });
+      });
+      const matched=[];
+      const unmapped=[];
+      const invalid=[];
+      sheetPick.names.forEach(sheetName=>{
+        const ws=wb.Sheets[sheetName];
+        const matrix=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+        let headerRow=-1,nameCol=-1,priceCol=-1;
+        for(let r=0;r<matrix.length;r++){
+          const row=matrix[r]||[];
+          for(let c=0;c<row.length;c++){
+            if(isProductHeader(row[c])){
+              const pIdx=row.findIndex(x=>isPriceHeader(x));
+              if(pIdx>=0){headerRow=r;nameCol=c;priceCol=pIdx;break;}
+            }
+          }
+          if(headerRow>=0)break;
+        }
+        if(headerRow<0){
+          // fallback: use first two non-empty columns in the sheet
+          const colCounts={};
+          matrix.forEach(row=>row.forEach((cell,c)=>{if(String(cell??'').trim())colCounts[c]=(colCounts[c]||0)+1;}));
+          const cols=Object.entries(colCounts).sort((a,b)=>Number(a[0])-Number(b[0])).map(([c])=>Number(c));
+          nameCol=cols[0]??0; priceCol=cols[1]??1; headerRow=-1;
+        }
+        for(let r=headerRow+1;r<matrix.length;r++){
+          const row=matrix[r]||[];
+          const rawName=String(row[nameCol]??'').trim();
+          const price=parseMoneyNumber(row[priceCol]);
+          if(!rawName)continue;
+          if(isProductHeader(rawName))continue;
+          if(!price){invalid.push({sheetName,rowNumber:r+1,excelName:rawName,price});continue;}
+          const key=normalizeExcelText(rawName);
+          const found=productMap.get(key);
+          if(!found){unmapped.push({sheetName,rowNumber:r+1,excelName:rawName,price});continue;}
+          matched.push({sheetName,rowNumber:r+1,excelName:rawName,price,product_id:found.product_id,product_name:found.product_name,rowIndex:found.rowIndex});
+        }
+      });
+      // last occurrence wins, but show all matched rows in preview for audit.
+      const byProduct=new Map();
+      matched.forEach(x=>byProduct.set(String(x.product_id),x));
+      if(readSeq!==priceImportReadSeqRef.current)return;
+      setFileImport({fileName:file.name,sheetNames:sheetPick.names,allSheetNames:wb.SheetNames,matched,unmapped,invalid,duplicateKeys:[...new Set(duplicateKeys)],byProduct:[...byProduct.values()]});
+    }catch(e){
+      if(readSeq===priceImportReadSeqRef.current)alert('Không đọc được file Excel: '+(e.message||e));
+    }finally{
+      resetPriceImportFileInput();
+    }
+  };
+
+  const applyPriceExcel=()=>{
+    if(!fileImport)return;
+    const patch=new Map(fileImport.byProduct.map(x=>[String(x.product_id),x]));
+    setRows(rows.map(r=>{
+      const x=patch.get(String(r.product_id));
+      return x?{...r,private_price:x.price,in_catalog:true}:r;
+    }));
+    alert(`Đã đưa ${fileImport.byProduct.length} mặt hàng vào bảng giá. Ngày hiệu lực: ${effectiveLabel}. Bấm “Lưu tất cả an toàn” để lưu xuống database.`);
+    setFileImport(null);
   };
 
   const saveOrderOnly=async()=>{
@@ -65,9 +261,51 @@ export default function PriceMatrix(){
           </select>
           <button className="btn secondary" onClick={copy}>Copy</button>
           <button className="btn secondary" onClick={saveOrderOnly}>Lưu thứ tự kéo thả</button>
+          <label className="muted" style={{display:'flex',alignItems:'center',gap:6}}>Ngày hiệu lực ({effectiveCalendarType==='LUNAR'?'Âm lịch':'Dương lịch'})
+            {effectiveCalendarType==='LUNAR'
+              ? <input className="input" style={{width:170}} placeholder="DD/MM/YYYY" value={effectiveLunarDateText} onChange={e=>setEffectiveLunarDateText(e.target.value)}/>
+              : <input className="input" type="date" style={{width:170}} value={effectiveFrom} onChange={e=>setEffectiveFrom(e.target.value)}/>
+            }
+          </label>
+          <input className="input" style={{width:360}} placeholder="Sheet import (trống = tất cả, nhiều sheet cách nhau dấu phẩy)" value={priceSheetFilter} onChange={e=>setPriceSheetFilter(e.target.value)}/>
+          <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" style={{display:'none'}} onClick={e=>{e.currentTarget.value='';setFileImport(null);}} onChange={e=>{const file=e.target.files?.[0];e.target.value='';readPriceExcel(file);}}/>
+          <button className="btn secondary" onClick={()=>{setFileImport(null);resetPriceImportFileInput();fileInputRef.current?.click();}}>Import giá từ Excel</button>
           <button className="btn" onClick={save}>Lưu tất cả an toàn</button>
         </div>
-        {data&&<p className="muted">Kéo biểu tượng ☰ để đổi thứ tự danh mục khách. Tick “Dùng trong bill” để mặt hàng xuất hiện trong tạo bill.</p>}
+        {data&&<p className="muted">Kéo biểu tượng ☰ để đổi thứ tự danh mục khách. Tick “Dùng trong bill” để mặt hàng xuất hiện trong tạo bill. Giá riêng sẽ áp dụng từ ngày hiệu lực đã chọn. Nếu sửa bảng giá đã dùng cho bill chưa thu tiền, hệ thống tự cập nhật lại bill chưa thu; bill đã thu tiền sẽ khóa không cho sửa.</p>}
+      </div>
+
+      <div className="card">
+        <div className="modal-header">
+          <div>
+            <h3 style={{marginBottom:6}}>{showBookManager?'▼':'▶'} Quản lý các bảng giá riêng đã tạo</h3>
+            <p className="muted" style={{marginTop:0}}>Phần này ít dùng nên mặc định đóng lại. Khi cần xem/sửa/copy/xóa bảng giá cũ thì bấm mở.</p>
+          </div>
+          <div className="actions">
+            {showBookManager&&<button className="btn secondary" onClick={()=>loadBooks(cid)} disabled={bookBusy}>Tải lại</button>}
+            <button className="btn secondary" onClick={()=>setShowBookManager(v=>!v)}>{showBookManager?'Ẩn quản lý':'Mở quản lý'}</button>
+          </div>
+        </div>
+        {showBookManager&&<>
+          <p className="muted">Có bill nhưng chưa thu tiền vẫn được sửa bảng giá. Nếu bảng giá đã phát sinh thu tiền thì bị khóa để không sai công nợ.</p>
+          <table className="table">
+            <thead><tr><th>ID</th><th>Tên bảng giá</th><th>Hiệu lực</th><th>SP</th><th>Bill chưa thu</th><th>Bill đã thu</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
+            <tbody>{books.map(b=><tr key={b.id}>
+              <td>#{b.id}</td>
+              <td><b>{b.book_name||('Bảng giá #'+b.id)}</b><br/><span className="muted">{b.note}</span></td>
+              <td>{String(b.effective_calendar_type||'SOLAR')==='LUNAR'?(b.effective_lunar_date_text+' ÂL'):String(b.effective_from||'').slice(0,10)}<br/><span className="muted">{String(b.effective_calendar_type||'SOLAR')==='LUNAR'?'Âm lịch':'Dương lịch'}</span></td>
+              <td>{b.item_count||0}</td>
+              <td>{b.unpaid_bill_count||0}</td>
+              <td>{b.paid_bill_count||0}</td>
+              <td>{b.can_edit?<span className="pill ok">Được sửa</span>:<span className="pill warn">Đã khóa</span>}</td>
+              <td className="actions">
+                <button className="btn secondary" onClick={()=>openBook(b.id)}>Xem/Sửa</button>
+                <button className="btn secondary" onClick={()=>copyBook(b)}>Copy</button>
+                <button className="btn danger" onClick={()=>deleteBook(b)} disabled={!b.can_delete}>Xóa</button>
+              </td>
+            </tr>)}</tbody>
+          </table>
+        </>}
       </div>
 
       <div className="card">
@@ -85,5 +323,87 @@ export default function PriceMatrix(){
         </table>
       </div>
     </div>
+
+
+    {bookDetail&&<div className="modal-backdrop">
+      <div className="modal-card excel-price-preview">
+        <div className="modal-header">
+          <div>
+            <h2>Chi tiết bảng giá #{bookDetail.id}</h2>
+            <p className="muted">Bill chưa thu tiền: {bookDetail.unpaid_bill_count||0}. Bill đã thu tiền: {bookDetail.paid_bill_count||0}. {bookDetail.can_edit?'Được sửa.':'Đã khóa, chỉ xem.'}</p>
+          </div>
+          <button className="btn secondary" onClick={()=>{setBookDetail(null);setBookItems([])}}>Đóng</button>
+        </div>
+        <div className="actions">
+          <label className="muted">Tên bảng giá <input className="input" style={{width:260}} value={bookDetail.book_name||''} disabled={!bookDetail.can_edit} onChange={e=>setBookDetail({...bookDetail,book_name:e.target.value})}/></label>
+          <label className="muted">Loại lịch <select className="select" value={bookDetail.effective_calendar_type||effectiveCalendarType} disabled={!bookDetail.can_edit} onChange={e=>setBookDetail({...bookDetail,effective_calendar_type:e.target.value})}><option value="SOLAR">Dương lịch</option><option value="LUNAR">Âm lịch</option></select></label>
+          {String(bookDetail.effective_calendar_type||effectiveCalendarType)==='LUNAR'
+            ? <label className="muted">Từ ngày âm lịch <input className="input" placeholder="DD/MM/YYYY" value={bookDetail.effective_lunar_date_text||''} disabled={!bookDetail.can_edit} onChange={e=>setBookDetail({...bookDetail,effective_lunar_date_text:e.target.value})}/></label>
+            : <label className="muted">Từ ngày dương lịch <input className="input" type="date" value={String(bookDetail.effective_from||'').slice(0,10)} disabled={!bookDetail.can_edit} onChange={e=>setBookDetail({...bookDetail,effective_from:e.target.value})}/></label>
+          }
+          <label className="muted">Trạng thái <select className="select" value={bookDetail.status||'ACTIVE'} disabled={!bookDetail.can_edit} onChange={e=>setBookDetail({...bookDetail,status:e.target.value})}><option value="ACTIVE">ACTIVE</option><option value="CLOSED">CLOSED</option></select></label>
+        </div>
+        {!bookDetail.can_edit&&<p className="notice warn">Bảng giá đã có bill phát sinh thu tiền nên không được sửa/xóa.</p>}
+        <div className="scroll-box">
+          <table className="table"><thead><tr><th>Mặt hàng</th><th>Mã</th><th>Giá</th><th>Ghi chú</th></tr></thead>
+          <tbody>{bookItems.map((it,idx)=><tr key={it.product_id}>
+            <td><b>{it.product_name}</b></td><td>{it.product_code}</td>
+            <td><MoneyInput value={it.sale_price} disabled={!bookDetail.can_edit} onChange={v=>setBookItem(idx,{sale_price:v})}/></td>
+            <td><input className="input" value={it.note||''} disabled={!bookDetail.can_edit} onChange={e=>setBookItem(idx,{note:e.target.value})}/></td>
+          </tr>)}</tbody></table>
+        </div>
+        <div className="modal-footer">
+          <button className="btn secondary" onClick={()=>{setBookDetail(null);setBookItems([])}}>Đóng</button>
+          <button className="btn" onClick={saveBook} disabled={!bookDetail.can_edit||bookBusy}>Lưu bảng giá</button>
+        </div>
+      </div>
+    </div>}
+
+    {fileImport&&<div className="modal-backdrop">
+      <div className="modal-card excel-price-preview">
+        <div className="modal-header">
+          <div>
+            <h2>Import bảng giá riêng từ Excel</h2>
+            <p className="muted">File: {fileImport.fileName}. Đã đọc sheet: {(fileImport.sheetNames||[]).join(', ')}. Chỉ map đúng tên/mã mặt hàng trong database, không dùng alias. Khi bấm lưu, bảng giá sẽ áp dụng từ ngày hiệu lực đã chọn.</p>
+          </div>
+          <button className="btn secondary" onClick={()=>setFileImport(null)}>Đóng</button>
+        </div>
+        <div className="actions">
+          <label className="muted" style={{display:'flex',alignItems:'center',gap:6}}>Ngày hiệu lực ({effectiveCalendarType==='LUNAR'?'Âm lịch':'Dương lịch'})
+            {effectiveCalendarType==='LUNAR'
+              ? <input className="input" style={{width:170}} placeholder="DD/MM/YYYY" value={effectiveLunarDateText} onChange={e=>setEffectiveLunarDateText(e.target.value)}/>
+              : <input className="input" type="date" style={{width:170}} value={effectiveFrom} onChange={e=>setEffectiveFrom(e.target.value)}/>
+            }
+          </label>
+          <span className="pill ok">Khớp: {fileImport.byProduct.length}</span>
+          <span className="pill warn">Không mapping: {fileImport.unmapped.length}</span>
+          <span className="pill">Giá lỗi/bằng 0: {fileImport.invalid.length}</span>
+        </div>
+        {fileImport.duplicateKeys.length>0&&<p className="notice warn">Có tên/mã sản phẩm bị trùng trong database: {fileImport.duplicateKeys.slice(0,8).join(', ')}. Nên kiểm tra lại trước khi lưu.</p>}
+        <div className="excel-preview-grid">
+          <div>
+            <h3>Dòng đã mapping</h3>
+            <div className="scroll-box">
+              <table className="table"><thead><tr><th>Sheet</th><th>Dòng</th><th>Excel</th><th>Database</th><th>Giá riêng</th></tr></thead>
+                <tbody>{fileImport.matched.map((x,i)=><tr key={i}><td>{x.sheetName}</td><td>{x.rowNumber}</td><td>{x.excelName}</td><td>{x.product_name}</td><td>{moneyVnd(x.price)}</td></tr>)}</tbody>
+              </table>
+            </div>
+          </div>
+          <div>
+            <h3>Không mapping / bỏ qua</h3>
+            <div className="scroll-box">
+              <table className="table"><thead><tr><th>Sheet</th><th>Dòng</th><th>Mặt hàng Excel</th><th>Giá</th></tr></thead>
+                <tbody>{fileImport.unmapped.map((x,i)=><tr key={i}><td>{x.sheetName}</td><td>{x.rowNumber}</td><td>{x.excelName}</td><td>{moneyVnd(x.price)}</td></tr>)}</tbody>
+              </table>
+              {fileImport.invalid.length>0&&<><h4>Giá lỗi/bằng 0</h4><table className="table"><tbody>{fileImport.invalid.map((x,i)=><tr key={i}><td>{x.sheetName}</td><td>{x.rowNumber}</td><td>{x.excelName}</td><td>{String(x.price)}</td></tr>)}</tbody></table></>}
+            </div>
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn secondary" onClick={()=>setFileImport(null)}>Hủy</button>
+          <button className="btn" onClick={applyPriceExcel} disabled={!fileImport.byProduct.length}>Đưa dòng đã mapping vào bảng giá</button>
+        </div>
+      </div>
+    </div>}
   </SafePage>;
 }

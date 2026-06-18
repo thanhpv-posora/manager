@@ -2465,3 +2465,76 @@ button,.btn,.menu-item,.input,.select,textarea{
 .payment-overpay-table{margin:0;}
 .payment-overpay-table thead th{position:sticky;top:0;background:#fff;z-index:1;}
 @media(max-width:760px){.payment-overpay-summary{grid-template-columns:1fr 1fr}.payment-overpay-head{display:block}.payment-overpay-dialog{width:98vw;padding:12px}}
+
+/* V65.24 - Import bảng giá riêng từ Excel */
+.modal-backdrop{
+  position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:9999;
+  display:flex;align-items:center;justify-content:center;padding:18px;
+}
+.modal-card{
+  width:min(1180px,96vw);max-height:92vh;overflow:auto;background:#fff;border-radius:22px;
+  border:1px solid #fed7aa;box-shadow:0 22px 70px rgba(15,23,42,.22);padding:18px;
+}
+.modal-header,.modal-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;}
+.modal-header h2{margin:0 0 6px 0;}
+.modal-footer{border-top:1px solid #e5e7eb;margin-top:14px;padding-top:14px;}
+.excel-price-preview .excel-preview-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:12px;}
+.excel-price-preview .scroll-box{max-height:52vh;overflow:auto;border:1px solid #e5e7eb;border-radius:14px;}
+.excel-price-preview .scroll-box table{margin:0;}
+.excel-price-preview .scroll-box thead th{position:sticky;top:0;background:#fff;z-index:1;}
+.pill{display:inline-flex;align-items:center;border:1px solid #e5e7eb;border-radius:999px;padding:8px 12px;font-weight:800;background:#fff;}
+.pill.ok{border-color:#86efac;background:#ecfdf5;color:#047857;}
+.pill.warn{border-color:#fed7aa;background:#fff7ed;color:#b45309;}
+.notice.warn{border:1px solid #fed7aa;background:#fff7ed;color:#9a3412;border-radius:14px;padding:10px 12px;}
+@media(max-width:900px){.excel-price-preview .excel-preview-grid{grid-template-columns:1fr}.modal-card{padding:12px}}
+
+/* V65.54 POS compact bill context: remove large POS shipping date header */
+.pos-bill-context-row{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  flex-wrap:wrap;
+  margin-top:10px;
+}
+.pos-bill-context-pill{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:8px 12px;
+  border:1px solid #fed7aa;
+  background:#fff7ed;
+  border-radius:999px;
+  color:#7c2d12;
+  font-size:14px;
+  font-weight:700;
+}
+.pos-bill-context-icon{font-size:16px;line-height:1}
+.btn.tiny{padding:8px 12px;border-radius:14px;font-size:13px;min-height:auto}
+@media(max-width:720px){
+  .pos-bill-context-row{align-items:flex-start}
+  .pos-bill-context-pill{border-radius:16px;align-items:flex-start;line-height:1.35}
+}
+
+/* V65.56 global centered dialog: replaces browser alert style for production UX */
+.app-dialog-backdrop{
+  position:fixed;inset:0;z-index:99999;background:rgba(15,23,42,.42);
+  display:flex;align-items:center;justify-content:center;padding:18px;backdrop-filter:blur(2px);
+}
+.app-dialog{
+  width:min(520px,calc(100vw - 36px));background:#fff;border-radius:22px;
+  box-shadow:0 24px 70px rgba(15,23,42,.28);border:1px solid rgba(148,163,184,.28);
+  padding:22px 24px 18px;animation:appDialogIn .14s ease-out;color:#0f172a;
+}
+@keyframes appDialogIn{from{opacity:0;transform:translateY(12px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}}
+.app-dialog-head{display:flex;gap:12px;align-items:center;margin-bottom:12px}
+.app-dialog-icon{width:38px;height:38px;border-radius:16px;display:flex;align-items:center;justify-content:center;background:#eff6ff;font-size:20px;flex:0 0 auto}
+.app-dialog-warning .app-dialog-icon{background:#fff7ed}.app-dialog-danger .app-dialog-icon{background:#fef2f2}.app-dialog-success .app-dialog-icon{background:#ecfdf5}
+.app-dialog-title{font-size:19px;font-weight:800;line-height:1.25;color:#0f172a}
+.app-dialog-message{white-space:pre-line;font-size:15.5px;line-height:1.65;color:#334155;margin:8px 0 20px;max-height:52vh;overflow:auto}
+.app-dialog-actions{display:flex;justify-content:flex-end;gap:12px;align-items:center}
+.app-dialog-btn{border:0;border-radius:16px;padding:12px 20px;font-weight:800;font-size:15px;cursor:pointer;min-width:96px}
+.app-dialog-btn-cancel{background:#eef2ff;color:#334155}.app-dialog-btn-cancel:hover{background:#e0e7ff}
+.app-dialog-btn-confirm{background:#2563eb;color:#fff;box-shadow:0 10px 24px rgba(37,99,235,.22)}.app-dialog-btn-confirm:hover{background:#1d4ed8}
+.app-dialog-btn-confirm.danger{background:#dc2626;box-shadow:0 10px 24px rgba(220,38,38,.24)}.app-dialog-btn-confirm.danger:hover{background:#b91c1c}
+@media(max-width:520px){.app-dialog{border-radius:18px;padding:18px}.app-dialog-actions{flex-direction:column-reverse}.app-dialog-btn{width:100%}}

@@ -3,7 +3,7 @@ import api from'../api/api';
 import SafePage from'../components/SafePage';
 import MoneyInput from'../components/MoneyInput';
 import {calcExpression} from'../utils/expr';
-import {formatLunarDate} from'../utils/lunarDate';
+import {formatLunarDate,parseLunarText,lunarToSolarDate} from'../utils/lunarDate';
 
 const money=n=>Number(n||0).toLocaleString('en-US')+'đ';
 const n=v=>Number(v||0);
@@ -65,6 +65,23 @@ export default function Lots(){
       male_price:n(sp?.male_price)||prev.male_price||prev.purchase_price||200000,
       female_price:n(sp?.female_price)||prev.female_price||prev.purchase_price||195000,
       fragment_price:n(sp?.fragment_price)||prev.fragment_price||100000
+    }));
+  };
+
+  const changePurchaseDate=(v)=>{
+    setF(prev=>({
+      ...prev,
+      purchase_date:v,
+      lunar_date_text:selectedSupplierCalendar==='LUNAR'?formatLunarDate(v||today):''
+    }));
+  };
+
+  const changeLotLunarDateText=(v)=>{
+    const solar=lunarToSolarDate(parseLunarText(v));
+    setF(prev=>({
+      ...prev,
+      lunar_date_text:v,
+      purchase_date:solar||prev.purchase_date
     }));
   };
 
@@ -297,19 +314,33 @@ export default function Lots(){
   const fillFull=()=>{const lot=rows.find(r=>String(r.id)===String(pay.lot_id));if(lot)setPay({...pay,type:'PAYMENT',amount:lot.remaining_amount})};
 
   const kg=v=>Number(v||0).toLocaleString('en-US',{maximumFractionDigits:3});
-  const dateText=v=>v?String(v).slice(0,10):'';
+  const isoDate=v=>v?String(v).slice(0,10):'';
+  const dateText=v=>{ const raw=isoDate(v); const m=raw.match(/^(\d{4})-(\d{2})-(\d{2})$/); return m?`${m[3]}/${m[2]}/${m[1]}`:raw; };
   const lotCalendarType=r=>String(r?.calendar_type||r?.supplier_billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
+  const lotMappedSolarDate=r=>dateText(r?.purchase_date);
   const lotBillDateText=r=>{
     const type=lotCalendarType(r);
+    const d=lotMappedSolarDate(r);
     if(type==='LUNAR'){
-      const lunar=String(r?.lunar_date_text||'').trim() || formatLunarDate(dateText(r?.purchase_date));
+      const lunar=String(r?.lunar_date_text||'').trim() || formatLunarDate(d);
       return lunar ? `${lunar} ÂL` : '';
     }
-    const d=dateText(r?.purchase_date);
     return d ? `${d} DL` : '';
   };
+  const lotBillDateFullText=r=>{
+    const type=lotCalendarType(r);
+    const d=lotMappedSolarDate(r);
+    if(type==='LUNAR'){
+      const lunar=String(r?.lunar_date_text||'').trim() || formatLunarDate(d);
+      return lunar ? `${d} (${lunar} âm lịch)` : d;
+    }
+    return d || '';
+  };
+  const lotImportDateText=lotBillDateFullText;
   const reportRows=rows.filter(r=>{
-    const d=dateText(r.purchase_date);
+    // purchase_date là NGÀY TÍNH PHIẾU đã mapping sang dương lịch.
+    // Với NCC âm lịch: lunar_date_text giữ ngày âm, purchase_date giữ ngày dương tương ứng để báo cáo/dashboard không lệch tháng.
+    const d=lotMappedSolarDate(r);
     if(reportFilter.from && d<reportFilter.from)return false;
     if(reportFilter.to && d>reportFilter.to)return false;
     if(reportFilter.supplier_id && String(r.supplier_id)!==String(reportFilter.supplier_id))return false;
@@ -334,8 +365,13 @@ export default function Lots(){
   }),{lots:0,animals:0,maleAnimals:0,femaleAnimals:0,maleWeight:0,maleMoney:0,femaleWeight:0,femaleMoney:0,deduct:0,rib:0,ribMoney:0,fragment:0,fragmentMoney:0,final:0,cost:0});
   const summaryRows=Object.values(reportRows.reduce((m,r)=>{
     const key=r.supplier_id||'unknown';
-    if(!m[key])m[key]={supplier_id:key,supplier_name:r.supplier_name||'Không rõ NCC',lots:0,animals:0,maleAnimals:0,femaleAnimals:0,maleWeight:0,maleMoney:0,femaleWeight:0,femaleMoney:0,deduct:0,rib:0,ribMoney:0,fragment:0,fragmentMoney:0,final:0,cost:0};
+    const mappedDate=lotMappedSolarDate(r);
+    if(!m[key])m[key]={supplier_id:key,supplier_name:r.supplier_name||'Không rõ NCC',lots:0,from:mappedDate,to:mappedDate,fromText:lotImportDateText(r),toText:lotImportDateText(r),animals:0,maleAnimals:0,femaleAnimals:0,maleWeight:0,maleMoney:0,femaleWeight:0,femaleMoney:0,deduct:0,rib:0,ribMoney:0,fragment:0,fragmentMoney:0,final:0,cost:0};
     const x=m[key];
+    if(mappedDate){
+      if(!x.from||mappedDate<x.from){x.from=mappedDate;x.fromText=lotImportDateText(r);}
+      if(!x.to||mappedDate>x.to){x.to=mappedDate;x.toText=lotImportDateText(r);}
+    }
     x.lots+=1;
     x.animals+=n(r.total_animals);
     x.maleAnimals+=n(r.male_animals);
@@ -354,7 +390,7 @@ export default function Lots(){
     return m;
   },{}));
 
-  const reportRangeText=`Theo ngày lập phiếu: từ ${reportFilter.from||'...'} đến ${reportFilter.to||'...'}`;
+  const reportRangeText=`Theo ngày nhập hàng: từ ${reportFilter.from||'...'} đến ${reportFilter.to||'...'}`;
   const printHtml=(title,tableHtml)=>{
     const w=window.open('','_blank');
     if(!w)return;
@@ -366,13 +402,13 @@ export default function Lots(){
     w.document.close();
   };
   const printDetail=()=>{
-    const rowsHtml=reportRows.map((r,i)=>`<tr><td class="center">${i+1}</td><td class="center">${dateText(r.purchase_date)}</td><td class="center">${lotBillDateText(r)}</td><td class="left">${r.lot_code||''}</td><td class="left">${r.supplier_name||''}</td><td>${animal(r.total_animals)}</td><td>${animal(r.male_animals)}</td><td>${kg(r.male_weight)}</td><td>${money(r.male_price||r.purchase_price)}</td><td>${money(n(r.male_weight)*n(r.male_price||r.purchase_price))}</td><td>${animal(r.female_animals)}</td><td>${kg(r.female_weight)}</td><td>${money(r.female_price||r.purchase_price)}</td><td>${money(n(r.female_weight)*n(r.female_price||r.purchase_price))}</td><td>${kg(r.deducted_weight)}</td><td>${kg(r.bone_weight)}</td><td>${kg(r.fragment_weight)}</td><td>${money(r.fragment_price)}</td><td>${money(r.fragment_cost||n(r.fragment_weight)*n(r.fragment_price))}</td><td>${kg(r.total_weight)}</td><td>${money(r.total_cost)}</td></tr>`).join('');
-    const html=`<table><thead><tr><th rowspan="2">STT</th><th rowspan="2">Ngày lập<br/>phiếu</th><th rowspan="2">Ngày tính<br/>phiếu</th><th rowspan="2">Số phiếu</th><th rowspan="2">NCC</th><th rowspan="2">Tổng<br/>con</th><th colspan="4">Bò đực</th><th colspan="4">Bò cái</th><th rowspan="2">Trừ xô<br/>kg</th><th rowspan="2">Xương<br/>sườn kg</th><th colspan="3">Thịt vụn</th><th rowspan="2">Kg thực<br/>tính</th><th rowspan="2">Thành tiền</th></tr><tr><th>Con</th><th>Kg</th><th>Giá</th><th>Tiền</th><th>Con</th><th>Kg</th><th>Giá</th><th>Tiền</th><th>Kg</th><th>Giá</th><th>Tiền</th></tr></thead><tbody>${rowsHtml}</tbody><tfoot><tr><td colspan="5" class="center">TỔNG CỘNG</td><td>${animal(detailTotals.animals)}</td><td>${animal(detailTotals.maleAnimals)}</td><td>${kg(detailTotals.maleWeight)}</td><td></td><td>${money(detailTotals.maleMoney)}</td><td>${animal(detailTotals.femaleAnimals)}</td><td>${kg(detailTotals.femaleWeight)}</td><td></td><td>${money(detailTotals.femaleMoney)}</td><td>${kg(detailTotals.deduct)}</td><td>${kg(detailTotals.rib)}</td><td>${kg(detailTotals.fragment)}</td><td></td><td>${money(detailTotals.fragmentMoney)}</td><td>${kg(detailTotals.final)}</td><td>${money(detailTotals.cost)}</td></tr></tfoot></table>`;
+    const rowsHtml=reportRows.map((r,i)=>`<tr><td class="center">${i+1}</td><td class="center">${dateText(r.created_at||r.purchase_date)}</td><td class="center">${lotImportDateText(r)}</td><td class="left">${r.lot_code||''}</td><td class="left">${r.supplier_name||''}</td><td>${animal(r.total_animals)}</td><td>${animal(r.male_animals)}</td><td>${kg(r.male_weight)}</td><td>${money(r.male_price||r.purchase_price)}</td><td>${money(n(r.male_weight)*n(r.male_price||r.purchase_price))}</td><td>${animal(r.female_animals)}</td><td>${kg(r.female_weight)}</td><td>${money(r.female_price||r.purchase_price)}</td><td>${money(n(r.female_weight)*n(r.female_price||r.purchase_price))}</td><td>${kg(r.deducted_weight)}</td><td>${kg(r.bone_weight)}</td><td>${kg(r.fragment_weight)}</td><td>${money(r.fragment_price)}</td><td>${money(r.fragment_cost||n(r.fragment_weight)*n(r.fragment_price))}</td><td>${kg(r.total_weight)}</td><td>${money(r.total_cost)}</td></tr>`).join('');
+    const html=`<table><thead><tr><th rowspan="2">STT</th><th rowspan="2">Ngày lập<br/>phiếu</th><th rowspan="2">Ngày nhập<br/>hàng</th><th rowspan="2">Số phiếu</th><th rowspan="2">NCC</th><th rowspan="2">Tổng<br/>con</th><th colspan="4">Bò đực</th><th colspan="4">Bò cái</th><th rowspan="2">Trừ xô<br/>kg</th><th rowspan="2">Xương<br/>sườn kg</th><th colspan="3">Thịt vụn</th><th rowspan="2">Kg thực<br/>tính</th><th rowspan="2">Thành tiền</th></tr><tr><th>Con</th><th>Kg</th><th>Giá</th><th>Tiền</th><th>Con</th><th>Kg</th><th>Giá</th><th>Tiền</th><th>Kg</th><th>Giá</th><th>Tiền</th></tr></thead><tbody>${rowsHtml}</tbody><tfoot><tr><td colspan="5" class="center">TỔNG CỘNG</td><td>${animal(detailTotals.animals)}</td><td>${animal(detailTotals.maleAnimals)}</td><td>${kg(detailTotals.maleWeight)}</td><td></td><td>${money(detailTotals.maleMoney)}</td><td>${animal(detailTotals.femaleAnimals)}</td><td>${kg(detailTotals.femaleWeight)}</td><td></td><td>${money(detailTotals.femaleMoney)}</td><td>${kg(detailTotals.deduct)}</td><td>${kg(detailTotals.rib)}</td><td>${kg(detailTotals.fragment)}</td><td></td><td>${money(detailTotals.fragmentMoney)}</td><td>${kg(detailTotals.final)}</td><td>${money(detailTotals.cost)}</td></tr></tfoot></table>`;
     printHtml('THỐNG KÊ CHI TIẾT NHẬP LÔ / NHÀ CUNG CẤP',html);
   };
   const printSummary=()=>{
-    const rowsHtml=summaryRows.map((r,i)=>`<tr><td class="center">${i+1}</td><td class="left">${r.supplier_name}</td><td>${kg(r.lots)}</td><td>${animal(r.animals)}</td><td>${animal(r.maleAnimals)}</td><td>${kg(r.maleWeight)}</td><td>${money(r.maleMoney)}</td><td>${animal(r.femaleAnimals)}</td><td>${kg(r.femaleWeight)}</td><td>${money(r.femaleMoney)}</td><td>${kg(r.deduct)}</td><td>${kg(r.rib)}</td><td>${kg(r.fragment)}</td><td>${money(r.fragmentMoney)}</td><td>${kg(r.final)}</td><td>${money(r.cost)}</td></tr>`).join('');
-    const html=`<table><thead><tr><th>STT</th><th>NCC</th><th>Số lô</th><th>Tổng con</th><th>Đực con</th><th>Đực kg</th><th>Tiền đực</th><th>Cái con</th><th>Cái kg</th><th>Tiền cái</th><th>Trừ xô kg</th><th>Xương sườn kg</th><th>Vụn kg</th><th>Tiền vụn</th><th>Kg thực tính</th><th>Tổng thành tiền</th></tr></thead><tbody>${rowsHtml}</tbody><tfoot><tr><td colspan="2" class="center">TỔNG CỘNG</td><td>${kg(detailTotals.lots)}</td><td>${animal(detailTotals.animals)}</td><td>${animal(detailTotals.maleAnimals)}</td><td>${kg(detailTotals.maleWeight)}</td><td>${money(detailTotals.maleMoney)}</td><td>${animal(detailTotals.femaleAnimals)}</td><td>${kg(detailTotals.femaleWeight)}</td><td>${money(detailTotals.femaleMoney)}</td><td>${kg(detailTotals.deduct)}</td><td>${kg(detailTotals.rib)}</td><td>${kg(detailTotals.fragment)}</td><td>${money(detailTotals.fragmentMoney)}</td><td>${kg(detailTotals.final)}</td><td>${money(detailTotals.cost)}</td></tr></tfoot></table>`;
+    const rowsHtml=summaryRows.map((r,i)=>`<tr><td class="center">${i+1}</td><td class="left">${r.supplier_name}</td><td class="center">${r.fromText||r.from||''}<br/>→ ${r.toText||r.to||''}</td><td>${kg(r.lots)}</td><td>${animal(r.animals)}</td><td>${animal(r.maleAnimals)}</td><td>${kg(r.maleWeight)}</td><td>${money(r.maleMoney)}</td><td>${animal(r.femaleAnimals)}</td><td>${kg(r.femaleWeight)}</td><td>${money(r.femaleMoney)}</td><td>${kg(r.deduct)}</td><td>${kg(r.rib)}</td><td>${kg(r.fragment)}</td><td>${money(r.fragmentMoney)}</td><td>${kg(r.final)}</td><td>${money(r.cost)}</td></tr>`).join('');
+    const html=`<table><thead><tr><th>STT</th><th>NCC</th><th>Ngày nhập hàng</th><th>Số lô</th><th>Tổng con</th><th>Đực con</th><th>Đực kg</th><th>Tiền đực</th><th>Cái con</th><th>Cái kg</th><th>Tiền cái</th><th>Trừ xô kg</th><th>Xương sườn kg</th><th>Vụn kg</th><th>Tiền vụn</th><th>Kg thực tính</th><th>Tổng thành tiền</th></tr></thead><tbody>${rowsHtml}</tbody><tfoot><tr><td colspan="3" class="center">TỔNG CỘNG</td><td>${kg(detailTotals.lots)}</td><td>${animal(detailTotals.animals)}</td><td>${animal(detailTotals.maleAnimals)}</td><td>${kg(detailTotals.maleWeight)}</td><td>${money(detailTotals.maleMoney)}</td><td>${animal(detailTotals.femaleAnimals)}</td><td>${kg(detailTotals.femaleWeight)}</td><td>${money(detailTotals.femaleMoney)}</td><td>${kg(detailTotals.deduct)}</td><td>${kg(detailTotals.rib)}</td><td>${kg(detailTotals.fragment)}</td><td>${money(detailTotals.fragmentMoney)}</td><td>${kg(detailTotals.final)}</td><td>${money(detailTotals.cost)}</td></tr></tfoot></table>`;
     printHtml('THỐNG KÊ TỔNG HỢP NHẬP LÔ / NHÀ CUNG CẤP',html);
   };
 
@@ -434,7 +470,7 @@ export default function Lots(){
           <label><span className="muted">Tên lô</span><input className="input" placeholder="Tên lô" value={f.lot_name||''} onChange={e=>setField('lot_name',e.target.value)}/></label>
           <label><span className="muted">Ngày nhập</span><input className="input" type="date" value={f.purchase_date||''} onChange={e=>applySupplierCalendarToLot(f.supplier_id,e.target.value)}/></label>
           <label><span className="muted">Nhà cung cấp</span><select className="select" value={f.supplier_id||''} onChange={e=>applySupplierCalendarToLot(e.target.value,f.purchase_date)}><option value="">Chọn nhà cung cấp</option>{s.map(x=><option key={x.id} value={x.id}>{x.name} - {x.billing_calendar_type==='LUNAR'?'Âm lịch':'Dương lịch'}</option>)}</select></label>
-          {selectedSupplierCalendar==='LUNAR'&&<label><span className="muted">Ngày âm lịch in trên phiếu NCC</span><input className="input" value={f.lunar_date_text||''} onChange={e=>setField('lunar_date_text',e.target.value)} placeholder="VD: 28/03/2026"/></label>}
+          {selectedSupplierCalendar==='LUNAR'&&<label><span className="muted">Ngày âm lịch in trên phiếu NCC</span><input className="input" value={f.lunar_date_text||''} onChange={e=>changeLotLunarDateText(e.target.value)} placeholder="VD: 28/03/2026"/></label>}
 
           <label className="kg-multiline-field"><span className="muted">Tổng kg thịt xô</span><textarea ref={rawWeightRef} className="input lots-kg-textarea" rows="5" wrap="soft" placeholder={"Nhập nhiều dòng, ví dụ:\n90.5\n75.8\n64.2"} value={f.raw_weight_expr??''} onChange={e=>setField('raw_weight_expr',e.target.value)}/><small className="muted">Có thể nhập xuống dòng hoặc dùng dấu +, ví dụ: 90.5 + 75.8</small></label>
           <label className="kg-singleline-field"><span className="muted">Xương sườn kg, tự cộng 1/2 vào thịt xô</span><input ref={setNavRef(0)} onKeyDown={e=>onLotNavKey(e,0)} className="input" placeholder="Ví dụ: 100 + 80 - 5" value={f.bone_weight_expr??''} onChange={e=>setField('bone_weight_expr',e.target.value)}/><small className="muted">Nhập 1 dòng, có thể cộng/trừ trực tiếp. Hệ thống tự lấy tổng xương sườn / 2 cộng vào thịt xô.</small></label>
@@ -508,7 +544,7 @@ export default function Lots(){
             {reportTab==='DETAIL'?<button className="btn secondary" disabled={!reportRows.length} onClick={printDetail}>🖨 In chi tiết</button>:<button className="btn secondary" disabled={!summaryRows.length} onClick={printSummary}>🖨 In tổng hợp</button>}
           </div>
         </div>
-        <p className="muted" style={{marginTop:0}}>Ngày lập phiếu giữ theo ngày tạo/nhập. Cột Ngày tính phiếu lấy theo lịch của NCC: NCC âm lịch sẽ hiện ngày âm lịch, NCC dương lịch sẽ hiện ngày dương lịch.</p>
+        <p className="muted" style={{marginTop:0}}>Ngày lập phiếu là ngày thao tác trên hệ thống. Ngày nhập hàng là ngày tính phiếu theo lịch của NCC; nếu NCC dùng âm lịch sẽ hiển thị dạng 15/06/2026 (01/04/2026 âm lịch).</p>
         <div className="lots-stat-grid">
           <div><span>Tổng lô</span><b>{detailTotals.lots}</b></div>
           <div><span>Tổng số con</span><b>{animal(detailTotals.animals)}</b></div>
@@ -523,7 +559,7 @@ export default function Lots(){
           <div><span>Tổng thành tiền</span><b>{money(detailTotals.cost)}</b></div>
         </div>
 
-        {reportTab==='DETAIL'?<div className="table-scroll supplier-report-table"><table className="table compact"><thead><tr><th>Ngày lập</th><th>Ngày tính phiếu</th><th>Phiếu</th><th>NCC</th><th>Số con</th><th>Bò đực</th><th>Bò cái</th><th>Trừ xô</th><th>Xương sườn</th><th>Thịt vụn</th><th>Kg thực tính</th><th>Thành tiền</th></tr></thead><tbody>{reportRows.map(r=><tr key={r.id}><td>{dateText(r.purchase_date)}</td><td><b>{lotBillDateText(r)}</b><br/><span className="muted">{lotCalendarType(r)==='LUNAR'?'Âm lịch':'Dương lịch'}</span></td><td>{r.lot_code}</td><td>{r.supplier_name}</td><td>{animal(r.total_animals)}</td><td>{animal(r.male_animals)} con<br/>{kg(r.male_weight)}kg × {money(r.male_price||r.purchase_price)}<br/><b>{money(n(r.male_weight)*n(r.male_price||r.purchase_price))}</b></td><td>{animal(r.female_animals)} con<br/>{kg(r.female_weight)}kg × {money(r.female_price||r.purchase_price)}<br/><b>{money(n(r.female_weight)*n(r.female_price||r.purchase_price))}</b></td><td>{kg(r.deducted_weight)}kg</td><td>{kg(r.bone_weight)}kg</td><td>{kg(r.fragment_weight)}kg × {money(r.fragment_price)}<br/><b>{money(r.fragment_cost||n(r.fragment_weight)*n(r.fragment_price))}</b></td><td>{kg(r.total_weight)}kg</td><td><b>{money(r.total_cost)}</b></td></tr>)}</tbody><tfoot><tr><td colSpan="4">Tổng cộng</td><td>{animal(detailTotals.animals)}</td><td>{animal(detailTotals.maleAnimals)} con<br/>{kg(detailTotals.maleWeight)}kg<br/>{money(detailTotals.maleMoney)}</td><td>{animal(detailTotals.femaleAnimals)} con<br/>{kg(detailTotals.femaleWeight)}kg<br/>{money(detailTotals.femaleMoney)}</td><td>{kg(detailTotals.deduct)}kg</td><td>{kg(detailTotals.rib)}kg</td><td>{kg(detailTotals.fragment)}kg<br/>{money(detailTotals.fragmentMoney)}</td><td>{kg(detailTotals.final)}kg</td><td>{money(detailTotals.cost)}</td></tr></tfoot></table></div>:<div className="table-scroll supplier-report-table"><table className="table compact"><thead><tr><th>NCC</th><th>Số lô</th><th>Tổng con</th><th>Bò đực</th><th>Bò cái</th><th>Trừ xô</th><th>Xương sườn</th><th>Thịt vụn</th><th>Kg thực tính</th><th>Tổng thành tiền</th></tr></thead><tbody>{summaryRows.map(r=><tr key={r.supplier_id}><td>{r.supplier_name}</td><td>{kg(r.lots)}</td><td>{animal(r.animals)}</td><td>{animal(r.maleAnimals)} con<br/>{kg(r.maleWeight)}kg<br/><b>{money(r.maleMoney)}</b></td><td>{animal(r.femaleAnimals)} con<br/>{kg(r.femaleWeight)}kg<br/><b>{money(r.femaleMoney)}</b></td><td>{kg(r.deduct)}kg</td><td>{kg(r.rib)}kg</td><td>{kg(r.fragment)}kg<br/><b>{money(r.fragmentMoney)}</b></td><td>{kg(r.final)}kg</td><td><b>{money(r.cost)}</b></td></tr>)}</tbody><tfoot><tr><td>Tổng cộng</td><td>{kg(detailTotals.lots)}</td><td>{animal(detailTotals.animals)}</td><td>{animal(detailTotals.maleAnimals)} con<br/>{kg(detailTotals.maleWeight)}kg<br/>{money(detailTotals.maleMoney)}</td><td>{animal(detailTotals.femaleAnimals)} con<br/>{kg(detailTotals.femaleWeight)}kg<br/>{money(detailTotals.femaleMoney)}</td><td>{kg(detailTotals.deduct)}kg</td><td>{kg(detailTotals.rib)}kg</td><td>{kg(detailTotals.fragment)}kg<br/>{money(detailTotals.fragmentMoney)}</td><td>{kg(detailTotals.final)}kg</td><td>{money(detailTotals.cost)}</td></tr></tfoot></table></div>}
+        {reportTab==='DETAIL'?<div className="table-scroll supplier-report-table"><table className="table compact"><thead><tr><th>Ngày lập phiếu</th><th>Ngày nhập hàng</th><th>Phiếu</th><th>NCC</th><th>Số con</th><th>Bò đực</th><th>Bò cái</th><th>Trừ xô</th><th>Xương sườn</th><th>Thịt vụn</th><th>Kg thực tính</th><th>Thành tiền</th></tr></thead><tbody>{reportRows.map(r=><tr key={r.id}><td>{dateText(r.created_at||r.purchase_date)}</td><td><b>{lotImportDateText(r)}</b></td><td>{r.lot_code}</td><td>{r.supplier_name}</td><td>{animal(r.total_animals)}</td><td>{animal(r.male_animals)} con<br/>{kg(r.male_weight)}kg × {money(r.male_price||r.purchase_price)}<br/><b>{money(n(r.male_weight)*n(r.male_price||r.purchase_price))}</b></td><td>{animal(r.female_animals)} con<br/>{kg(r.female_weight)}kg × {money(r.female_price||r.purchase_price)}<br/><b>{money(n(r.female_weight)*n(r.female_price||r.purchase_price))}</b></td><td>{kg(r.deducted_weight)}kg</td><td>{kg(r.bone_weight)}kg</td><td>{kg(r.fragment_weight)}kg × {money(r.fragment_price)}<br/><b>{money(r.fragment_cost||n(r.fragment_weight)*n(r.fragment_price))}</b></td><td>{kg(r.total_weight)}kg</td><td><b>{money(r.total_cost)}</b></td></tr>)}</tbody><tfoot><tr><td colSpan="4">Tổng cộng</td><td>{animal(detailTotals.animals)}</td><td>{animal(detailTotals.maleAnimals)} con<br/>{kg(detailTotals.maleWeight)}kg<br/>{money(detailTotals.maleMoney)}</td><td>{animal(detailTotals.femaleAnimals)} con<br/>{kg(detailTotals.femaleWeight)}kg<br/>{money(detailTotals.femaleMoney)}</td><td>{kg(detailTotals.deduct)}kg</td><td>{kg(detailTotals.rib)}kg</td><td>{kg(detailTotals.fragment)}kg<br/>{money(detailTotals.fragmentMoney)}</td><td>{kg(detailTotals.final)}kg</td><td>{money(detailTotals.cost)}</td></tr></tfoot></table></div>:<div className="table-scroll supplier-report-table"><table className="table compact"><thead><tr><th>NCC</th><th>Ngày nhập hàng</th><th>Số lô</th><th>Tổng con</th><th>Bò đực</th><th>Bò cái</th><th>Trừ xô</th><th>Xương sườn</th><th>Thịt vụn</th><th>Kg thực tính</th><th>Tổng thành tiền</th></tr></thead><tbody>{summaryRows.map(r=><tr key={r.supplier_id}><td>{r.supplier_name}</td><td><b>{r.fromText||r.from||''}</b><br/><span className="muted">→ {r.toText||r.to||''}</span></td><td>{kg(r.lots)}</td><td>{animal(r.animals)}</td><td>{animal(r.maleAnimals)} con<br/>{kg(r.maleWeight)}kg<br/><b>{money(r.maleMoney)}</b></td><td>{animal(r.femaleAnimals)} con<br/>{kg(r.femaleWeight)}kg<br/><b>{money(r.femaleMoney)}</b></td><td>{kg(r.deduct)}kg</td><td>{kg(r.rib)}kg</td><td>{kg(r.fragment)}kg<br/><b>{money(r.fragmentMoney)}</b></td><td>{kg(r.final)}kg</td><td><b>{money(r.cost)}</b></td></tr>)}</tbody><tfoot><tr><td colSpan="2">Tổng cộng</td><td>{kg(detailTotals.lots)}</td><td>{animal(detailTotals.animals)}</td><td>{animal(detailTotals.maleAnimals)} con<br/>{kg(detailTotals.maleWeight)}kg<br/>{money(detailTotals.maleMoney)}</td><td>{animal(detailTotals.femaleAnimals)} con<br/>{kg(detailTotals.femaleWeight)}kg<br/>{money(detailTotals.femaleMoney)}</td><td>{kg(detailTotals.deduct)}kg</td><td>{kg(detailTotals.rib)}kg</td><td>{kg(detailTotals.fragment)}kg<br/>{money(detailTotals.fragmentMoney)}</td><td>{kg(detailTotals.final)}kg</td><td>{money(detailTotals.cost)}</td></tr></tfoot></table></div>}
 
         <h3>Lô nhập / thanh toán NCC</h3>
         <table className="table"><thead><tr><th>Lô</th><th>Kg</th><th>Thành tiền</th><th>Còn trả</th><th></th></tr></thead><tbody>{rows.map(r=><tr key={r.id}><td>{r.lot_code}<br/>{r.lot_name}<br/><span className="muted">{r.supplier_name}</span></td><td>{r.total_weight}kg<br/><span className="muted">{animal(r.total_animals)} con, cái {animal(r.female_animals)}</span><br/><span className="muted">Vụn {Number(r.fragment_weight||0).toFixed(3)}kg × {money(r.fragment_price||0)}</span></td><td>{money(r.total_cost)}</td><td><b>{money(r.remaining_amount)}</b></td><td><button className="btn secondary" onClick={()=>print(r.id)}>In NCC</button></td></tr>)}</tbody></table>

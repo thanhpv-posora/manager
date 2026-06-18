@@ -62,7 +62,7 @@ export default function UserCustomerMapping(){
  };
 
  const reject=async(id)=>{
-  if(!confirm('Bạn chắc chắn muốn từ chối đăng ký này?'))return;
+  if(!await window.appConfirm('Bạn chắc chắn muốn từ chối đăng ký này?',{title:'Từ chối đăng ký',confirmText:'Từ chối',variant:'danger'}))return;
   try{
     const r=await api.post('/user-mapping/registrations/'+id+'/reject');
     showWarning(r.data?.message||'Đã từ chối đăng ký');

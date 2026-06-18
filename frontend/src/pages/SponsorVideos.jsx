@@ -20,7 +20,7 @@ export default function SponsorVideos(){
  const publish=async(v,is_public)=>{await api.post('/videos/'+v.id+'/publish',{is_public});await load()};
  const softDelete=async(v)=>{const reason=prompt('Lý do xóa mềm video?');if(reason!==null){await api.delete('/videos/'+v.id,{data:{reason}});await load()}};
  const restore=async(v)=>{await api.post('/videos/'+v.id+'/restore');await load()};
- const hardDelete=async(v)=>{if(confirm('Xóa vĩnh viễn video này?')){await api.delete('/videos/'+v.id+'/hard');await load()}};
+ const hardDelete=async(v)=>{if(await window.appConfirm('Xóa vĩnh viễn video này?',{title:'Xóa video',confirmText:'Xóa vĩnh viễn',variant:'danger'})){await api.delete('/videos/'+v.id+'/hard');await load()}};
  return <SafePage loading={loading} error={error}>
   <div className="card portal-hero"><h1>Sponsor Video Agent</h1><p>Tạo video hoặc upload video có sẵn, publish vào đúng vị trí trên trang giới thiệu.</p></div>
   <div className="grid cols-2"><div className="card"><h3>1. Tạo / upload video</h3><div className="form-grid">

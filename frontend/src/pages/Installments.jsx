@@ -225,7 +225,7 @@ th{background:#7f1d1d;color:white}
   await load(selectedPeriod,calendarType);
  };
  const softDelete=async(row)=>{
-  if(!window.confirm(`Xóa mềm cấu hình góp nợ của ${row.customer_name}?`))return;
+  if(!await window.appConfirm(`Xóa mềm cấu hình góp nợ của ${row.customer_name}?`,{title:'Xóa cấu hình góp nợ',confirmText:'Xóa',variant:'danger'}))return;
   await api.delete(`/installments/monthly/${row.id}`);
   await load(selectedPeriod,calendarType);
  };

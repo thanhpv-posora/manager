@@ -4,6 +4,8 @@ const { nextCode } = require('../utils/code');
 const InventoryService = require('../services/InventoryService');
 const PrintService = require('../services/PrintService');
 const DebtMonthlyInstallmentAgent=require('./DebtMonthlyInstallmentAgent');
+const { resolveBillSolarDate }=require('../utils/lunarDate');
+const PriceBookService = require('../services/PriceBookService');
 
 function customerScopeFilterV625(user, baseWhere, params) {
   if(user && user.role==='CUSTOMER') {
@@ -17,6 +19,30 @@ function parseLunarDateParts(text){
   const m=String(text||'').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
   if(!m)return null;
   return {day:Number(m[1]),month:Number(m[2]),year:Number(m[3])};
+}
+
+
+async function buildMissingPriceError(conn, customerId, billDate, missingIds) {
+  const ids = [...new Set((missingIds || []).map(x => Number(x)).filter(Boolean))];
+  let items = ids.map(id => ({ product_id: id, product_name: `ID ${id}` }));
+  if (ids.length) {
+    const placeholders = ids.map(() => '?').join(',');
+    const [products] = await conn.query(
+      `SELECT id, name FROM products WHERE id IN (${placeholders})`,
+      ids
+    );
+    const names = new Map(products.map(p => [Number(p.id), p.name || `ID ${p.id}`]));
+    items = ids.map(id => ({ product_id: id, product_name: names.get(id) || `ID ${id}` }));
+  }
+  const msg = items.length === 1
+    ? `Khách chưa có giá cho mặt hàng ${items[0].product_name}. Vui lòng cập nhật bảng giá riêng trước khi lưu bill.`
+    : `Khách chưa có giá cho ${items.length} mặt hàng: ${items.map(x => x.product_name).join(', ')}. Vui lòng cập nhật bảng giá riêng trước khi lưu bill.`;
+  const err = new Error(msg);
+  err.status = 400;
+  err.statusCode = 400;
+  err.code = 'PRICE_NOT_FOUND';
+  err.details = { customer_id: customerId, bill_date: billDate, items };
+  return err;
 }
 
 function solarDateParts(dateText){
@@ -36,7 +62,91 @@ async function monthlyInstallmentForOrder(order){
 }
 
 class OrderAgent {
-  constructor(){this.version='6.8.0';this.responsibility='Order POS, inventory-aware bill, QR, A4 print, thermal K80 print';}
+  constructor(){this.version='65.55.0';this.responsibility='Order POS blocks future shipping dates and uses shipping-date effective price book';}
+
+  async ensureOrderEditable(conn, orderId) {
+    const [rows] = await conn.query(`SELECT id,status,is_locked,locked_at,payment_status FROM orders WHERE id=? FOR UPDATE`, [orderId]);
+    if (!rows.length) throw new Error('Không tìm thấy bill');
+    const o = rows[0];
+    if (String(o.status || '').toUpperCase() === 'CANCELLED') throw new Error('Bill đã hủy, không thể sửa');
+    if (Number(o.is_locked || 0) === 1 || o.locked_at) throw new Error('Bill đã chốt sổ, không thể sửa');
+    const [allocs] = await conn.query(`SELECT COUNT(*) cnt FROM payment_allocations WHERE order_id=?`, [orderId]).catch(async e => { if (e && (e.code==='ER_NO_SUCH_TABLE'||e.errno===1146)) return [[{cnt:0}]]; throw e; });
+    if (Number(allocs[0]?.cnt || 0) > 0) throw new Error('Bill đã có thu tiền/phân bổ, không thể sửa hàng. Hãy điều chỉnh bằng phiếu khác.');
+    return o;
+  }
+
+  async lock(orderId, data={}, user={}) {
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [rows] = await conn.query(`SELECT id,status,is_locked,locked_at FROM orders WHERE id=? FOR UPDATE`, [orderId]);
+      if (!rows.length) throw new Error('Không tìm thấy bill');
+      if (String(rows[0].status || '').toUpperCase() === 'CANCELLED') throw new Error('Bill đã hủy, không thể chốt');
+      try {
+        await conn.query(`UPDATE orders SET is_locked=1, locked_at=NOW(), locked_by=?, lock_note=? WHERE id=?`, [user?.id || null, data.note || data.lock_note || null, orderId]);
+      } catch(e) {
+        if (e && (e.code==='ER_BAD_FIELD_ERROR'||e.errno===1054)) throw new Error('Chưa chạy migration khóa bill V65.47');
+        throw e;
+      }
+      await conn.commit();
+      return {message:'Đã chốt sổ bill', order_id:Number(orderId)};
+    } catch(e) { await conn.rollback(); throw e; } finally { conn.release(); }
+  }
+
+  async loadLegacyDirectPayments(orderId) {
+    const [rows] = await pool.query(
+      `SELECT p.id payment_id, p.order_id, p.amount allocated_amount, 'LEGACY_DIRECT_PAYMENT' allocation_type,
+              p.payment_code, p.payment_date, p.payment_method, p.cash_amount, p.bank_amount, p.amount payment_amount, p.note
+       FROM payments p WHERE p.order_id=?
+       ORDER BY p.payment_date ASC, p.id ASC`,
+      [orderId]
+    );
+    return rows;
+  }
+
+  async loadOrderPaymentAllocations(orderId) {
+    // V65.34: payment history must be shown per bill allocation, not by the payment row order_id only.
+    // This keeps old debt payments understandable: money used to clear an older bill is printed on that old bill.
+    try {
+      try {
+        const [rows] = await pool.query(
+          `SELECT pa.id allocation_id, pa.payment_id, pa.order_id, pa.amount allocated_amount,
+                  COALESCE(pa.cash_amount,0) allocation_cash_amount,
+                  COALESCE(pa.bank_amount,0) allocation_bank_amount,
+                  pa.allocation_type,
+                  p.payment_code, p.payment_date, p.payment_method, p.cash_amount, p.bank_amount, p.amount payment_amount, p.note
+           FROM payment_allocations pa
+           JOIN payments p ON p.id=pa.payment_id
+           WHERE pa.order_id=?
+           ORDER BY p.payment_date ASC, p.id ASC, pa.id ASC`,
+          [orderId]
+        );
+        if (rows.length) return rows;
+        // V65.44: if allocation table exists but this bill was paid before allocation rows were introduced,
+        // print the direct payment rows instead of showing an empty payment history.
+        return await this.loadLegacyDirectPayments(orderId);
+      } catch (e2) {
+        if (!(e2 && (e2.code === 'ER_BAD_FIELD_ERROR' || e2.errno === 1054))) throw e2;
+        const [rows] = await pool.query(
+          `SELECT pa.id allocation_id, pa.payment_id, pa.order_id, pa.amount allocated_amount,
+                  0 allocation_cash_amount, 0 allocation_bank_amount,
+                  pa.allocation_type,
+                  p.payment_code, p.payment_date, p.payment_method, p.cash_amount, p.bank_amount, p.amount payment_amount, p.note
+           FROM payment_allocations pa
+           JOIN payments p ON p.id=pa.payment_id
+           WHERE pa.order_id=?
+           ORDER BY p.payment_date ASC, p.id ASC, pa.id ASC`,
+          [orderId]
+        );
+        if (rows.length) return rows;
+        return await this.loadLegacyDirectPayments(orderId);
+      }
+    } catch (e) {
+      if (!(e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146))) throw e;
+return await this.loadLegacyDirectPayments(orderId);
+    }
+  }
+
   async list(user, query={}) {
     const where=[], params=[];
     if (user.role==='CUSTOMER') { where.push('o.customer_id=?'); params.push(user.customer_id); }
@@ -75,7 +185,10 @@ class OrderAgent {
         if(used[0]) monthly_installment=used[0];
       }catch(e){}
     }
-    return {...order, items, old_debts:oldDebts, old_debt_total:oldDebts.reduce((s,x)=>s+Number(x.debt_amount||0),0), monthly_installment, payment:payRows[0]||null};
+    const payment_allocations = await this.loadOrderPaymentAllocations(order.id);
+    const allocation_paid_total = payment_allocations.reduce((sum,x)=>sum+Number(x.allocated_amount||0),0);
+    const payment_summary = { allocated_paid_total: allocation_paid_total, remaining_debt: Math.max(0, Number(order.total_amount||0)-allocation_paid_total) };
+    return {...order, items, old_debts:oldDebts, old_debt_total:oldDebts.reduce((s,x)=>s+Number(x.debt_amount||0),0), monthly_installment, payment:payRows[0]||null, payment_allocations, payment_summary};
   }
 
   async getByToken(token) {
@@ -102,7 +215,10 @@ class OrderAgent {
         if(used[0]) monthly_installment=used[0];
       }catch(e){}
     }
-    return {...order, items, old_debts:oldDebts, old_debt_total:oldDebts.reduce((s,x)=>s+Number(x.debt_amount||0),0), monthly_installment, payment:payRows[0]||null};
+    const payment_allocations = await this.loadOrderPaymentAllocations(order.id);
+    const allocation_paid_total = payment_allocations.reduce((sum,x)=>sum+Number(x.allocated_amount||0),0);
+    const payment_summary = { allocated_paid_total: allocation_paid_total, remaining_debt: Math.max(0, Number(order.total_amount||0)-allocation_paid_total) };
+    return {...order, items, old_debts:oldDebts, old_debt_total:oldDebts.reduce((s,x)=>s+Number(x.debt_amount||0),0), monthly_installment, payment:payRows[0]||null, payment_allocations, payment_summary};
   }
 
   async create(data, user) {
@@ -111,25 +227,57 @@ class OrderAgent {
     try {
       await conn.beginTransaction();
       const code = await nextCode(conn,'orders','order_code','BILL');
+      const safeCalendarType=data.calendar_type==='LUNAR'?'LUNAR':'SOLAR';
+      const safeLunarDateText=safeCalendarType==='LUNAR'?(data.lunar_date_text||''):'';
+      const billSolarDate=resolveBillSolarDate(safeCalendarType,data.order_date,safeLunarDateText);
+      const todayIso = new Date(Date.now()+7*60*60*1000).toISOString().slice(0,10);
+      if (String(billSolarDate||'').slice(0,10) > todayIso) {
+        const err = new Error('Không thể tạo bill có ngày xuất hàng lớn hơn ngày hiện tại');
+        err.statusCode = 400;
+        err.code = 'FUTURE_BILL_DATE';
+        err.details = { calendar_type: safeCalendarType, order_date: billSolarDate, lunar_date_text: safeLunarDateText, today: todayIso };
+        throw err;
+      }
+
+      // V65.52 critical fix:
+      // POS manual entry and Excel import must both use the price book effective at the bill shipping date.
+      // Do NOT trust the sale_price already present in frontend items because it may come from the newest
+      // customer catalog load, while Excel/bill date may be older (e.g. 08/01 AL must not use 01/02 AL price).
+      const missingPriceProductIds = [];
+      for (const it of data.items) {
+        if (!it.product_id) continue;
+        const isExplicitManual = it.manual_price === true || it.force_manual_price === true;
+        if (!isExplicitManual) {
+          const price = await PriceBookService.getEffectivePrice(data.customer_id, it.product_id, billSolarDate, conn, safeCalendarType, safeLunarDateText);
+          if (!price || Number(price.sale_price)<=0) {
+            missingPriceProductIds.push(it.product_id);
+            continue;
+          }
+          it.sale_price = price.sale_price;
+          it.price_type = price.price_type;
+          it.price_book_id = price.price_book_id || null;
+        } else if (!it.sale_price || Number(it.sale_price)<=0) {
+          missingPriceProductIds.push(it.product_id);
+        }
+      }
+      if (missingPriceProductIds.length) throw await buildMissingPriceError(conn, data.customer_id, billSolarDate, missingPriceProductIds);
       const itemTotal = data.items.reduce((s,it)=>s+Number(it.quantity||0)*Number(it.sale_price||0),0);
       // V6.51 critical fix: order total must include the effective daily installment.
       // Otherwise a bill paid only for today's items is incorrectly marked PAID and the installment debt disappears.
       const installmentAmount = Number(data.monthly_installment_amount ?? data.installment_amount ?? 0);
       const total = itemTotal + installmentAmount;
-      const paid = Number(data.paid_amount||0);
+      const paid = 0; // V65.47: Bill không xử lý tiền. Tiền chỉ ghi ở menu Thu tiền.
       const debt = Math.max(0,total-paid);
       const pstatus = paid<=0?'UNPAID':paid>=total?'PAID':'PARTIAL';
       const [r] = await conn.query(
         `INSERT INTO orders(order_code,customer_id,order_date,delivery_date,status,payment_status,total_amount,paid_amount,debt_amount,private_token,note,created_by)
          VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-        [code,data.customer_id,data.order_date,data.delivery_date||null,'DELIVERED',pstatus,total,paid,debt,nanoid(24),data.note||'',user.id]
+        [code,data.customer_id,billSolarDate,data.delivery_date||null,'DELIVERED',pstatus,total,paid,debt,nanoid(24),data.note||'',user.id]
       );
       
 const orderId = r.insertId;
     // V6.51: persist bill calendar and installment fields so POS, payment, print, and reports use the same values.
     try{
-      const safeCalendarType=data.calendar_type==='LUNAR'?'LUNAR':'SOLAR';
-      const safeLunarDateText=safeCalendarType==='LUNAR'?(data.lunar_date_text||''):'';
       const monthlyInstallmentId=Number(data.monthly_installment_id||0)||null;
       await conn.query(
         `UPDATE orders SET calendar_type=?, lunar_date_text=?, current_bill_amount=?, installment_amount=?, monthly_installment_id=? WHERE id=?`,
@@ -140,20 +288,42 @@ const orderId = r.insertId;
     }
       for (const it of data.items) {
         const line = Number(it.quantity||0)*Number(it.sale_price||0);
-        const inv = await InventoryService.out(conn,it.product_id,it.quantity,data.order_date,'SALE',orderId,`Xuất bill ${code}`,user.id);
-        await conn.query(
-          `INSERT INTO order_items(order_id,product_id,product_name,unit,quantity,sale_price,total_price,price_type,note,inventory_mode,stock_checked)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-          [orderId,it.product_id,it.product_name,it.unit||'kg',it.quantity,it.sale_price,line,it.price_type||'MANUAL_PRICE',it.note||null,inv.inventory_mode,inv.stock_checked?1:0]
-        );
+        const inv = await InventoryService.out(conn,it.product_id,it.quantity,billSolarDate,'SALE',orderId,`Xuất bill ${code}`,user.id);
+        try {
+          await conn.query(
+            `INSERT INTO order_items(order_id,product_id,product_name,unit,quantity,sale_price,total_price,price_type,price_book_id,note,inventory_mode,stock_checked)
+             VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+            [orderId,it.product_id,it.product_name,it.unit||'kg',it.quantity,it.sale_price,line,it.price_type||'MANUAL_PRICE',it.price_book_id||null,it.note||null,inv.inventory_mode,inv.stock_checked?1:0]
+          );
+        } catch (e) {
+          // Backward compatibility if production DB has not run V65.44.1 migration yet.
+          const safePriceType = (it.price_type === 'PRICE_BOOK') ? 'PRIVATE_PRICE' : (it.price_type || 'MANUAL_PRICE');
+          await conn.query(
+            `INSERT INTO order_items(order_id,product_id,product_name,unit,quantity,sale_price,total_price,price_type,note,inventory_mode,stock_checked)
+             VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+            [orderId,it.product_id,it.product_name,it.unit||'kg',it.quantity,it.sale_price,line,safePriceType,it.note||null,inv.inventory_mode,inv.stock_checked?1:0]
+          );
+        }
       }
       if (debt > 0) {
         await conn.query(
           `INSERT INTO debt_transactions(customer_id,order_id,transaction_date,type,amount,note,created_by)
            VALUES(?,?,?,'SALE',?,?,?)`,
-          [data.customer_id,orderId,data.order_date,debt,`Công nợ bill ${code}`,user.id]
+          [data.customer_id,orderId,billSolarDate,debt,`Công nợ bill ${code}`,user.id]
         );
       }
+
+      // V65.38: if customer had unused paid money from older receipts, apply it automatically
+      // to this newly-created bill by Ngày xuất hàng order. This prevents tiền dư from
+      // becoming unmanaged when the next bill is created after the receipt was recorded.
+      try {
+        const PaymentAgent = require('./PaymentAgent');
+        await PaymentAgent.allocateExistingCreditsToOpenBills(conn, data.customer_id, user.id);
+      } catch (e) {
+        // Do not block bill creation if the optional credit table has not been migrated yet.
+        if (!(e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146))) throw e;
+      }
+
       await conn.commit();
       return {message:'Đã tạo bill', order_id:orderId, order_code:code};
     } catch(e) { await conn.rollback(); throw e; } finally { conn.release(); }
@@ -189,6 +359,8 @@ const orderId = r.insertId;
         [order.customer_id, productId]
       );
       if(!rows.length) throw new Error('Không tìm thấy mặt hàng đã chọn');
+      const price = await PriceBookService.getEffectivePrice(order.customer_id, productId, order.order_date, conn, order.calendar_type, order.lunar_date_text);
+      if(price){ rows[0].sale_price=price.sale_price; rows[0].price_type=price.price_type; rows[0].price_book_id=price.price_book_id || null; }
       return rows[0];
     }
 
@@ -204,7 +376,11 @@ const orderId = r.insertId;
        WHERE p.del_flg=0 AND p.is_active=1 AND LOWER(TRIM(p.name))=LOWER(TRIM(?)) LIMIT 1`,
       [order.customer_id, name]
     );
-    if(exists.length) return exists[0];
+    if(exists.length) {
+      const price = await PriceBookService.getEffectivePrice(order.customer_id, exists[0].product_id, order.order_date, conn, order.calendar_type, order.lunar_date_text);
+      if(price){ exists[0].sale_price=price.sale_price; exists[0].price_type=price.price_type; exists[0].price_book_id=price.price_book_id || null; }
+      return exists[0];
+    }
 
     const salePrice = Number(data.sale_price || data.price || 0);
     if(!(salePrice > 0)) throw new Error('Mặt hàng mới cần nhập giá bán');
@@ -240,6 +416,7 @@ const orderId = r.insertId;
       if(!orders.length) throw new Error('Không tìm thấy bill');
       const order = orders[0];
       if(order.status === 'CANCELLED') throw new Error('Bill đã hủy, không thể thêm hàng');
+      await this.ensureOrderEditable(conn, orderId);
 
       const p = await this.resolveAddItemProduct(conn, order, data);
       const qty = Number(data.quantity || data.qty || 0);
@@ -248,11 +425,21 @@ const orderId = r.insertId;
       if(!(salePrice >= 0)) throw new Error('Giá bán không hợp lệ');
       const line = qty * salePrice;
       const inv = await InventoryService.out(conn, p.product_id, qty, order.order_date, 'SALE', orderId, `Thêm hàng vào bill ${order.order_code}`, user.id || order.created_by || null);
-      await conn.query(
-        `INSERT INTO order_items(order_id,product_id,product_name,unit,quantity,sale_price,total_price,price_type,note,inventory_mode,stock_checked)
-         VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-        [orderId, p.product_id, p.product_name, p.unit || data.unit || 'kg', qty, salePrice, line, data.price_type || p.price_type || 'MANUAL_PRICE', data.note || null, inv.inventory_mode, inv.stock_checked?1:0]
-      );
+      try {
+        await conn.query(
+          `INSERT INTO order_items(order_id,product_id,product_name,unit,quantity,sale_price,total_price,price_type,price_book_id,note,inventory_mode,stock_checked)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [orderId, p.product_id, p.product_name, p.unit || data.unit || 'kg', qty, salePrice, line, data.price_type || p.price_type || 'MANUAL_PRICE', data.price_book_id || p.price_book_id || null, data.note || null, inv.inventory_mode, inv.stock_checked?1:0]
+        );
+      } catch (e) {
+        const rawPriceType = data.price_type || p.price_type || 'MANUAL_PRICE';
+        const safePriceType = rawPriceType === 'PRICE_BOOK' ? 'PRIVATE_PRICE' : rawPriceType;
+        await conn.query(
+          `INSERT INTO order_items(order_id,product_id,product_name,unit,quantity,sale_price,total_price,price_type,note,inventory_mode,stock_checked)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+          [orderId, p.product_id, p.product_name, p.unit || data.unit || 'kg', qty, salePrice, line, safePriceType, data.note || null, inv.inventory_mode, inv.stock_checked?1:0]
+        );
+      }
       const totals = await this.recalcOrderTotals(conn, orderId);
       await conn.commit();
       return {message:'Đã thêm mặt hàng vào bill', ...totals};
@@ -263,6 +450,7 @@ const orderId = r.insertId;
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
+      await this.ensureOrderEditable(conn, orderId);
       const [items] = await conn.query(`SELECT * FROM order_items WHERE id=? AND order_id=? FOR UPDATE`, [itemId,orderId]);
       if (!items.length) throw new Error('Không tìm thấy dòng bill');
       const old = items[0];
@@ -278,63 +466,9 @@ const orderId = r.insertId;
   }
 
   async printK80ByToken(token) {
-    const order = await this.getByToken(token);
-    const pad = (s,n)=>String(s).padEnd(n).slice(0,n);
-    const money = n => Number(n||0).toLocaleString('vi-VN');
-    const lines = [];
-    lines.push('        MEATBIZ FOOD');
-    lines.push('   PHIEU GIAO HANG / K80');
-    lines.push('--------------------------------');
-    lines.push(`Bill : ${order.order_code}`);
-    const billDateLabel = order.calendar_type==='LUNAR' && order.lunar_date_text ? `${order.lunar_date_text} AL` : order.order_date;
-    lines.push(`Ngay : ${billDateLabel}`);
-    lines.push(`Khach: ${order.customer_name}`);
-    lines.push('--------------------------------');
-    for (const i of order.items) {
-      lines.push(`${i.product_name}`);
-      lines.push(`${String(i.quantity).padStart(6)}${pad(i.unit,3)} x ${money(i.sale_price).padStart(9)}`);
-      lines.push(`${''.padStart(18)}= ${money(i.total_price).padStart(10)}`);
-      if(i.inventory_mode==='NON_STOCK'||i.inventory_mode==='CARCASS_PART') lines.push('  * Hang pha loc/khong tru ton');
-    }
-    lines.push('--------------------------------');
-    const pay=order.payment||{};
-    const monthlyInstallment=Number(order.installment_amount||pay.installment_amount||order.monthly_installment?.installment_amount||0);
-    const storedTotal=Number(order.total_amount||0);
-    const rawCurrentBill=Number(order.current_bill_amount||0);
-    const itemTotal=(order.items||[]).reduce((sum,i)=>sum+Number(i.total_price || (Number(i.quantity||0)*Number(i.sale_price||0)) || 0),0);
-    // V6.51 FINAL K80 RULE:
-    // order.total_amount đã là tổng cuối cùng, đã bao gồm góp nợ/ngày.
-    // Không cộng installment_amount thêm lần nữa.
-    const payableTotal = storedTotal > 0
-      ? storedTotal
-      : (rawCurrentBill > 0
-          ? rawCurrentBill
-          : (itemTotal + monthlyInstallment));
-    const todayBillTotal = monthlyInstallment > 0
-      ? Math.max(0, payableTotal - monthlyInstallment)
-      : (rawCurrentBill || itemTotal || payableTotal);
-    const cashAmount=Number(pay.cash_amount||0);
-    const bankAmount=Number(pay.bank_amount||0);
-    const remainingDebt=Number(order.debt_amount ?? Math.max(0,payableTotal-cashAmount-bankAmount));
-    lines.push(`Bill hom nay: ${money(todayBillTotal).padStart(10)}`);
-    if(monthlyInstallment>0) lines.push(`Gop no/ngay: ${money(monthlyInstallment).padStart(10)}`);
-    lines.push(`Tong can TT: ${money(payableTotal).padStart(10)}`);
-    lines.push(`Tien mat   : ${money(cashAmount).padStart(10)}`);
-    lines.push(`Chuyen khoan:${money(bankAmount).padStart(9)}`);
-    lines.push(`Con no     : ${money(remainingDebt).padStart(10)}`);
-    if ((order.old_debts||[]).length) {
-      lines.push('--------------------------------');
-      lines.push('NO CU CHUA THANH TOAN');
-      for (const d of order.old_debts) {
-        lines.push(`${d.order_date} ${d.order_code}`);
-        lines.push(`  Con no: ${money(d.debt_amount).padStart(18)}`);
-      }
-      lines.push(`Tong no cu: ${money(order.old_debt_total).padStart(12)}`);
-      lines.push(`Tong can thu: ${money(Number(order.old_debt_total||0)+Number(order.debt_amount||0)).padStart(10)}`);
-    }
-    lines.push('--------------------------------');
-    lines.push('Cam on quy khach!');
-    return `<html><head><meta charset="utf-8"><style>@page{size:80mm auto;margin:2mm}body{font-family:Consolas,'Courier New',monospace;font-size:12px;width:76mm;white-space:pre-wrap;line-height:1.25}.print{position:fixed;top:5px;right:5px}@media print{.print{display:none}}</style></head><body><button class="print" onclick="window.print()">IN K80</button>${lines.join('\n')}<script>setTimeout(()=>window.print(),300)</script></body></html>`;
+    // V65.35: K80 must use the same professional payment-allocation summary as A4,
+    // including separated cash/bank amounts per bill allocation.
+    return PrintService.billK80Html(await this.getByToken(token));
   }
 
   async printHtmlById(id) { return PrintService.billHtml(await this.get(id)); }

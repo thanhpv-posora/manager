@@ -1,6 +1,6 @@
 {
   "name": "meatbiz-backend",
-  "version": "6.39.0",
+  "version": "65.55.0",
   "main": "src/server.js",
   "scripts": {
     "dev": "nodemon src/server.js",

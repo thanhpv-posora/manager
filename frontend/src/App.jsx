@@ -11,6 +11,7 @@ import Products from'./pages/Products';import ProductImageImport from'./pages/Pr
 import Prices from'./pages/Prices';
 import Lots from'./pages/Lots';
 import Revenue from'./pages/Revenue';
+import Profit from'./pages/Profit';
 import Agents from'./pages/Agents';
 import Trash from'./pages/Trash';
 import PriceMatrix from'./pages/PriceMatrix';
@@ -96,6 +97,7 @@ export default function App(){
     'price-matrix':<PriceMatrix/>,
     lots:<Lots/>,
     revenue:<Revenue/>,
+    profit:<Profit/>,
     agents:<Agents/>,
     trash:<Trash/>,
     settings:<SettingsPage/>,

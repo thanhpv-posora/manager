@@ -4,6 +4,7 @@ const { toLunarDateText } = require('../utils/lunar');
 const inventoryService = require('./inventory.service');
 const customerPolicyService = require('./customerPolicy.service');
 const { normalizeVietnameseText, findBestMatch } = require('../utils/textNormalizer');
+const PriceBookService = require('./PriceBookService');
 
 function todayYmd() {
   const d = new Date();
@@ -470,6 +471,8 @@ async function createOrderDraft(payload) {
 
   const draftItems = [];
   let totalAmount = 0;
+  const billDate = todayYmd();
+  const calendarType = normalizeCalendarType(customer.billing_calendar_type);
 
   for (const item of items) {
     const product = await findProductForCustomer(customer.id, item.product_name);
@@ -479,7 +482,17 @@ async function createOrderDraft(payload) {
       throw new Error(`Số lượng không hợp lệ cho sản phẩm ${item.product_name}`);
     }
 
-    const price = normalizeAmount(item.price || product.price);
+    const priceResult = await PriceBookService.getEffectivePrice(customer.id, product.id, billDate, db, calendarType, '');
+    let price, priceType, priceBookId;
+    if (priceResult && Number(priceResult.sale_price) > 0) {
+      price = Number(priceResult.sale_price);
+      priceType = priceResult.price_type;
+      priceBookId = priceResult.price_book_id || null;
+    } else {
+      price = normalizeAmount(item.price || product.price);
+      priceType = 'PRIVATE_PRICE';
+      priceBookId = null;
+    }
 
     if (price <= 0) {
       throw new Error(
@@ -497,6 +510,8 @@ async function createOrderDraft(payload) {
       quantity,
       price,
       amount,
+      price_type: priceType,
+      price_book_id: priceBookId,
       stock_quantity: product.stock_quantity,
       inventory_mode: product.inventory_mode,
       allow_negative_stock: product.allow_negative_stock
@@ -533,6 +548,7 @@ async function createOrderDraft(payload) {
   return {
     draft_id: `DRAFT_${Date.now()}`,
     status: 'DRAFT',
+    bill_date: billDate,
     customer,
     customer_payment_type: paymentPolicy.customer_payment_type,
     payment_policy: paymentPolicy,
@@ -557,6 +573,7 @@ async function confirmOrderDraft(payload) {
   const {
     customer: inputCustomer,
     items = [],
+    bill_date,
     total_amount = 0,
     cash_amount = 0,
     transfer_amount = 0,
@@ -575,7 +592,7 @@ async function confirmOrderDraft(payload) {
 
   const customer = await getFreshCustomer(inputCustomer);
   const paymentPolicy = customerPolicyService.getCustomerPolicy(customer);
-  const orderDate = todayYmd();
+  const orderDate = bill_date || todayYmd();
   const calendarType = normalizeCalendarType(customer.billing_calendar_type);
   const lunarDateText = calendarType === 'LUNAR'
     ? toLunarDateText(orderDate)
@@ -588,8 +605,33 @@ async function confirmOrderDraft(payload) {
 
     await inventoryService.validateOrderInventory(conn, items);
 
+    const resolvedItems = [];
+    for (const item of items) {
+      const priceResult = await PriceBookService.getEffectivePrice(customer.id, item.product_id, orderDate, conn, calendarType, lunarDateText || '');
+      let resolvedPrice, resolvedPriceType, resolvedPriceBookId;
+      if (priceResult && Number(priceResult.sale_price) > 0) {
+        resolvedPrice = Number(priceResult.sale_price);
+        resolvedPriceType = priceResult.price_type;
+        resolvedPriceBookId = priceResult.price_book_id || null;
+      } else {
+        resolvedPrice = normalizeAmount(item.price);
+        resolvedPriceType = item.price_type || 'PRIVATE_PRICE';
+        resolvedPriceBookId = item.price_book_id || null;
+      }
+      if (resolvedPrice <= 0) {
+        throw new Error(`Khách ${customer.name} chưa có giá cho sản phẩm ${item.product_name}`);
+      }
+      resolvedItems.push({
+        ...item,
+        price: resolvedPrice,
+        amount: normalizeAmount(item.quantity) * resolvedPrice,
+        price_type: resolvedPriceType,
+        price_book_id: resolvedPriceBookId
+      });
+    }
+
     const orderCode = `AI${Date.now()}`;
-    const totalAmount = normalizeAmount(total_amount);
+    const totalAmount = resolvedItems.reduce((sum, it) => sum + it.amount, 0);
     let cashAmount = normalizeAmount(cash_amount);
     let bankAmount = normalizeAmount(transfer_amount);
 
@@ -654,7 +696,7 @@ async function confirmOrderDraft(payload) {
 
     const orderId = orderResult.insertId;
 
-    for (const item of items) {
+    for (const item of resolvedItems) {
       await conn.query(`
         INSERT INTO order_items (
           order_id,
@@ -665,10 +707,11 @@ async function confirmOrderDraft(payload) {
           sale_price,
           total_price,
           price_type,
+          price_book_id,
           note,
           inventory_mode,
           stock_checked
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         orderId,
         item.product_id,
@@ -677,7 +720,8 @@ async function confirmOrderDraft(payload) {
         item.quantity,
         item.price,
         item.amount,
-        'PRIVATE_PRICE',
+        item.price_type,
+        item.price_book_id,
         null,
         null,
         0

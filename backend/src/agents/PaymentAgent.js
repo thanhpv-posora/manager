@@ -795,13 +795,20 @@ class PaymentAgent {
   }
 
   async update(paymentId, data, user) {
+    // Scope check before any mutations: load payment customer_id without a transaction.
+    const [prows] = await pool.query(`SELECT customer_id FROM payments WHERE id=? LIMIT 1`, [paymentId]);
+    if (!prows.length) throw new Error('Không tìm thấy phiếu thu');
+    await assertCustomerScope(user, prows[0].customer_id);
+    if (data.customer_id && Number(data.customer_id) !== Number(prows[0].customer_id)) {
+      await assertCustomerScope(user, data.customer_id);
+    }
+
     const conn = await pool.getConnection();
     try {
       await this.ensurePaymentAllocationSplitColumns(conn);
       await this.ensurePaymentUnappliedCreditsTable(conn);
       await conn.beginTransaction();
       const old = await this.revertPaymentEffects(conn, paymentId);
-      if (user?.role === 'CUSTOMER' && Number(user.customer_id) !== Number(old.customer_id)) throw new Error('Không có quyền');
 
       const customerId = Number(data.customer_id || old.customer_id);
       const orderId = Number(data.order_id || old.order_id || 0) || null;

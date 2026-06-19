@@ -190,8 +190,8 @@ return await this.loadLegacyDirectPayments(orderId);
 
   async getByToken(token) {
     const [orders] = await pool.query(
-      `SELECT o.*,c.name customer_name,c.phone,c.address FROM orders o JOIN customers c ON c.id=o.customer_id WHERE o.private_token=? OR o.order_code=? LIMIT 1`,
-      [token, token]
+      `SELECT o.*,c.name customer_name,c.phone,c.address FROM orders o JOIN customers c ON c.id=o.customer_id WHERE o.private_token=? LIMIT 1`,
+      [token]
     );
     if (!orders.length) throw new Error('Không tìm thấy bill');
     const order = orders[0];

@@ -17,7 +17,12 @@ function getPublicAppUrl(req){
   if(!host || /localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(host)) return 'https://meatbiz.posora.vn';
   return `${proto}://${host}`.replace(/\/$/,'');
 }
-router.get('/:id/qrcode', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{const o=await OrderAgent.get(req.params.id,req.user); const app=getPublicAppUrl(req); const token=o.private_token||o.order_code; const url=`${app}/bill/${token}`; res.json({url,token,qrcode:await QRCode.toDataURL(url)})}catch(e){next(e)}});
+router.get('/:id/qrcode', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{
+  const o=await OrderAgent.get(req.params.id,req.user);
+  if(!o.private_token){const e=new Error('Bill chưa có token in hóa đơn');e.status=500;e.statusCode=500;throw e;}
+  const app=getPublicAppUrl(req); const token=o.private_token; const url=`${app}/bill/${token}`;
+  res.json({url,token,qrcode:await QRCode.toDataURL(url)})
+}catch(e){next(e)}});
 router.get('/:id/print', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.setHeader('Content-Type','text/html; charset=utf-8');res.send(await OrderAgent.printHtmlById(req.params.id,req.user))}catch(e){next(e)}});
 router.post('/:id/lock', auth(['ADMIN','STAFF']), async (req,res,next)=>{try{res.json(await OrderAgent.lock(req.params.id,req.body,req.user))}catch(e){next(e)}});
 router.post('/:id/items', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await OrderAgent.addItem(req.params.id,req.body,req.user))}catch(e){next(e)}});

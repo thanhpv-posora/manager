@@ -420,6 +420,21 @@ class PriceMatrixAgent {
     finally { conn.release(); }
   }
 
+  async saveAllSafe(customerId, body, user) {
+    const { assertCustomerScope } = require('../middleware/scope');
+    await assertCustomerScope(user, customerId);
+    return this.saveMatrix(
+      customerId,
+      body.items,
+      user?.id || null,
+      {
+        effective_from: body.effective_from,
+        effective_calendar_type: body.effective_calendar_type,
+        effective_lunar_date_text: body.effective_lunar_date_text
+      }
+    );
+  }
+
   async copyBook(bookId, data, userId) {
     const conn = await pool.getConnection();
     try {

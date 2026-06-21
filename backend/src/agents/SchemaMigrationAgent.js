@@ -24,6 +24,15 @@ class SchemaMigrationAgent{
     return Number(rows[0].cnt)>0;
   }
 
+  async hasIndex(conn,table,indexName){
+    const [rows]=await conn.query(
+      `SELECT COUNT(*) cnt FROM INFORMATION_SCHEMA.STATISTICS
+       WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND INDEX_NAME=?`,
+      [table,indexName]
+    );
+    return Number(rows[0].cnt)>0;
+  }
+
   async safeAlter(conn,sql){
     try{ await conn.query(sql); return {sql,status:'OK'}; }
     catch(e){ return {sql,status:'ERROR',message:e.message}; }
@@ -67,6 +76,14 @@ class SchemaMigrationAgent{
       if(await this.hasTable(conn,'debt_installment_plans')){
         if(!(await this.hasColumn(conn,'debt_installment_plans','target_debt_amount')))
           logs.push(await this.safeAlter(conn,`ALTER TABLE debt_installment_plans ADD COLUMN target_debt_amount DECIMAL(15,2) NOT NULL DEFAULT 0`));
+      }
+
+      if(await this.hasTable(conn,'customer_price_books')){
+        if(!(await this.hasIndex(conn,'customer_price_books','uq_cpb_customer_date_type'))){
+          logs.push(await this.safeAlter(conn,
+            `ALTER TABLE customer_price_books ADD UNIQUE KEY uq_cpb_customer_date_type (customer_id, effective_from, effective_calendar_type)`
+          ));
+        }
       }
 
       return {message:'Schema migration completed',logs};

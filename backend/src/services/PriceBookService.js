@@ -111,8 +111,9 @@ class PriceBookService {
     const [legacy] = await conn.query(
       `SELECT sale_price FROM customer_product_prices
        WHERE customer_id=? AND product_id=? AND is_active=1
+         AND (effective_from IS NULL OR effective_from <= ?)
        ORDER BY effective_from DESC,id DESC LIMIT 1`,
-      [customerId, productId]
+      [customerId, productId, ctx.bill_date]
     );
     if (legacy.length) return { sale_price:Number(legacy[0].sale_price||0), price_type:'PRIVATE_PRICE', price_book_id:null };
 
@@ -143,21 +144,39 @@ class PriceBookService {
         typeof effectiveFromOrPayload === 'object' ? effectiveFromOrPayload : { effective_from: effectiveFromOrPayload },
         defaultCt
       );
-      const [r] = await conn.query(
-        `INSERT INTO customer_price_books(customer_id,book_name,effective_from,effective_calendar_type,effective_lunar_date_text,effective_lunar_sort,status,note,created_by)
-         VALUES(?,?,?,?,?,?,?,?,?)`,
-        [customerId, `Bảng giá từ ${meta.display_date}`, meta.effective_from, meta.effective_calendar_type, meta.effective_lunar_date_text, meta.effective_lunar_sort, 'ACTIVE', note || 'Price book versioning', userId]
+      const [existing] = await conn.query(
+        `SELECT id FROM customer_price_books
+         WHERE customer_id=? AND effective_from=? AND effective_calendar_type=?
+           AND COALESCE(status,'ACTIVE')<>'DELETED'
+         LIMIT 1`,
+        [customerId, meta.effective_from, meta.effective_calendar_type]
       );
+      let bookId;
+      if (existing.length) {
+        bookId = existing[0].id;
+        await conn.query(
+          `UPDATE customer_price_books SET book_name=COALESCE(?,book_name), status='ACTIVE', note=?, updated_at=NOW() WHERE id=?`,
+          [`Bảng giá từ ${meta.display_date}`, note || 'Price book versioning', bookId]
+        );
+        await conn.query(`DELETE FROM customer_price_book_items WHERE price_book_id=?`, [bookId]);
+      } else {
+        const [r] = await conn.query(
+          `INSERT INTO customer_price_books(customer_id,book_name,effective_from,effective_calendar_type,effective_lunar_date_text,effective_lunar_sort,status,note,created_by)
+           VALUES(?,?,?,?,?,?,?,?,?)`,
+          [customerId, `Bảng giá từ ${meta.display_date}`, meta.effective_from, meta.effective_calendar_type, meta.effective_lunar_date_text, meta.effective_lunar_sort, 'ACTIVE', note || 'Price book versioning', userId]
+        );
+        bookId = r.insertId;
+      }
       for (const it of items || []) {
         if (!it.product_id) continue;
         await conn.query(
           `INSERT INTO customer_price_book_items(price_book_id,customer_id,product_id,sale_price,note)
            VALUES(?,?,?,?,?)`,
-          [r.insertId, customerId, it.product_id, Number(it.sale_price ?? it.private_price ?? 0), it.note || null]
+          [bookId, customerId, it.product_id, Number(it.sale_price ?? it.private_price ?? 0), it.note || null]
         );
       }
       await conn.commit();
-      return { message:'Đã tạo phiên bản bảng giá mới', price_book_id:r.insertId, ...meta };
+      return { message: existing.length ? 'Đã cập nhật phiên bản bảng giá' : 'Đã tạo phiên bản bảng giá mới', price_book_id: bookId, ...meta };
     } catch (e) { await conn.rollback(); throw e; }
     finally { conn.release(); }
   }

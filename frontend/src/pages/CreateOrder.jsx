@@ -294,7 +294,7 @@ export default function CreateOrder(){
     setShipDateModalOpen(true);
   };
 
-  const applyShipDateModal=()=>{
+  const applyShipDateModal=async()=>{
     if(!cid)return setShipDateModalOpen(false);
     if(billCalendarType==='LUNAR'&&!String(billLunarDateText||'').trim()){
       alert('Vui lòng chọn ngày xuất hàng âm lịch');
@@ -302,10 +302,13 @@ export default function CreateOrder(){
     }
     const checked=validateShippingDate(billCalendarType,orderDate,billLunarDateText);
     if(!checked.ok)return;
-    if(checked.solarDate&&checked.solarDate!==orderDate)setOrderDate(checked.solarDate);
+    const nextOrderDate=checked.solarDate||orderDate;
+    const nextCalendarType=billCalendarType;
+    const nextLunarDateText=billCalendarType==='LUNAR'?billLunarDateText:'';
+    if(nextOrderDate!==orderDate)setOrderDate(nextOrderDate);
     setShipDateModalOpen(false);
-    setSaveNotice(`Đã chọn ngày xuất hàng ${billCalendarType==='LUNAR'?`${billLunarDateText} ÂL`:(orderDate||today)}. Bảng giá sẽ lấy theo đúng ngày này.`);
-    refreshCurrentItemPrices({calendar_type:billCalendarType,order_date:orderDate,lunar_date_text:billCalendarType==='LUNAR'?billLunarDateText:''});
+    setSaveNotice(`Đã chọn ngày xuất hàng ${nextCalendarType==='LUNAR'?`${billLunarDateText} ÂL`:(nextOrderDate||today)}. Bảng giá sẽ lấy theo đúng ngày này.`);
+    await refreshCurrentItemPrices({calendar_type:nextCalendarType,order_date:nextOrderDate,lunar_date_text:nextLunarDateText});
   };
 
   const loadCustomerCatalog=async(id)=>{
@@ -319,9 +322,7 @@ export default function CreateOrder(){
     setPaid(0);
     setCashAmount(0);
     setBankAmount(0);
-    setImportText('');
-    setImportPreview([]);
-    setImportMsg('');
+    resetImportSession();
     setImportApplyMode('REPLACE');
     try{
       const a=await api.get('/handwriting/aliases?customer_id='+id);
@@ -350,7 +351,7 @@ export default function CreateOrder(){
       selected:false,
       sort_order:p.sort_order||idx+1
     }));
-    setItems(await applyEffectivePrices(mapped,{customer_id:id,calendar_type:billCalendarType,order_date:orderDate,lunar_date_text:billCalendarType==='LUNAR'?billLunarDateText:''}));
+    setItems(await applyEffectivePrices(mapped,{customer_id:id,calendar_type:pickedCalendarType,order_date:orderDate,lunar_date_text:pickedCalendarType==='LUNAR'?pickedLunarText:''}));
     setPendingFocusQty(true);
   };
 
@@ -731,6 +732,7 @@ export default function CreateOrder(){
       const ok=await window.appConfirm('Bill hiện tại đang có số lượng. Đổi khách sẽ xóa bill đang nhập. Tiếp tục?',{title:'Đổi khách hàng',confirmText:'Tiếp tục',variant:'warning'});
       if(!ok)return;
     }
+    resetImportSession();
     setCid('');
     setItems([]);
     setFilter('');
@@ -822,6 +824,7 @@ export default function CreateOrder(){
     const readSeq=importReadSeqRef.current+1;
     importReadSeqRef.current=readSeq;
     resetImportSession();
+    setItems(prev=>prev.map(x=>({...x,quantity:0,quantity_expr:'',selected:false})));
     setImportApplyMode('REPLACE');
     setImportMsg('Đang đọc file Excel mới, đã xóa cache import cũ...');
     try{
@@ -994,8 +997,9 @@ export default function CreateOrder(){
       };
 
       const sheetResults=sheetPick.names.map(parseSheetRows);
+      const noDateSheets=sheetResults.filter(x=>x.rows&&x.rows.length&&!x.date);
       const billQueue=sheetResults
-        .filter(x=>x.rows&&x.rows.length)
+        .filter(x=>x.rows&&x.rows.length&&x.date)
         .map(x=>({
           sheetName:x.sheetName||x.rows?.[0]?.sheetName||'',
           rows:x.rows,
@@ -1003,8 +1007,9 @@ export default function CreateOrder(){
           error:x.error||'',
           matched:matchImportedRows(x.rows,items)
         }));
+      const rejectedMsg=noDateSheets.map(x=>`Sheet "${x.sheetName}" chưa có ngày xuất hàng. Vui lòng bổ sung ngày trong Excel rồi import lại.`).join(' ');
       if(!billQueue.length){
-        setImportMsg('Không tìm thấy dòng hàng hợp lệ trong Excel. Kiểm tra lại cột Danh mục/Số lượng ở các sheet.');
+        setImportMsg((rejectedMsg||'Không tìm thấy dòng hàng hợp lệ trong Excel. Kiểm tra lại cột Danh mục/Số lượng ở các sheet.'));
         return;
       }
       if(readSeq!==importReadSeqRef.current)return;
@@ -1012,7 +1017,7 @@ export default function CreateOrder(){
       setExcelBillQueue(billQueue);
       setExcelBillIndex(0);
       loadExcelBillToPreview(billQueue,0);
-      setImportMsg(prev=>`${prev} Đã đọc ${sheetPick.names.length}/${wb.SheetNames.length} sheet${importSheetFilter?` theo chỉ định: ${sheetPick.names.join(', ')}`:''}. Có ${billQueue.length} sheet có dữ liệu = ${billQueue.length} bill riêng. ${errText?' '+errText:''}`);
+      setImportMsg(prev=>`${prev} Đã đọc ${sheetPick.names.length}/${wb.SheetNames.length} sheet${importSheetFilter?` theo chỉ định: ${sheetPick.names.join(', ')}`:''}. Có ${billQueue.length} sheet hợp lệ = ${billQueue.length} bill riêng.${rejectedMsg?' '+rejectedMsg:''} ${errText?' '+errText:''}`);
     }catch(e){
       if(readSeq===importReadSeqRef.current)setImportMsg('Không đọc được Excel: '+e.message);
     }finally{

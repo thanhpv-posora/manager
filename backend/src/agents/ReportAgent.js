@@ -59,8 +59,7 @@ class ReportAgent {
               DATE(o.order_date) order_date,
               o.id order_id,o.order_code,o.customer_id,c.name customer_name,
               oi.id order_item_id,oi.product_id,oi.product_name,oi.quantity,oi.sale_price,oi.total_price,
-              COALESCE(p.inventory_mode,'NON_STOCK') inventory_mode,
-              COALESCE(p.default_purchase_price,0) default_purchase_price
+              COALESCE(p.inventory_mode,'NON_STOCK') inventory_mode
        FROM orders o
        JOIN order_items oi ON oi.order_id=o.id
        LEFT JOIN products p ON p.id=oi.product_id
@@ -96,8 +95,8 @@ class ReportAgent {
     );
     const noStockRevenueByDate = new Map(noStockRevenueRows.map(r => [String(r.order_date).slice(0,10), Number(r.revenue||0)]));
 
-    // FIFO allocations already persisted by stock/FIFO engine are the source of truth for TRACK_STOCK/STOCK_FIFO items.
-    // If allocation table is not migrated yet, gracefully fallback to default_purchase_price so the report still runs.
+    // FIFO allocations are the source of truth for TRACK_STOCK items when the Cost Layer is implemented.
+    // If the allocation table does not exist yet, cost is reported as 0 (UNCALCULATED) — never as default_purchase_price.
     let fifoCostByOrderItem = new Map();
     try {
       const orderItemIds = salesRows.map(r=>Number(r.order_item_id)).filter(Boolean);
@@ -124,8 +123,8 @@ class ReportAgent {
       const period = String(r.period).slice(0, groupBy === 'year' ? 4 : (groupBy === 'month' ? 7 : 10));
       const orderDate = String(r.order_date).slice(0,10);
       const revenue = Number(r.total_price || 0);
-      let cost = 0;
-      let costMode = 'FIFO';
+      let cost = null;
+      let costMode = 'WAITING_COST';
 
       if (isNoStock(r.inventory_mode)) {
         const dayCost = lotCostByDate.get(orderDate) || 0;
@@ -136,33 +135,52 @@ class ReportAgent {
         if (fifoCostByOrderItem.has(Number(r.order_item_id))) {
           cost = fifoCostByOrderItem.get(Number(r.order_item_id));
           costMode = 'STOCK_FIFO';
-        } else {
-          cost = Number(r.quantity || 0) * Number(r.default_purchase_price || 0);
-          costMode = 'DEFAULT_COST_FALLBACK';
         }
+        // else: cost remains null, costMode remains WAITING_COST.
+        // products.default_purchase_price must never be used — it is mutable and rewrites historical profit.
       }
 
-      const profit = revenue - cost;
-      if (!summary.has(period)) summary.set(period, {period, revenue:0, cost:0, profit:0, gross_margin:0, orders:new Set(), items:0});
+      const costKnown = cost !== null;
+      const profit = costKnown ? revenue - cost : null;
+
+      if (!summary.has(period)) {
+        summary.set(period, {period, revenue:0, cost:0, profit:0, orders:new Set(), items:0, waiting_cost_items:0});
+      }
       const s = summary.get(period);
-      s.revenue += revenue; s.cost += cost; s.profit += profit; s.items += 1; s.orders.add(Number(r.order_id));
+      s.revenue += revenue;
+      s.items += 1;
+      s.orders.add(Number(r.order_id));
+      if (costKnown) {
+        s.cost += cost;
+        s.profit += profit;
+      } else {
+        s.waiting_cost_items += 1;
+      }
+
       details.push({
         period, order_date: orderDate, order_id:r.order_id, order_code:r.order_code,
         customer_name:r.customer_name, product_name:r.product_name, quantity:Number(r.quantity||0),
-        sale_price:Number(r.sale_price||0), revenue, cost, profit, inventory_mode:r.inventory_mode,
+        sale_price:Number(r.sale_price||0), revenue,
+        cost: costKnown ? cost : null,
+        profit,
+        inventory_mode:r.inventory_mode,
         cost_mode: costMode
       });
     }
 
-    const rows = Array.from(summary.values()).sort((a,b)=>String(a.period).localeCompare(String(b.period))).map(r=>({
-      period:r.period,
-      revenue:Math.round(r.revenue),
-      cost:Math.round(r.cost),
-      profit:Math.round(r.profit),
-      gross_margin:r.revenue>0 ? Number(((r.profit/r.revenue)*100).toFixed(2)) : 0,
-      orders:r.orders.size,
-      items:r.items
-    }));
+    const rows = Array.from(summary.values()).sort((a,b)=>String(a.period).localeCompare(String(b.period))).map(r=>{
+      const hasWaiting = r.waiting_cost_items > 0;
+      return {
+        period: r.period,
+        revenue: Math.round(r.revenue),
+        cost: hasWaiting ? null : Math.round(r.cost),
+        profit: hasWaiting ? null : Math.round(r.profit),
+        gross_margin: hasWaiting ? null : (r.revenue > 0 ? Number(((r.profit / r.revenue) * 100).toFixed(2)) : 0),
+        orders: r.orders.size,
+        items: r.items,
+        waiting_cost_items: r.waiting_cost_items
+      };
+    });
     return { rows, details };
   }
 

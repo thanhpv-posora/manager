@@ -455,7 +455,8 @@ async function createOrderDraft(payload) {
     customer_name,
     items = [],
     cash_amount = 0,
-    transfer_amount = 0
+    transfer_amount = 0,
+    bill_date: requestedBillDate
   } = payload;
 
   if (!customer_name) {
@@ -471,7 +472,7 @@ async function createOrderDraft(payload) {
 
   const draftItems = [];
   let totalAmount = 0;
-  const billDate = todayYmd();
+  const billDate = requestedBillDate || todayYmd();
   const calendarType = normalizeCalendarType(customer.billing_calendar_type);
 
   for (const item of items) {

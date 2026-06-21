@@ -26,6 +26,39 @@ async function resolvePriceBookMeta(conn,customerId,data={}){
   return PriceBookService.resolveEffectiveMeta(data, defaultCt);
 }
 
+async function upsertBook(conn, customerId, meta, { bookName, note, status='ACTIVE' }, userId, priceItems) {
+  const [existing] = await conn.query(
+    `SELECT id FROM customer_price_books
+     WHERE customer_id=? AND effective_from=? AND effective_calendar_type=?
+       AND COALESCE(status,'ACTIVE')<>'DELETED'
+     LIMIT 1`,
+    [customerId, meta.effective_from, meta.effective_calendar_type]
+  );
+  let bookId;
+  if (existing.length) {
+    bookId = existing[0].id;
+    await conn.query(
+      `UPDATE customer_price_books SET book_name=COALESCE(?,book_name), status=?, note=?, updated_at=NOW() WHERE id=?`,
+      [bookName || null, status, note || null, bookId]
+    );
+    await conn.query(`DELETE FROM customer_price_book_items WHERE price_book_id=?`, [bookId]);
+  } else {
+    const [r] = await conn.query(
+      `INSERT INTO customer_price_books(customer_id,book_name,effective_from,effective_calendar_type,effective_lunar_date_text,effective_lunar_sort,status,note,created_by) VALUES(?,?,?,?,?,?,?,?,?)`,
+      [customerId, bookName, meta.effective_from, meta.effective_calendar_type, meta.effective_lunar_date_text, meta.effective_lunar_sort, status, note || null, userId || null]
+    );
+    bookId = r.insertId;
+  }
+  for (const p of priceItems || []) {
+    if (!p.product_id) continue;
+    await conn.query(
+      `INSERT INTO customer_price_book_items(price_book_id,customer_id,product_id,sale_price,note) VALUES(?,?,?,?,?)`,
+      [bookId, customerId, p.product_id, Number(p.sale_price||0), p.note || null]
+    );
+  }
+  return { price_book_id: bookId, created: !existing.length };
+}
+
 async function ensureCustomerAccessV626(customerId,user){
   if(user&&user.role==='CUSTOMER'){
     const [rows]=await pool.query(`SELECT id FROM customers WHERE id=? AND (id=? OR parent_customer_id=?) AND del_flg=0`,[customerId,user.customer_id,user.customer_id]);
@@ -121,21 +154,13 @@ class PriceMatrixAgent {
         .filter(it => it.private_price !== '' && it.private_price !== null && it.private_price !== undefined && !Number.isNaN(Number(it.private_price||0)))
         .map(it => ({ product_id:it.product_id, sale_price:Number(it.private_price||0) }));
       if (priceItems.length) {
-        // We are already inside a transaction for catalog/logs. Insert book rows with the same conn.
         const meta = await resolvePriceBookMeta(conn, customerId, effectiveMetaPayload);
-        const [book] = await conn.query(
-          `INSERT INTO customer_price_books(customer_id,book_name,effective_from,effective_calendar_type,effective_lunar_date_text,effective_lunar_sort,status,note,created_by) VALUES(?,?,?,?,?,?,?,?,?)`,
-          [customerId, `Bảng giá từ ${meta.display_date}`, meta.effective_from, meta.effective_calendar_type, meta.effective_lunar_date_text, meta.effective_lunar_sort, 'ACTIVE', `V65.50 price matrix ${meta.effective_calendar_type} effective ${meta.display_date}`, userId || null]
-        );
-        for (const p of priceItems) {
-          await conn.query(
-            `INSERT INTO customer_price_book_items(price_book_id,customer_id,product_id,sale_price) VALUES(?,?,?,?)`,
-            [book.insertId, customerId, p.product_id, p.sale_price]
-          );
-        }
+        await upsertBook(conn, customerId, meta,
+          { bookName:`Bảng giá từ ${meta.display_date}`, note:`V65.50 price matrix ${meta.effective_calendar_type} effective ${meta.display_date}`, status:'ACTIVE' },
+          userId, priceItems);
       }
       await conn.commit();
-      return {message:'Đã lưu bảng giá riêng và tạo phiên bản bảng giá mới'};
+      return {message:'Đã lưu bảng giá riêng'};
     } catch(e) {
       await conn.rollback();
       throw e;
@@ -245,16 +270,12 @@ class PriceMatrixAgent {
       prices.forEach(p => { if(!priceMap.has(String(p.product_id))) priceMap.set(String(p.product_id), p); });
 
       if(priceMap.size) {
-        const [book] = await conn.query(
-          `INSERT INTO customer_price_books(customer_id,book_name,effective_from,effective_calendar_type,effective_lunar_date_text,effective_lunar_sort,status,note,created_by) VALUES(?,?,?,?,?,?,?,?,?)`,
-          [toCustomerId, `Bảng giá copy từ khách ${fromCustomerId} - ${meta.display_date}`, meta.effective_from, meta.effective_calendar_type, meta.effective_lunar_date_text, meta.effective_lunar_sort, 'ACTIVE', `Copy price book from customer ${fromCustomerId}`, userId || null]
-        );
-        for(const p of priceMap.values()) {
-          await conn.query(
-            `INSERT INTO customer_price_book_items(price_book_id,customer_id,product_id,sale_price,note) VALUES(?,?,?,?,?)`,
-            [book.insertId, toCustomerId, p.product_id, Number(p.sale_price||0), `Copy from customer ${fromCustomerId}`]
-          );
-          await conn.query(`INSERT INTO price_change_logs(customer_id,product_id,old_price,new_price,reason,changed_by) VALUES(?,?,?,?,?,?)`, [toCustomerId, p.product_id, null, p.sale_price, `Copy price book from customer ${fromCustomerId} effective ${meta.display_date}`, userId || null]);
+        const copyItems=[...priceMap.values()].map(p=>({product_id:p.product_id,sale_price:Number(p.sale_price||0),note:`Copy from customer ${fromCustomerId}`}));
+        await upsertBook(conn,toCustomerId,meta,
+          {bookName:`Bảng giá copy từ khách ${fromCustomerId} - ${meta.display_date}`,note:`Copy price book from customer ${fromCustomerId}`,status:'ACTIVE'},
+          userId,copyItems);
+        for(const p of priceMap.values()){
+          await conn.query(`INSERT INTO price_change_logs(customer_id,product_id,old_price,new_price,reason,changed_by) VALUES(?,?,?,?,?,?)`,[toCustomerId,p.product_id,null,p.sale_price,`Copy price book from customer ${fromCustomerId} effective ${meta.display_date}`,userId||null]);
         }
       }
 
@@ -372,6 +393,17 @@ class PriceMatrixAgent {
       const [curBookRows]=await conn.query(`SELECT customer_id FROM customer_price_books WHERE id=? LIMIT 1`,[bookId]);
       if(!curBookRows.length) throw new Error('Không tìm thấy bảng giá');
       const meta = await resolvePriceBookMeta(conn, curBookRows[0].customer_id, data);
+      const [conflict]=await conn.query(
+        `SELECT id FROM customer_price_books
+         WHERE customer_id=? AND effective_from=? AND effective_calendar_type=?
+           AND COALESCE(status,'ACTIVE')<>'DELETED' AND id<>?
+         LIMIT 1`,
+        [curBookRows[0].customer_id, meta.effective_from, meta.effective_calendar_type, bookId]
+      );
+      if(conflict.length) throw Object.assign(
+        new Error(`Đã tồn tại bảng giá cho ngày ${meta.display_date} (ID: ${conflict[0].id}). Vui lòng chọn ngày khác hoặc sửa trực tiếp bảng giá đó.`),
+        {status:409, statusCode:409}
+      );
       const status = data.status || 'ACTIVE';
       await conn.query(
         `UPDATE customer_price_books
@@ -444,18 +476,13 @@ class PriceMatrixAgent {
       const src=books[0];
       const toCustomerId=Number(data.customer_id || data.to_customer_id || src.customer_id);
       const meta=await resolvePriceBookMeta(conn, toCustomerId, data);
-      const [r]=await conn.query(
-        `INSERT INTO customer_price_books(customer_id,book_name,effective_from,effective_calendar_type,effective_lunar_date_text,effective_lunar_sort,status,note,created_by)
-         VALUES(?,?,?,?,?,?,?,?,?)`,
-        [toCustomerId, data.book_name || `Copy từ bảng giá #${bookId} - ${meta.display_date}`, meta.effective_from, meta.effective_calendar_type, meta.effective_lunar_date_text, meta.effective_lunar_sort, 'ACTIVE', data.note || `Copy from price_book_id ${bookId}`, userId || null]
-      );
-      await conn.query(
-        `INSERT INTO customer_price_book_items(price_book_id,customer_id,product_id,sale_price,note)
-         SELECT ?,?,product_id,sale_price,CONCAT('Copy from price_book_id ',?) FROM customer_price_book_items WHERE price_book_id=?`,
-        [r.insertId,toCustomerId,bookId,bookId]
-      );
+      const [srcItems]=await conn.query(`SELECT product_id,sale_price FROM customer_price_book_items WHERE price_book_id=?`,[bookId]);
+      const copyItems=srcItems.map(p=>({product_id:p.product_id,sale_price:Number(p.sale_price||0),note:`Copy from price_book_id ${bookId}`}));
+      const {price_book_id:newBookId}=await upsertBook(conn,toCustomerId,meta,
+        {bookName:data.book_name||`Copy từ bảng giá #${bookId} - ${meta.display_date}`,note:data.note||`Copy from price_book_id ${bookId}`,status:'ACTIVE'},
+        userId,copyItems);
       await conn.commit();
-      return {message:'Đã copy bảng giá', price_book_id:r.insertId, effective_from:meta.effective_from, effective_calendar_type:meta.effective_calendar_type, effective_lunar_date_text:meta.effective_lunar_date_text};
+      return {message:'Đã copy bảng giá', price_book_id:newBookId, effective_from:meta.effective_from, effective_calendar_type:meta.effective_calendar_type, effective_lunar_date_text:meta.effective_lunar_date_text};
     } catch(e) { await conn.rollback(); throw e; }
     finally { conn.release(); }
   }

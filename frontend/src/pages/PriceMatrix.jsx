@@ -23,15 +23,15 @@ export default function PriceMatrix(){
   const[bookDetail,setBookDetail]=useState(null);
   const[bookItems,setBookItems]=useState([]);
   const[bookBusy,setBookBusy]=useState(false);
-  const[showBookManager,setShowBookManager]=useState(false);
+  const[showPickModal,setShowPickModal]=useState(false);
+  const[newBookMode,setNewBookMode]=useState(false);
+  const[customerLoading,setCustomerLoading]=useState(false);
+  const[bookAddItems,setBookAddItems]=useState([]);
+  const[showDateDialog,setShowDateDialog]=useState(false);
 
   const loadCustomers=async()=>{
     const c=(await api.get('/customers')).data||[];
     setCustomers(c);
-    if(!cid && c.length) {
-      setCid(String(c[0].id));
-      await loadMatrix(c[0].id);
-    }
   };
 
   const loadMatrix=async(id)=>{
@@ -43,9 +43,10 @@ export default function PriceMatrix(){
   };
 
   const loadBooks=async(id=cid)=>{
-    if(!id)return;
+    if(!id)return[];
     const r=(await api.get('/price-matrix/'+id+'/books')).data||[];
     setBooks(r);
+    return r;
   };
 
   useEffect(()=>{let m=true;(async()=>{try{await loadCustomers()}catch(e){if(m)setError(e.response?.data?.message||e.message)}finally{if(m)setLoading(false)}})();return()=>{m=false}},[]);
@@ -57,14 +58,30 @@ export default function PriceMatrix(){
     : {effective_calendar_type:'SOLAR',effective_from:effectiveFrom};
   const effectiveLabel=effectiveCalendarType==='LUNAR'?`${effectiveLunarDateText} ÂL`:effectiveFrom;
 
-  const changeCustomer=async(id)=>{setCid(id);await loadMatrix(id)};
+  const changeCustomer=async(id)=>{
+    setShowPickModal(false);setShowDateDialog(false);setNewBookMode(false);
+    setBookDetail(null);setBookItems([]);setBookAddItems([]);
+    if(!id){setCid('');setData(null);setRows([]);setBooks([]);return;}
+    setCid(id);setData(null);setRows([]);setBooks([]);
+    setCustomerLoading(true);
+    try{
+      const bks=await loadBooks(id);
+      const active=(bks||[]).filter(b=>String(b.status||'ACTIVE')!=='DELETED');
+      if(active.length){setShowPickModal(true);}
+      else{setShowDateDialog(true);}
+    }finally{setCustomerLoading(false)}
+  };
   const setRow=(idx,patch)=>setRows(rows.map((r,i)=>i===idx?{...r,...patch}:r));
   const save=async()=>{
     if(effectiveCalendarType==='LUNAR'&&!/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(effectiveLunarDateText))return alert('Chọn ngày hiệu lực âm lịch dạng DD/MM/YYYY');
     if(effectiveCalendarType==='SOLAR'&&!effectiveFrom)return alert('Chọn ngày hiệu lực cho bảng giá');
+    if(newBookMode){
+      const dup=books.find(b=>String(b.status||'ACTIVE')!=='DELETED'&&(effectiveCalendarType==='LUNAR'?b.effective_lunar_date_text===effectiveLunarDateText:String(b.effective_from||'').slice(0,10)===effectiveFrom));
+      if(dup)return alert('Bảng giá của ngày này đã tồn tại.\nVui lòng chỉnh sửa bảng giá hiện có.');
+    }
     await api.put('/price-matrix/'+cid,{...effectivePayload(),items:rows.map((x,i)=>({...x,sort_order:i+1}))});
     alert('Đã lưu bảng giá riêng và thứ tự danh mục. Ngày hiệu lực: '+effectiveLabel);
-    await loadMatrix(cid)
+    setNewBookMode(false);await loadMatrix(cid)
   };
   const copy=async()=>{
     if(!copyTo)return alert('Chọn khách nhận copy');
@@ -91,7 +108,10 @@ export default function PriceMatrix(){
     try{
       const r=(await api.get('/price-matrix/books/'+bookId)).data;
       setBookDetail(r);
-      setBookItems((r.items||[]).map(x=>({...x,sale_price:Number(x.sale_price||0)})));
+      const items=(r.items||[]).map(x=>({...x,sale_price:Number(x.sale_price||0)}));
+      setBookItems(items);
+      const inBook=new Set(items.map(x=>String(x.product_id)));
+      setBookAddItems(rows.filter(x=>!inBook.has(String(x.product_id))).map(x=>({...x,sale_price:0})));
     }catch(e){alert(e.response?.data?.message||e.message)}
     finally{setBookBusy(false)}
   };
@@ -101,26 +121,11 @@ export default function PriceMatrix(){
     if(!bookDetail.can_edit)return alert(bookDetail.lock_reason||'Bảng giá đã khóa, không thể sửa');
     setBookBusy(true);
     try{
-      const r=(await api.put('/price-matrix/books/'+bookDetail.id,{...bookDetail,items:bookItems})).data;
+      const newItems=bookAddItems.filter(x=>x.sale_price>0).map(x=>({product_id:x.product_id,sale_price:x.sale_price,note:x.note||null}));
+      const r=(await api.put('/price-matrix/books/'+bookDetail.id,{...bookDetail,items:[...bookItems,...newItems]})).data;
       alert((r.message||'Đã lưu')+(r.recalculated_orders?`\nĐã cập nhật lại ${r.recalculated_orders} bill chưa thu tiền.`:''));
-      setBookDetail(null);setBookItems([]);await loadBooks(cid);await loadMatrix(cid);
+      setBookDetail(null);setBookItems([]);setBookAddItems([]);await loadBooks(cid);await loadMatrix(cid);
     }catch(e){alert(e.response?.data?.message||e.message)}
-    finally{setBookBusy(false)}
-  };
-  const deleteBook=async(b)=>{
-    if(!b.can_delete)return alert(b.lock_reason||'Bảng giá đã khóa, không thể xóa');
-    if(!await window.appConfirm(`Xóa bảng giá #${b.id}?\n\nBảng giá sẽ được đánh dấu đã xóa. Các bill đã tạo nhưng chưa thu tiền sẽ giữ nguyên đơn giá hiện tại và không tự đổi theo bảng giá mới sau này.\n\nBạn có chắc muốn tiếp tục?`,{title:'Xóa bảng giá riêng',confirmText:'Xóa bảng giá',cancelText:'Hủy',variant:'danger'}))return;
-    setBookBusy(true);
-    try{await api.delete('/price-matrix/books/'+b.id);alert('Đã xóa mềm bảng giá');await loadBooks(cid);await loadMatrix(cid)}
-    catch(e){alert(e.response?.data?.message||e.message)}
-    finally{setBookBusy(false)}
-  };
-  const copyBook=async(b)=>{
-    const d=window.prompt(effectiveCalendarType==='LUNAR'?'Ngày hiệu lực bảng giá copy âm lịch (DD/MM/YYYY)':'Ngày hiệu lực bảng giá copy (YYYY-MM-DD)',effectiveCalendarType==='LUNAR'?effectiveLunarDateText:(effectiveFrom||todayIso));
-    if(!d)return;
-    setBookBusy(true);
-    try{await api.post('/price-matrix/books/'+b.id+'/copy',{customer_id:cid,...(effectiveCalendarType==='LUNAR'?{effective_calendar_type:'LUNAR',effective_lunar_date_text:d}:{effective_calendar_type:'SOLAR',effective_from:d})});alert('Đã copy bảng giá');effectiveCalendarType==='LUNAR'?setEffectiveLunarDateText(d):setEffectiveFrom(d);await loadBooks(cid);await loadMatrix(cid)}
-    catch(e){alert(e.response?.data?.message||e.message)}
     finally{setBookBusy(false)}
   };
 
@@ -252,21 +257,17 @@ export default function PriceMatrix(){
       <div className="card price-matrix-table-card">
         <h3>Price Matrix Agent - bảng giá riêng theo từng bạn hàng</h3>
         <div className="actions">
-          <select className="select" style={{width:260}} value={cid} onChange={e=>changeCustomer(e.target.value)}>
+          <select className="select" style={{width:260}} value={cid} onChange={e=>changeCustomer(e.target.value)} disabled={customerLoading}>
+            <option value="">--- Chọn khách hàng ---</option>
             {customers.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
+          {customerLoading&&<span className="muted">Đang tải...</span>}
           <select className="select" style={{width:260}} value={copyTo} onChange={e=>setCopyTo(e.target.value)}>
             <option value="">Copy bảng này sang khách...</option>
             {customers.filter(c=>String(c.id)!==String(cid)).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
           <button className="btn secondary" onClick={copy}>Copy</button>
           <button className="btn secondary" onClick={saveOrderOnly}>Lưu thứ tự kéo thả</button>
-          <label className="muted" style={{display:'flex',alignItems:'center',gap:6}}>Ngày hiệu lực ({effectiveCalendarType==='LUNAR'?'Âm lịch':'Dương lịch'})
-            {effectiveCalendarType==='LUNAR'
-              ? <input className="input" style={{width:170}} placeholder="DD/MM/YYYY" value={effectiveLunarDateText} onChange={e=>setEffectiveLunarDateText(e.target.value)}/>
-              : <input className="input" type="date" style={{width:170}} value={effectiveFrom} onChange={e=>setEffectiveFrom(e.target.value)}/>
-            }
-          </label>
           <input className="input" style={{width:360}} placeholder="Sheet import (trống = tất cả, nhiều sheet cách nhau dấu phẩy)" value={priceSheetFilter} onChange={e=>setPriceSheetFilter(e.target.value)}/>
           <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" style={{display:'none'}} onClick={e=>{e.currentTarget.value='';setFileImport(null);}} onChange={e=>{const file=e.target.files?.[0];e.target.value='';readPriceExcel(file);}}/>
           <button className="btn secondary" onClick={()=>{setFileImport(null);resetPriceImportFileInput();fileInputRef.current?.click();}}>Import giá từ Excel</button>
@@ -275,39 +276,7 @@ export default function PriceMatrix(){
         {data&&<p className="muted">Kéo biểu tượng ☰ để đổi thứ tự danh mục khách. Tick “Dùng trong bill” để mặt hàng xuất hiện trong tạo bill. Giá riêng sẽ áp dụng từ ngày hiệu lực đã chọn. Nếu sửa bảng giá đã dùng cho bill chưa thu tiền, hệ thống tự cập nhật lại bill chưa thu; bill đã thu tiền sẽ khóa không cho sửa.</p>}
       </div>
 
-      <div className="card">
-        <div className="modal-header">
-          <div>
-            <h3 style={{marginBottom:6}}>{showBookManager?'▼':'▶'} Quản lý các bảng giá riêng đã tạo</h3>
-            <p className="muted" style={{marginTop:0}}>Phần này ít dùng nên mặc định đóng lại. Khi cần xem/sửa/copy/xóa bảng giá cũ thì bấm mở.</p>
-          </div>
-          <div className="actions">
-            {showBookManager&&<button className="btn secondary" onClick={()=>loadBooks(cid)} disabled={bookBusy}>Tải lại</button>}
-            <button className="btn secondary" onClick={()=>setShowBookManager(v=>!v)}>{showBookManager?'Ẩn quản lý':'Mở quản lý'}</button>
-          </div>
-        </div>
-        {showBookManager&&<>
-          <p className="muted">Có bill nhưng chưa thu tiền vẫn được sửa bảng giá. Nếu bảng giá đã phát sinh thu tiền thì bị khóa để không sai công nợ.</p>
-          <table className="table">
-            <thead><tr><th>ID</th><th>Tên bảng giá</th><th>Hiệu lực</th><th>SP</th><th>Bill chưa thu</th><th>Bill đã thu</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
-            <tbody>{books.map(b=><tr key={b.id}>
-              <td>#{b.id}</td>
-              <td><b>{b.book_name||('Bảng giá #'+b.id)}</b><br/><span className="muted">{b.note}</span></td>
-              <td>{String(b.effective_calendar_type||'SOLAR')==='LUNAR'?(b.effective_lunar_date_text+' ÂL'):String(b.effective_from||'').slice(0,10)}<br/><span className="muted">{String(b.effective_calendar_type||'SOLAR')==='LUNAR'?'Âm lịch':'Dương lịch'}</span></td>
-              <td>{b.item_count||0}</td>
-              <td>{b.unpaid_bill_count||0}</td>
-              <td>{b.paid_bill_count||0}</td>
-              <td>{b.can_edit?<span className="pill ok">Được sửa</span>:<span className="pill warn">Đã khóa</span>}</td>
-              <td className="actions">
-                <button className="btn secondary" onClick={()=>openBook(b.id)}>Xem/Sửa</button>
-                <button className="btn secondary" onClick={()=>copyBook(b)}>Copy</button>
-                <button className="btn danger" onClick={()=>deleteBook(b)} disabled={!b.can_delete}>Xóa</button>
-              </td>
-            </tr>)}</tbody>
-          </table>
-        </>}
-      </div>
-
+      {newBookMode&&cid&&<p className="notice" style={{marginBottom:8}}>Đang tạo bảng giá mới cho khách <b>{selectedCustomer.name||''}</b> từ ngày <b>{effectiveLabel}</b></p>}
       <div className="card">
         <table className="table">
           <thead><tr><th></th><th>Dùng trong bill</th><th>STT</th><th>Mặt hàng</th><th>Giá chung</th><th>Giá riêng khách này</th><th>Mode</th></tr></thead>
@@ -317,7 +286,7 @@ export default function PriceMatrix(){
             <td><input className="input" style={{width:70}} value={idx+1} readOnly/></td>
             <td><b>{r.product_name}</b><br/><span className="muted">{r.category_name} · {r.product_code}</span></td>
             <td>{moneyVnd(r.default_sale_price)}</td>
-            <td><MoneyInput value={r.private_price??r.effective_price??0} onChange={v=>setRow(idx,{private_price:v})} data-pos-nav="true" onKeyDown={handlePosInputKeyNavigation}/></td>
+            <td><MoneyInput value={r.private_price??0} onChange={v=>setRow(idx,{private_price:v,...(newBookMode&&{in_catalog:Number(v)>0})})} data-pos-nav="true" onKeyDown={handlePosInputKeyNavigation}/></td>
             <td>{r.inventory_mode}</td>
           </tr>)}</tbody>
         </table>
@@ -332,7 +301,7 @@ export default function PriceMatrix(){
             <h2>Chi tiết bảng giá #{bookDetail.id}</h2>
             <p className="muted">Bill chưa thu tiền: {bookDetail.unpaid_bill_count||0}. Bill đã thu tiền: {bookDetail.paid_bill_count||0}. {bookDetail.can_edit?'Được sửa.':'Đã khóa, chỉ xem.'}</p>
           </div>
-          <button className="btn secondary" onClick={()=>{setBookDetail(null);setBookItems([])}}>Đóng</button>
+          <button className="btn secondary" onClick={()=>{setBookDetail(null);setBookItems([]);setBookAddItems([])}}>Đóng</button>
         </div>
         <div className="actions">
           <label className="muted">Tên bảng giá <input className="input" style={{width:260}} value={bookDetail.book_name||''} disabled={!bookDetail.can_edit} onChange={e=>setBookDetail({...bookDetail,book_name:e.target.value})}/></label>
@@ -345,16 +314,70 @@ export default function PriceMatrix(){
         </div>
         {!bookDetail.can_edit&&<p className="notice warn">Bảng giá đã có bill phát sinh thu tiền nên không được sửa/xóa.</p>}
         <div className="scroll-box">
-          <table className="table"><thead><tr><th>Mặt hàng</th><th>Mã</th><th>Giá</th><th>Ghi chú</th></tr></thead>
+          <table className="table"><thead><tr><th>Mặt hàng</th><th>Mã</th><th>Giá</th><th>Ghi chú</th><th></th></tr></thead>
           <tbody>{bookItems.map((it,idx)=><tr key={it.product_id}>
             <td><b>{it.product_name}</b></td><td>{it.product_code}</td>
             <td><MoneyInput value={it.sale_price} disabled={!bookDetail.can_edit} onChange={v=>setBookItem(idx,{sale_price:v})}/></td>
             <td><input className="input" value={it.note||''} disabled={!bookDetail.can_edit} onChange={e=>setBookItem(idx,{note:e.target.value})}/></td>
+            <td>{bookDetail.can_edit&&<button className="btn danger" style={{padding:'2px 8px'}} onClick={()=>setBookItems(bookItems.filter((_,i)=>i!==idx))}>×</button>}</td>
           </tr>)}</tbody></table>
+          {bookAddItems.length>0&&bookDetail.can_edit&&<details style={{marginTop:16}}>
+            <summary style={{cursor:'pointer',fontWeight:'bold',padding:'8px 0'}}>+ Thêm sản phẩm chưa có trong bảng giá ({bookAddItems.length})</summary>
+            <table className="table"><thead><tr><th>Mặt hàng</th><th>Mã</th><th>Giá riêng mới</th></tr></thead>
+            <tbody>{bookAddItems.map((it,idx)=><tr key={it.product_id}>
+              <td><b>{it.product_name}</b></td><td>{it.product_code}</td>
+              <td><MoneyInput value={it.sale_price} onChange={v=>setBookAddItems(bookAddItems.map((x,i)=>i===idx?{...x,sale_price:v}:x))}/></td>
+            </tr>)}</tbody></table>
+          </details>}
         </div>
         <div className="modal-footer">
-          <button className="btn secondary" onClick={()=>{setBookDetail(null);setBookItems([])}}>Đóng</button>
+          <button className="btn secondary" onClick={()=>{setBookDetail(null);setBookItems([]);setBookAddItems([])}}>Đóng</button>
           <button className="btn" onClick={saveBook} disabled={!bookDetail.can_edit||bookBusy}>Lưu bảng giá</button>
+        </div>
+      </div>
+    </div>}
+
+    {showPickModal&&<div className="modal-backdrop">
+      <div className="modal-card" style={{maxWidth:700}}>
+        <div className="modal-header">
+          <div>
+            <h2>Bảng giá riêng — {selectedCustomer.name||''}</h2>
+            <p className="muted">Chọn bảng giá để xem/sửa hoặc tạo bảng giá mới.</p>
+          </div>
+          <button className="btn secondary" onClick={()=>setShowPickModal(false)}>Đóng</button>
+        </div>
+        <table className="table">
+          <thead><tr><th>Ngày hiệu lực</th><th>Lịch</th><th>Số SP</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
+          <tbody>{[...books].filter(b=>String(b.status||'ACTIVE')!=='DELETED').sort((a,b)=>String(b.effective_from||'').localeCompare(String(a.effective_from||''))).map(b=><tr key={b.id}>
+            <td>{String(b.effective_calendar_type||'SOLAR')==='LUNAR'?(b.effective_lunar_date_text+' ÂL'):String(b.effective_from||'').slice(0,10)}</td>
+            <td>{String(b.effective_calendar_type||'SOLAR')==='LUNAR'?'Âm lịch':'Dương lịch'}</td>
+            <td>{b.item_count||0}</td>
+            <td>{b.can_edit?<span className="pill ok">Được sửa</span>:<span className="pill warn">Đã khóa</span>}</td>
+            <td><button className="btn secondary" onClick={async()=>{setShowPickModal(false);await loadMatrix(cid);await openBook(b.id);}}>Xem/Sửa</button></td>
+          </tr>)}</tbody>
+        </table>
+        <div className="modal-footer">
+          <button className="btn" onClick={()=>{setShowPickModal(false);setShowDateDialog(true);}}>+ Thêm bảng giá mới</button>
+        </div>
+      </div>
+    </div>}
+
+    {showDateDialog&&<div className="modal-backdrop">
+      <div className="modal-card" style={{maxWidth:440}}>
+        <div className="modal-header">
+          <h2>Chọn ngày hiệu lực</h2>
+        </div>
+        <div style={{padding:'16px 0'}}>
+          <label className="muted" style={{display:'flex',alignItems:'center',gap:8}}>Ngày hiệu lực ({effectiveCalendarType==='LUNAR'?'Âm lịch':'Dương lịch'})
+            {effectiveCalendarType==='LUNAR'
+              ? <input className="input" style={{width:170}} placeholder="DD/MM/YYYY" value={effectiveLunarDateText} onChange={e=>setEffectiveLunarDateText(e.target.value)}/>
+              : <input className="input" type="date" style={{width:170}} value={effectiveFrom} onChange={e=>setEffectiveFrom(e.target.value)}/>
+            }
+          </label>
+        </div>
+        <div className="modal-footer">
+          <button className="btn secondary" onClick={()=>setShowDateDialog(false)}>Hủy</button>
+          <button className="btn" onClick={async()=>{setShowDateDialog(false);setNewBookMode(true);await loadMatrix(cid);setRows(prev=>prev.map(r=>({...r,in_catalog:Number(r.private_price||0)>0})));}}>Tiếp tục</button>
         </div>
       </div>
     </div>}

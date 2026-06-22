@@ -561,6 +561,26 @@ CREATE TABLE IF NOT EXISTS units (
   created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME     NULL ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS supplier_purchase_options (
+  id                      BIGINT        AUTO_INCREMENT PRIMARY KEY,
+  supplier_id             BIGINT        NOT NULL,
+  product_id              BIGINT        NOT NULL,
+  unit_id                 BIGINT        NOT NULL,
+  default_conversion_qty  DECIMAL(15,4) NOT NULL DEFAULT 1.0000,
+  requires_actual_weight  TINYINT(1)    NOT NULL DEFAULT 0,
+  display_order           INT           NOT NULL DEFAULT 0,
+  is_active               TINYINT(1)    NOT NULL DEFAULT 1,
+  created_at              DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at              DATETIME      NULL ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_spo_supplier_product(supplier_id, product_id),
+  INDEX idx_spo_supplier(supplier_id),
+  INDEX idx_spo_product(product_id),
+  INDEX idx_spo_unit(unit_id),
+  FOREIGN KEY (supplier_id) REFERENCES suppliers(id),
+  FOREIGN KEY (product_id)  REFERENCES products(id),
+  FOREIGN KEY (unit_id)     REFERENCES units(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
 
     for (const table of ['customers','products','product_categories','suppliers','purchase_lots','orders']) {

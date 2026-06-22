@@ -581,6 +581,29 @@ CREATE TABLE IF NOT EXISTS supplier_purchase_options (
   FOREIGN KEY (product_id)  REFERENCES products(id),
   FOREIGN KEY (unit_id)     REFERENCES units(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS purchase_lot_items (
+  id                          BIGINT        AUTO_INCREMENT PRIMARY KEY,
+  lot_id                      BIGINT        NOT NULL,
+  product_id                  BIGINT        NOT NULL,
+  supplier_purchase_option_id BIGINT        NULL,
+  purchase_qty                DECIMAL(15,3) NOT NULL,
+  expected_conversion_qty     DECIMAL(15,4) NOT NULL,
+  expected_stock_qty_kg       DECIMAL(15,3) NOT NULL,
+  actual_stock_qty_kg         DECIMAL(15,3) NULL,
+  inventory_stock_qty_kg      DECIMAL(15,3) NOT NULL,
+  purchase_unit_price         DECIMAL(15,2) NOT NULL,
+  total_cost                  DECIMAL(15,2) NOT NULL,
+  cost_per_kg                 DECIMAL(15,4) NOT NULL,
+  note                        TEXT          NULL,
+  created_at                  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_lot(lot_id),
+  INDEX idx_product(product_id),
+  INDEX idx_supplier_purchase_option(supplier_purchase_option_id),
+  FOREIGN KEY (lot_id)                      REFERENCES purchase_lots(id),
+  FOREIGN KEY (product_id)                  REFERENCES products(id),
+  FOREIGN KEY (supplier_purchase_option_id) REFERENCES supplier_purchase_options(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
 
     for (const table of ['customers','products','product_categories','suppliers','purchase_lots','orders']) {

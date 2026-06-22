@@ -116,6 +116,21 @@ class SupplierAgent {
     return SoftDeleteAgent.softDelete('supplier', id, reason, userId);
   }
 
+  _buildPaymentSummary(paid_amount, advance_amount, total_cost) {
+    const paid=n(paid_amount);
+    const advance=n(advance_amount);
+    return {paid_amount:paid,advance_amount:advance,remaining_amount:Math.max(0,n(total_cost)-paid-advance)};
+  }
+
+  async getLotPaymentSummary(connOrPool, lotId, totalCost) {
+    const [pmts]=await connOrPool.query(
+      `SELECT COALESCE(SUM(CASE WHEN type='PAYMENT' THEN amount ELSE 0 END),0) paid_amount,
+              COALESCE(SUM(CASE WHEN type='ADVANCE' THEN amount ELSE 0 END),0) advance_amount
+       FROM supplier_payments WHERE lot_id=?`,[lotId]
+    );
+    return this._buildPaymentSummary(pmts[0].paid_amount,pmts[0].advance_amount,totalCost);
+  }
+
   async lots() {
     const [rows]=await pool.query(
       `SELECT l.*,s.name supplier_name,s.billing_calendar_type supplier_billing_calendar_type,
@@ -126,7 +141,7 @@ class SupplierAgent {
        WHERE l.del_flg=0
        GROUP BY l.id ORDER BY l.purchase_date DESC,l.id DESC`
     );
-    return rows.map(r=>({...r, remaining_amount:Math.max(0,n(r.total_cost)-n(r.paid_amount)-n(r.advance_amount))}));
+    return rows.map(r=>({...r,...this._buildPaymentSummary(r.paid_amount,r.advance_amount,r.total_cost)}));
   }
 
   async getLot(id) {
@@ -140,9 +155,7 @@ class SupplierAgent {
       [id]
     );
     if (!rows.length) throw new Error('Không tìm thấy lô');
-    const lot=rows[0];
-    lot.remaining_amount=Math.max(0,n(lot.total_cost)-n(lot.paid_amount)-n(lot.advance_amount));
-    return lot;
+    return {...rows[0],...this._buildPaymentSummary(rows[0].paid_amount,rows[0].advance_amount,rows[0].total_cost)};
   }
 
   async createLot(data, user) {
@@ -191,6 +204,9 @@ class SupplierAgent {
   }
 
   async payLot(id, data, user) {
+    const [lot]=await pool.query(`SELECT status FROM purchase_lots WHERE id=? AND del_flg=0`,[id]);
+    if(!lot.length) throw Object.assign(new Error('Không tìm thấy phiếu nhập.'),{status:404});
+    if(lot[0].status!=='OPEN') throw Object.assign(new Error('Phiếu nhập đã chốt hoặc đã hủy, không thể thanh toán thêm.'),{status:400});
     await pool.query(
       `INSERT INTO supplier_payments(lot_id,payment_date,amount,type,payment_method,note,created_by) VALUES(?,?,?,?,?,?,?)`,
       [id,data.payment_date,data.amount,data.type||'PAYMENT',data.payment_method||'CASH',data.note||'',user.id]
@@ -200,6 +216,78 @@ class SupplierAgent {
 
   async printLot(id) {
     return PrintService.lotHtml(await this.getLot(id));
+  }
+
+  async updateLot(id, data, user) {
+    const [existing]=await pool.query(
+      `SELECT id,status,lot_code FROM purchase_lots WHERE id=? AND del_flg=0`,
+      [id]
+    );
+    if(!existing.length) throw Object.assign(new Error('Không tìm thấy phiếu nhập'),{status:404});
+    if(existing[0].status!=='OPEN') throw Object.assign(new Error('Phiếu nhập đã chốt hoặc đã hủy, không thể chỉnh sửa.'),{status:400});
+    if(!data.supplier_id) throw new Error('Vui lòng chọn nhà cung cấp trước khi lưu lô nhập.');
+    const c=this.calc(data);
+    if(c.rawWeight<=0) throw new Error('Tổng kg thịt xô phải lớn hơn 0. Không thể lưu lô nhập trống.');
+    if(c.totalAnimals<=0) throw new Error('Tổng số con phải lớn hơn 0.');
+    if(c.totalWeight<=0) throw new Error('Kg tính tiền phải lớn hơn 0. Vui lòng kiểm tra lại số kg trừ.');
+    const conn=await pool.getConnection();
+    try{
+      await conn.beginTransaction();
+      let calendarType=normalizeCalendarType(data.calendar_type||data.billing_calendar_type);
+      if(data.supplier_id&&!data.calendar_type&&!data.billing_calendar_type){
+        const [sr]=await conn.query(`SELECT billing_calendar_type FROM suppliers WHERE id=? LIMIT 1`,[data.supplier_id]);
+        calendarType=normalizeCalendarType(sr[0]?.billing_calendar_type);
+      }
+      const lunarDateText=calendarType==='LUNAR'?String(data.lunar_date_text||''):'';
+      const purchaseBillDate=resolveBillSolarDate(calendarType,data.purchase_date,lunarDateText);
+      const [result]=await conn.query(
+        `UPDATE purchase_lots SET
+          lot_name=?,supplier_id=?,purchase_date=?,calendar_type=?,lunar_date_text=?,
+          raw_weight=?,bone_weight=?,deducted_weight=?,total_weight=?,purchase_price=?,total_cost=?,
+          raw_weight_expr=?,bone_weight_expr=?,deducted_weight_expr=?,
+          damage_weight=?,fat_weight=?,fragment_weight=?,fragment_price=?,fragment_cost=?,
+          other_deduct_weight=?,deduct_note=?,
+          total_animals=?,male_animals=?,female_animals=?,deduct_mode=?,deduct_kg_per_animal=?,
+          male_price=?,female_price=?,male_weight=?,female_weight=?,
+          note=?
+         WHERE id=? AND status='OPEN' AND del_flg=0`,
+        [
+          data.lot_name||existing[0].lot_code,data.supplier_id||null,
+          purchaseBillDate,calendarType,lunarDateText,
+          c.rawWeight,c.boneWeight,c.deductedWeight,c.totalWeight,c.purchasePrice,c.totalCost,
+          data.raw_weight_expr||String(c.rawWeight),
+          data.bone_weight_expr||String(c.boneWeight),
+          c.deductMode==='TOTAL_KG'?(data.deducted_weight_expr||String(c.deductedWeight)):'',
+          c.damageWeight,c.fatWeight,c.fragmentWeight,c.fragmentPrice,c.fragmentCost,
+          c.otherDeductWeight,data.deduct_note||'',
+          c.totalAnimals,c.maleAnimals,c.femaleAnimals,c.deductMode,c.deductKgPerAnimal,
+          c.malePrice,c.femalePrice,c.maleWeight,c.femaleWeight,
+          data.note||'',
+          id
+        ]
+      );
+      if(!result.affectedRows) throw new Error('Phiếu nhập đã chốt hoặc đã hủy, không thể chỉnh sửa.');
+      await conn.commit();
+      return {message:'Đã cập nhật lô nhập',lot_code:existing[0].lot_code,total_weight:c.totalWeight,total_cost:c.totalCost};
+    }catch(e){await conn.rollback();throw e;}finally{conn.release();}
+  }
+
+  async updateLotStatus(id, targetStatus, user) {
+    if(targetStatus!=='CLOSED') throw Object.assign(new Error('Trạng thái không hợp lệ.'),{status:400});
+    const conn=await pool.getConnection();
+    try{
+      await conn.beginTransaction();
+      const [rows]=await conn.query(
+        `SELECT id,status,lot_code,total_cost FROM purchase_lots WHERE id=? AND del_flg=0 FOR UPDATE`,[id]
+      );
+      if(!rows.length) throw Object.assign(new Error('Không tìm thấy phiếu nhập.'),{status:404});
+      if(rows[0].status!=='OPEN') throw Object.assign(new Error('Phiếu nhập không ở trạng thái mở.'),{status:400});
+      const summary=await this.getLotPaymentSummary(conn,id,rows[0].total_cost);
+      if(summary.remaining_amount>0) throw Object.assign(new Error('Phiếu nhập còn công nợ, không thể chốt.'),{status:400});
+      await conn.query(`UPDATE purchase_lots SET status='CLOSED' WHERE id=? AND del_flg=0`,[id]);
+      await conn.commit();
+      return {message:'Đã chốt phiếu nhập',lot_code:rows[0].lot_code,status:'CLOSED'};
+    }catch(e){await conn.rollback();throw e;}finally{conn.release();}
   }
 }
 module.exports = new SupplierAgent();

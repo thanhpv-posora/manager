@@ -13,13 +13,7 @@ const kg1=v=>Number(v||0).toLocaleString('en-US',{minimumFractionDigits:1,maximu
 
 export default function Lots(){
   const today=new Date().toISOString().slice(0,10);
-  const[rows,setRows]=useState([]);
-  const[s,setS]=useState([]);
-  const[supplier,setSupplier]=useState({});
-  const[editingSupplier,setEditingSupplier]=useState(null);
-  const[supplierOpen,setSupplierOpen]=useState(false);
-  const[supplierListOpen,setSupplierListOpen]=useState(false);
-  const[f,setF]=useState({
+  const defaultLotForm=()=>({
     purchase_date:today,
     calendar_type:'SOLAR',
     lunar_date_text:'',
@@ -39,6 +33,13 @@ export default function Lots(){
     fragment_price:100000,
     purchase_price:200000
   });
+  const[rows,setRows]=useState([]);
+  const[s,setS]=useState([]);
+  const[supplier,setSupplier]=useState({});
+  const[editingSupplier,setEditingSupplier]=useState(null);
+  const[supplierOpen,setSupplierOpen]=useState(false);
+  const[supplierListOpen,setSupplierListOpen]=useState(false);
+  const[f,setF]=useState(defaultLotForm);
   const[deductOpen,setDeductOpen]=useState(false);
   const[pay,setPay]=useState({payment_date:today,type:'ADVANCE',payment_method:'CASH'});
   const[loading,setLoading]=useState(true);
@@ -46,7 +47,8 @@ export default function Lots(){
   const[saving,setSaving]=useState(false);
   const[saveStatus,setSaveStatus]=useState(null);
   const[reportTab,setReportTab]=useState('DETAIL');
-  const[reportFilter,setReportFilter]=useState({from:today,to:today,supplier_id:''});
+  const[reportFilter,setReportFilter]=useState({from:'',to:'',supplier_id:''});
+  const[editingLotId,setEditingLotId]=useState(null);
 
   const setField=(k,v)=>setF(prev=>({...prev,[k]:v}));
   const selectedSupplier=s.find(x=>String(x.id)===String(f.supplier_id||''));
@@ -96,6 +98,7 @@ export default function Lots(){
     if(e.key==='ArrowUp'||e.key==='ArrowLeft')focusNav(i-1);
   };
 
+  const formRef=useRef(null);
   const rawWeightRef=useRef(null);
   const summarySlotRef=useRef(null);
   const[summaryFloatStyle,setSummaryFloatStyle]=useState({});
@@ -233,6 +236,41 @@ export default function Lots(){
     }
   };
 
+  const cancelEditMode=()=>{
+    setEditingLotId(null);
+    setF(defaultLotForm());
+    setDeductOpen(false);
+  };
+
+  const loadLotIntoForm=r=>{
+    setEditingLotId(r.id);
+    setF({
+      lot_name:r.lot_name||'',
+      supplier_id:String(r.supplier_id||''),
+      purchase_date:isoDate(r.purchase_date),
+      calendar_type:r.calendar_type||'SOLAR',
+      lunar_date_text:r.lunar_date_text||'',
+      raw_weight_expr:r.raw_weight_expr||String(r.raw_weight||''),
+      bone_weight_expr:r.bone_weight_expr||String(r.bone_weight||''),
+      deduct_mode:r.deduct_mode||'PER_ANIMAL',
+      total_animals:String(r.total_animals||''),
+      female_animals:String(r.female_animals||''),
+      deduct_kg_per_animal:String(r.deduct_kg_per_animal||''),
+      deducted_weight_expr:r.deducted_weight_expr||String(r.deducted_weight||''),
+      damage_weight:String(r.damage_weight||''),
+      fat_weight:String(r.fat_weight||''),
+      fragment_weight:String(r.fragment_weight||''),
+      fragment_price:n(r.fragment_price)||100000,
+      other_deduct_weight:String(r.other_deduct_weight||''),
+      male_price:n(r.male_price)||200000,
+      female_price:n(r.female_price)||195000,
+      purchase_price:n(r.purchase_price)||n(r.male_price)||200000,
+      note:r.note||'',
+      deduct_note:r.deduct_note||''
+    });
+    formRef.current?.scrollIntoView({behavior:'smooth',block:'start'});
+  };
+
   const save=async()=>{
     if(saving)return;
     setSaveStatus(null);
@@ -254,50 +292,57 @@ export default function Lots(){
       return;
     }
     setSaving(true);
+    const payload={
+      ...f,
+      raw_weight:rawWeight,
+      bone_weight:boneWeight,
+      deducted_weight:deductedWeight,
+      damage_weight:damageWeight,
+      fat_weight:fatWeight,
+      fragment_weight:fragmentWeight,
+      other_deduct_weight:otherDeductWeight,
+      total_animals:totalAnimals,
+      female_animals:femaleAnimals,
+      male_animals:maleAnimals,
+      deduct_kg_per_animal:deductKgPerAnimal,
+      male_price:malePrice,
+      female_price:femalePrice,
+      male_weight:maleWeight,
+      female_weight:femaleWeight,
+      total_weight:finalWeight,
+      fragment_price:fragmentPrice,
+      fragment_cost:fragmentCost,
+      total_cost:totalCost
+    };
     try{
-      const res=await api.post('/lots',{
-        ...f,
-        raw_weight:rawWeight,
-        bone_weight:boneWeight,
-        deducted_weight:deductedWeight,
-        damage_weight:damageWeight,
-        fat_weight:fatWeight,
-        fragment_weight:fragmentWeight,
-        other_deduct_weight:otherDeductWeight,
-        total_animals:totalAnimals,
-        female_animals:femaleAnimals,
-        male_animals:maleAnimals,
-        deduct_kg_per_animal:deductKgPerAnimal,
-        male_price:malePrice,
-        female_price:femalePrice,
-        male_weight:maleWeight,
-        female_weight:femaleWeight,
-        total_weight:finalWeight,
-        fragment_price:fragmentPrice,
-        fragment_cost:fragmentCost,
-        total_cost:totalCost
-      });
-      setF(prev=>({
-        ...prev,
-        lot_name:'',
-        raw_weight_expr:'',
-        bone_weight_expr:'',
-        total_animals:'',
-        female_animals:'',
-        deduct_mode:'PER_ANIMAL',
-        deduct_kg_per_animal:'',
-        deducted_weight_expr:'',
-        damage_weight:'',
-        fat_weight:'',
-        fragment_weight:'',
-        other_deduct_weight:'',
-        deduct_note:''
-      }));
-      setDeductOpen(false);
-      setSaveStatus({type:'success',message:`Đã lưu lô nhập ${res.data?.lot_code||''}`.trim()});
+      if(editingLotId){
+        const res=await api.put('/lots/'+editingLotId,payload);
+        setSaveStatus({type:'success',message:`Đã cập nhật lô nhập ${res.data?.lot_code||''}`.trim()});
+        cancelEditMode();
+      }else{
+        const res=await api.post('/lots',payload);
+        setF(prev=>({
+          ...prev,
+          lot_name:'',
+          raw_weight_expr:'',
+          bone_weight_expr:'',
+          total_animals:'',
+          female_animals:'',
+          deduct_mode:'PER_ANIMAL',
+          deduct_kg_per_animal:'',
+          deducted_weight_expr:'',
+          damage_weight:'',
+          fat_weight:'',
+          fragment_weight:'',
+          other_deduct_weight:'',
+          deduct_note:''
+        }));
+        setDeductOpen(false);
+        setSaveStatus({type:'success',message:`Đã lưu lô nhập ${res.data?.lot_code||''}`.trim()});
+      }
       await load();
     }catch(e){
-      const msg=e.response?.data?.message||e.message||'Lưu lô nhập thất bại';
+      const msg=e.response?.data?.message||e.message||(editingLotId?'Cập nhật nhập hàng thất bại':'Lưu nhập hàng thất bại');
       setSaveStatus({type:'error',message:msg});
     }finally{
       setSaving(false);
@@ -312,6 +357,11 @@ export default function Lots(){
     load();
   };
   const fillFull=()=>{const lot=rows.find(r=>String(r.id)===String(pay.lot_id));if(lot)setPay({...pay,type:'PAYMENT',amount:lot.remaining_amount})};
+  const closeLot=async(id,lot_code)=>{
+    if(!await window.appConfirm('Bạn có chắc muốn chốt phiếu nhập?\n\nSau khi chốt:\n\n• Không thể chỉnh sửa\n• Không thể thanh toán thêm',{title:'Chốt phiếu nhập',confirmText:'Chốt phiếu',cancelText:'Hủy',variant:'warning'}))return;
+    try{await api.put('/lots/'+id+'/status',{status:'CLOSED'});await load();}
+    catch(e){alert(e.response?.data?.message||e.message);}
+  };
 
   const kg=v=>Number(v||0).toLocaleString('en-US',{maximumFractionDigits:3});
   const isoDate=v=>v?String(v).slice(0,10):'';
@@ -340,7 +390,7 @@ export default function Lots(){
   const reportRows=rows.filter(r=>{
     // purchase_date là NGÀY TÍNH PHIẾU đã mapping sang dương lịch.
     // Với NCC âm lịch: lunar_date_text giữ ngày âm, purchase_date giữ ngày dương tương ứng để báo cáo/dashboard không lệch tháng.
-    const d=lotMappedSolarDate(r);
+    const d=isoDate(r.purchase_date);
     if(reportFilter.from && d<reportFilter.from)return false;
     if(reportFilter.to && d>reportFilter.to)return false;
     if(reportFilter.supplier_id && String(r.supplier_id)!==String(reportFilter.supplier_id))return false;
@@ -414,7 +464,7 @@ export default function Lots(){
 
   return <SafePage loading={loading} error={error}>
     <div className="grid cols-2 lots-agent-page">
-      <div className="card lots-entry-card">
+      <div ref={formRef} className="card lots-entry-card">
         <div className="section-toggle-header">
           <div>
             <h3 style={{marginBottom:4}}>Nhà cung cấp</h3>
@@ -461,7 +511,18 @@ export default function Lots(){
 
         {supplierListOpen&&<table className="table"><tbody>{s.map(x=><tr key={x.id}><td>{x.name}<br/><span className="muted">{x.phone}</span><br/><span className="badge">{x.billing_calendar_type==='LUNAR'?'Âm lịch':'Dương lịch'}</span><br/><span className="muted">Đực {money(x.male_price||0)} · Cái {money(x.female_price||0)} · Vụn {money(x.fragment_price||0)}</span></td><td><button className="btn secondary" onClick={()=>editSupplier(x)}>Sửa</button> <button className="btn danger" onClick={()=>deleteSupplier(x.id)}>Xóa mềm</button></td></tr>)}</tbody></table>}
 
-        <h3>Nhập lô bò</h3>
+        {editingLotId&&(()=>{const el=rows.find(r=>String(r.id)===String(editingLotId));return(<div style={{background:'#fffbe6',border:'1.5px solid #f59e0b',borderRadius:8,padding:'10px 14px',marginBottom:10}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+            <span style={{fontWeight:700,fontSize:14}}>🟡 ĐANG CHỈNH SỬA NHẬP HÀNG</span>
+            {el?.status&&<span className="badge" style={{marginLeft:6}}>{el.status}</span>}
+            <button className="btn secondary" style={{marginLeft:'auto'}} onClick={cancelEditMode}>Hủy sửa</button>
+          </div>
+          <div className="muted" style={{marginTop:4,fontSize:13}}>
+            {el&&<><b>{el.lot_code}</b>{el.lot_name&&el.lot_name!==el.lot_code?<> · {el.lot_name}</>:null}{el.supplier_name?<> · {el.supplier_name}</>:null}{el.purchase_date?<> · {lotBillDateFullText(el)}</>:null}</>}
+          </div>
+        </div>);})()}
+
+        <h3>Nhập hàng</h3>
         <p className="muted">Các ô số lượng/kg có thể cộng trừ trực tiếp, ví dụ: <b>90.5+75.8-2</b>. Riêng Tổng kg thịt xô có thể nhập nhiều dòng. Xương sườn giữ 1 dòng và tự quy đổi: <b>kg xương sườn / 2</b> rồi cộng vào thịt xô.</p>
 
         <div className="lots-entry-layout">
@@ -523,7 +584,8 @@ export default function Lots(){
           </div>
           <h3>Thành tiền: {money(totalCost)}</h3>
         </div>
-        <button className="btn lots-save-btn" disabled={saving} onClick={save}>{saving?'Đang lưu...':'Lưu lô nhập'}</button>
+        <button className="btn lots-save-btn" disabled={saving} onClick={save}>{saving?'Đang lưu...':(editingLotId?'Cập nhật nhập hàng':'Lưu nhập hàng')}</button>
+        {editingLotId&&<button className="btn secondary" style={{marginTop:6,width:'100%'}} onClick={cancelEditMode}>Hủy sửa</button>}
         {saveStatus&&<div className={`lots-save-status ${saveStatus.type}`}>{saveStatus.message}</div>}
         </div>
           </aside>
@@ -531,7 +593,7 @@ export default function Lots(){
       </div>
 
       <div className="card">
-        <h3>Thống kê Nhập lô / NCC</h3>
+        <h3>Thống kê nhập hàng</h3>
         <div className="report-tabs">
           <button className={`btn ${reportTab==='DETAIL'?'':'secondary'}`} onClick={()=>setReportTab('DETAIL')}>Chi tiết NCC</button>
           <button className={`btn ${reportTab==='SUMMARY'?'':'secondary'}`} onClick={()=>setReportTab('SUMMARY')}>Tổng hợp NCC</button>
@@ -559,10 +621,8 @@ export default function Lots(){
           <div><span>Tổng thành tiền</span><b>{money(detailTotals.cost)}</b></div>
         </div>
 
-        {reportTab==='DETAIL'?<div className="table-scroll supplier-report-table"><table className="table compact"><thead><tr><th>Ngày lập phiếu</th><th>Ngày nhập hàng</th><th>Phiếu</th><th>NCC</th><th>Số con</th><th>Bò đực</th><th>Bò cái</th><th>Trừ xô</th><th>Xương sườn</th><th>Thịt vụn</th><th>Kg thực tính</th><th>Thành tiền</th></tr></thead><tbody>{reportRows.map(r=><tr key={r.id}><td>{dateText(r.created_at||r.purchase_date)}</td><td><b>{lotImportDateText(r)}</b></td><td>{r.lot_code}</td><td>{r.supplier_name}</td><td>{animal(r.total_animals)}</td><td>{animal(r.male_animals)} con<br/>{kg(r.male_weight)}kg × {money(r.male_price||r.purchase_price)}<br/><b>{money(n(r.male_weight)*n(r.male_price||r.purchase_price))}</b></td><td>{animal(r.female_animals)} con<br/>{kg(r.female_weight)}kg × {money(r.female_price||r.purchase_price)}<br/><b>{money(n(r.female_weight)*n(r.female_price||r.purchase_price))}</b></td><td>{kg(r.deducted_weight)}kg</td><td>{kg(r.bone_weight)}kg</td><td>{kg(r.fragment_weight)}kg × {money(r.fragment_price)}<br/><b>{money(r.fragment_cost||n(r.fragment_weight)*n(r.fragment_price))}</b></td><td>{kg(r.total_weight)}kg</td><td><b>{money(r.total_cost)}</b></td></tr>)}</tbody><tfoot><tr><td colSpan="4">Tổng cộng</td><td>{animal(detailTotals.animals)}</td><td>{animal(detailTotals.maleAnimals)} con<br/>{kg(detailTotals.maleWeight)}kg<br/>{money(detailTotals.maleMoney)}</td><td>{animal(detailTotals.femaleAnimals)} con<br/>{kg(detailTotals.femaleWeight)}kg<br/>{money(detailTotals.femaleMoney)}</td><td>{kg(detailTotals.deduct)}kg</td><td>{kg(detailTotals.rib)}kg</td><td>{kg(detailTotals.fragment)}kg<br/>{money(detailTotals.fragmentMoney)}</td><td>{kg(detailTotals.final)}kg</td><td>{money(detailTotals.cost)}</td></tr></tfoot></table></div>:<div className="table-scroll supplier-report-table"><table className="table compact"><thead><tr><th>NCC</th><th>Ngày nhập hàng</th><th>Số lô</th><th>Tổng con</th><th>Bò đực</th><th>Bò cái</th><th>Trừ xô</th><th>Xương sườn</th><th>Thịt vụn</th><th>Kg thực tính</th><th>Tổng thành tiền</th></tr></thead><tbody>{summaryRows.map(r=><tr key={r.supplier_id}><td>{r.supplier_name}</td><td><b>{r.fromText||r.from||''}</b><br/><span className="muted">→ {r.toText||r.to||''}</span></td><td>{kg(r.lots)}</td><td>{animal(r.animals)}</td><td>{animal(r.maleAnimals)} con<br/>{kg(r.maleWeight)}kg<br/><b>{money(r.maleMoney)}</b></td><td>{animal(r.femaleAnimals)} con<br/>{kg(r.femaleWeight)}kg<br/><b>{money(r.femaleMoney)}</b></td><td>{kg(r.deduct)}kg</td><td>{kg(r.rib)}kg</td><td>{kg(r.fragment)}kg<br/><b>{money(r.fragmentMoney)}</b></td><td>{kg(r.final)}kg</td><td><b>{money(r.cost)}</b></td></tr>)}</tbody><tfoot><tr><td colSpan="2">Tổng cộng</td><td>{kg(detailTotals.lots)}</td><td>{animal(detailTotals.animals)}</td><td>{animal(detailTotals.maleAnimals)} con<br/>{kg(detailTotals.maleWeight)}kg<br/>{money(detailTotals.maleMoney)}</td><td>{animal(detailTotals.femaleAnimals)} con<br/>{kg(detailTotals.femaleWeight)}kg<br/>{money(detailTotals.femaleMoney)}</td><td>{kg(detailTotals.deduct)}kg</td><td>{kg(detailTotals.rib)}kg</td><td>{kg(detailTotals.fragment)}kg<br/>{money(detailTotals.fragmentMoney)}</td><td>{kg(detailTotals.final)}kg</td><td>{money(detailTotals.cost)}</td></tr></tfoot></table></div>}
-
-        <h3>Lô nhập / thanh toán NCC</h3>
-        <table className="table"><thead><tr><th>Lô</th><th>Kg</th><th>Thành tiền</th><th>Còn trả</th><th></th></tr></thead><tbody>{rows.map(r=><tr key={r.id}><td>{r.lot_code}<br/>{r.lot_name}<br/><span className="muted">{r.supplier_name}</span></td><td>{r.total_weight}kg<br/><span className="muted">{animal(r.total_animals)} con, cái {animal(r.female_animals)}</span><br/><span className="muted">Vụn {Number(r.fragment_weight||0).toFixed(3)}kg × {money(r.fragment_price||0)}</span></td><td>{money(r.total_cost)}</td><td><b>{money(r.remaining_amount)}</b></td><td><button className="btn secondary" onClick={()=>print(r.id)}>In NCC</button></td></tr>)}</tbody></table>
+        <h3>Danh sách phiếu nhập / Thanh toán NCC</h3>
+        <table className="table"><thead><tr><th>Lô</th><th>Kg</th><th>Thành tiền</th><th>Còn trả</th><th></th></tr></thead><tbody>{reportRows.length===0?<tr><td colSpan="5" className="muted" style={{textAlign:'center'}}>Không có dữ liệu trong khoảng ngày đã chọn.</td></tr>:reportRows.map(r=><tr key={r.id}><td>{r.lot_code}<br/>{r.lot_name}<br/><span className="muted">{r.supplier_name}</span></td><td>{r.total_weight}kg<br/><span className="muted">{animal(r.total_animals)} con, cái {animal(r.female_animals)}</span><br/><span className="muted">Vụn {Number(r.fragment_weight||0).toFixed(3)}kg × {money(r.fragment_price||0)}</span></td><td>{money(r.total_cost)}</td><td><b>{money(r.remaining_amount)}</b></td><td><button className="btn secondary" onClick={()=>print(r.id)}>In NCC</button><button className="btn secondary" style={{marginLeft:4}} disabled={r.status!=='OPEN'} title={r.status!=='OPEN'?'Phiếu đã chốt hoặc đã hủy.':undefined} onClick={()=>loadLotIntoForm(r)}>Sửa</button>{r.status==='OPEN'&&<button className="btn secondary" style={{marginLeft:4}} onClick={()=>closeLot(r.id,r.lot_code)}>Chốt</button>}</td></tr>)}</tbody></table>
         <h3>Ứng / trả tiền nhà cung cấp</h3>
         <div className="form-grid">
           <select className="select" value={pay.lot_id||''} onChange={e=>setPay({...pay,lot_id:e.target.value})}><option value="">Chọn lô</option>{rows.map(r=><option key={r.id} value={r.id}>{r.lot_code} - còn {money(r.remaining_amount)}</option>)}</select>

@@ -6,5 +6,7 @@ router.get('/public/:id/print', async (req,res,next)=>{try{res.setHeader('Conten
 router.get('/', auth(['ADMIN','STAFF']), async (req,res,next)=>{try{res.json(await SupplierAgent.lots())}catch(e){next(e)}});
 router.post('/', auth(['ADMIN','STAFF']), async (req,res,next)=>{try{res.json(await SupplierAgent.createLot(req.body,req.user))}catch(e){next(e)}});
 router.get('/:id/print', auth(['ADMIN','STAFF']), async (req,res,next)=>{try{res.setHeader('Content-Type','text/html; charset=utf-8');res.send(await SupplierAgent.printLot(req.params.id))}catch(e){next(e)}});
+router.put('/:id/status', auth(['ADMIN','STAFF']), async (req,res,next)=>{try{res.json(await SupplierAgent.updateLotStatus(req.params.id,req.body.status,req.user))}catch(e){next(e)}});
+router.put('/:id', auth(['ADMIN','STAFF']), async (req,res,next)=>{try{res.json(await SupplierAgent.updateLot(req.params.id,req.body,req.user))}catch(e){next(e)}});
 router.post('/:id/payments', auth(['ADMIN','STAFF']), async (req,res,next)=>{try{res.json(await SupplierAgent.payLot(req.params.id,req.body,req.user))}catch(e){next(e)}});
 module.exports=router;

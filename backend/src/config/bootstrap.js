@@ -551,6 +551,16 @@ CREATE TABLE IF NOT EXISTS delete_logs (
   deleted_by BIGINT NULL,
   deleted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS units (
+  id         BIGINT       AUTO_INCREMENT PRIMARY KEY,
+  code       VARCHAR(30)  NOT NULL UNIQUE,
+  name       VARCHAR(100) NOT NULL,
+  is_active  TINYINT(1)   NOT NULL DEFAULT 1,
+  sort_order INT          NOT NULL DEFAULT 0,
+  created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME     NULL ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
 
     for (const table of ['customers','products','product_categories','suppliers','purchase_lots','orders']) {

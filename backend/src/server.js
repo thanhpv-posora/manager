@@ -51,6 +51,7 @@ app.use('/api/orders',require('./routes/orders'));
 app.use('/api/payments',require('./routes/payments'));
 app.use('/api/suppliers',require('./routes/suppliers'));
 app.use('/api/lots',require('./routes/lots'));
+app.use('/api/units',require('./routes/units'));
 app.use('/api/reports',require('./routes/reports'));
 app.use('/api/agents',require('./routes/agents'));
 app.use('/api/trash',require('./routes/trash'));

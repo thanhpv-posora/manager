@@ -628,6 +628,20 @@ CREATE TABLE IF NOT EXISTS purchase_lot_items (
     await safeAddColumn(conn, 'purchase_orders', 'del_flg', 'del_flg TINYINT(1) NOT NULL DEFAULT 0');
     await safeAddColumn(conn, 'purchase_order_items', 'received_quantity', 'received_quantity DECIMAL(15,3) NOT NULL DEFAULT 0');
 
+    // S4-002B: Domain B — Inventory Purchase workflow (purchase_orders + purchase_order_items).
+    // purchase_order_items stores snapshot values captured at order creation time.
+    // PurchaseEngine must use purchase_order_items snapshot fields only.
+    // Do not read supplier_purchase_options or units for calculation after order creation.
+    await safeAddColumn(conn, 'purchase_order_items', 'supplier_purchase_option_id', 'supplier_purchase_option_id BIGINT NULL');
+    await safeAddColumn(conn, 'purchase_order_items', 'expected_conversion_qty', 'expected_conversion_qty DECIMAL(15,4) NOT NULL DEFAULT 1.0000');
+    await safeAddColumn(conn, 'purchase_order_items', 'expected_stock_qty', 'expected_stock_qty DECIMAL(15,3) NOT NULL DEFAULT 0');
+    await safeAddColumn(conn, 'purchase_order_items', 'actual_stock_qty', 'actual_stock_qty DECIMAL(15,3) NULL');
+    await safeAddColumn(conn, 'purchase_order_items', 'inventory_stock_qty', 'inventory_stock_qty DECIMAL(15,3) NOT NULL DEFAULT 0');
+    await safeAddColumn(conn, 'purchase_order_items', 'cost_per_stock_unit', 'cost_per_stock_unit DECIMAL(15,4) NOT NULL DEFAULT 0');
+    await safeAddColumn(conn, 'purchase_order_items', 'inventory_status', "inventory_status VARCHAR(20) NOT NULL DEFAULT 'PENDING'");
+    await safeAddColumn(conn, 'purchase_order_items', 'requires_actual_weight', 'requires_actual_weight TINYINT(1) NOT NULL DEFAULT 0');
+    await safeAddIndex(conn, 'purchase_order_items', 'idx_poi_spo', 'INDEX idx_poi_spo(supplier_purchase_option_id)');
+
     await safeAddColumn(conn, 'purchase_lots', 'raw_weight', 'raw_weight DECIMAL(15,3) NOT NULL DEFAULT 0 AFTER purchase_date');
     await safeAddColumn(conn, 'purchase_lots', 'bone_weight', 'bone_weight DECIMAL(15,3) NOT NULL DEFAULT 0 AFTER raw_weight');
     await safeAddColumn(conn, 'purchase_lots', 'deducted_weight', 'deducted_weight DECIMAL(15,3) NOT NULL DEFAULT 0 AFTER bone_weight');

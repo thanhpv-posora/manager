@@ -4,9 +4,9 @@ const pool = require('../config/db');
 class UnitAgent {
   async list() {
     const [rows] = await pool.query(
-      `SELECT id, code, name, is_active, sort_order, created_at, updated_at
+      `SELECT id, code, name, is_active, created_at, updated_at
        FROM units
-       ORDER BY sort_order ASC, code ASC`
+       ORDER BY code ASC`
     );
     return rows;
   }
@@ -21,8 +21,8 @@ class UnitAgent {
     if (dup.length) throw Object.assign(new Error(`Mã đơn vị "${code}" đã tồn tại`), { status: 400 });
 
     const [result] = await pool.query(
-      `INSERT INTO units(code, name, is_active, sort_order) VALUES (?, ?, 1, ?)`,
-      [code, name, Number(data.sort_order || 0)]
+      `INSERT INTO units(code, name, is_active) VALUES (?, ?, 1)`,
+      [code, name]
     );
     return { message: 'Đã tạo đơn vị', id: result.insertId };
   }
@@ -41,8 +41,8 @@ class UnitAgent {
 
     const isActive = data.is_active !== undefined ? (data.is_active ? 1 : 0) : null;
     await pool.query(
-      `UPDATE units SET code = ?, name = ?, sort_order = ?, is_active = COALESCE(?, is_active) WHERE id = ?`,
-      [code, name, Number(data.sort_order || 0), isActive, id]
+      `UPDATE units SET code = ?, name = ?, is_active = COALESCE(?, is_active) WHERE id = ?`,
+      [code, name, isActive, id]
     );
     return { message: 'Đã cập nhật đơn vị' };
   }

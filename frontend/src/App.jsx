@@ -11,6 +11,7 @@ import Products from'./pages/Products';import ProductImageImport from'./pages/Pr
 import Prices from'./pages/Prices';
 import Lots from'./pages/Lots';
 import Units from'./pages/Units';
+import SupplierPurchaseOptions from'./pages/SupplierPurchaseOptions';
 import Revenue from'./pages/Revenue';
 import Profit from'./pages/Profit';
 import Agents from'./pages/Agents';
@@ -98,6 +99,7 @@ export default function App(){
     'price-matrix':<PriceMatrix/>,
     lots:<Lots/>,
     units:<Units/>,
+    'supplier-purchase-options':<SupplierPurchaseOptions/>,
     revenue:<Revenue/>,
     profit:<Profit/>,
     agents:<Agents/>,

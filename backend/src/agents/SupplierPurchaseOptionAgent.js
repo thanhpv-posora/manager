@@ -10,10 +10,10 @@ function makeLabel(unitName, conversionQty) {
 class SupplierPurchaseOptionAgent {
   async listUnits() {
     const [rows] = await pool.query(
-      `SELECT id, code, name, sort_order
+      `SELECT id, code, name
        FROM units
        WHERE is_active = 1
-       ORDER BY sort_order ASC, code ASC`
+       ORDER BY code ASC`
     );
     return rows;
   }

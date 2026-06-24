@@ -25,6 +25,93 @@ const solarMonthYearLocal=(dateText)=>{
   return {month:d.getMonth()+1,year:d.getFullYear()};
 };
 
+function CustomerSearch({ customers, value, onSelect }) {
+  const [search, setSearch] = useState('');
+  const [open, setOpen] = useState(false);
+  const [hiIdx, setHiIdx] = useState(0);
+  const inputRef = useRef();
+
+  const filtered = useMemo(() => {
+    if (!search) return customers.slice(0, 20);
+    const q = search.toLowerCase();
+    return customers.filter(c =>
+      (c.name || '').toLowerCase().includes(q) ||
+      (c.phone || '').includes(q) ||
+      (c.customer_code || '').toLowerCase().includes(q)
+    ).slice(0, 20);
+  }, [customers, search]);
+
+  const selected = value ? customers.find(c => String(c.id) === String(value)) : null;
+
+  const pick = c => {
+    onSelect(String(c.id));
+    setSearch('');
+    setOpen(false);
+    setHiIdx(0);
+  };
+
+  const handleKey = e => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setOpen(true); setHiIdx(i => Math.min(i + 1, filtered.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setHiIdx(i => Math.max(i - 1, 0)); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (filtered[hiIdx]) pick(filtered[hiIdx]); }
+    else if (e.key === 'Escape') { setOpen(false); }
+  };
+
+  if (selected) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0' }}>
+        <b style={{ fontSize: 14 }}>{selected.name}</b>
+        {selected.phone && <span style={{ color: '#6b7280', fontSize: 13 }}>{selected.phone}</span>}
+        <span style={{ color: '#9ca3af', fontSize: 12 }}>{selected.customer_code}</span>
+        {selected.billing_calendar_type === 'LUNAR' && <span style={{ color: '#7c3aed', fontSize: 12 }}>Âm lịch</span>}
+        <button type="button" onClick={() => onSelect('')}
+          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', fontSize: 20, lineHeight: 1, marginLeft: 4 }}>×</button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <input
+        ref={inputRef}
+        className="input"
+        placeholder="Tìm khách theo tên, SĐT, mã..."
+        value={search}
+        onChange={e => { setSearch(e.target.value); setOpen(true); setHiIdx(0); }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 160)}
+        onKeyDown={handleKey}
+        autoComplete="off"
+      />
+      {open && (
+        <div style={{
+          position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 400,
+          background: '#fff', border: '1px solid #d1d5db', borderRadius: 4,
+          boxShadow: '0 4px 16px rgba(0,0,0,0.12)', maxHeight: 280, overflowY: 'auto',
+        }}>
+          {filtered.length === 0
+            ? <div style={{ padding: '8px 12px', fontSize: 13, color: '#6b7280' }}>Không tìm thấy khách hàng</div>
+            : filtered.map((c, i) => (
+              <div key={c.id}
+                onMouseDown={e => { e.preventDefault(); pick(c); }}
+                style={{
+                  padding: '8px 12px', cursor: 'pointer', fontSize: 13,
+                  background: i === hiIdx ? '#eff6ff' : '',
+                  borderBottom: '1px solid #f3f4f6',
+                }}>
+                <b>{c.name}</b>
+                {c.phone && <span style={{ color: '#6b7280', marginLeft: 6 }}>{c.phone}</span>}
+                <span style={{ color: '#9ca3af', marginLeft: 6, fontSize: 12 }}>{c.customer_code}</span>
+                {c.billing_calendar_type === 'LUNAR' && <span style={{ color: '#7c3aed', marginLeft: 6, fontSize: 11 }}>Âm lịch</span>}
+              </div>
+            ))
+          }
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function CreateOrder(){
   const toLocalIsoDate=(d=new Date())=>{
     const y=d.getFullYear();
@@ -164,7 +251,7 @@ export default function CreateOrder(){
     (async()=>{
       try{
         const [c,cat,prod]=await Promise.all([
-          api.get('/customers'),
+          api.get('/partners',{params:{role:'customer'}}),
           api.get('/products/categories'),
           api.get('/products')
         ]);
@@ -1148,10 +1235,7 @@ export default function CreateOrder(){
               {customerOpen&&(
                 <div className="pos-customer-collapse-body">
 
-              <select className="select" value={cid} onChange={e=>loadCustomerCatalog(e.target.value)}>
-                <option value="">Chọn khách</option>
-                {customers.map(c=><option key={c.id} value={c.id}>{c.name} • {String(c.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'Âm lịch':'Dương lịch'}</option>)}
-              </select>
+              <CustomerSearch customers={customers} value={cid} onSelect={id=>loadCustomerCatalog(id)}/>
 
               <p className="muted">
                 Nguồn danh mục: {source||'chưa chọn'}. Enter nhảy dòng tiếp theo. Kéo thả dòng để đổi thứ tự.

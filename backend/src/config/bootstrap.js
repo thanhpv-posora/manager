@@ -637,6 +637,7 @@ CREATE TABLE IF NOT EXISTS supplier_partner_map (
 
     await safeAddColumn(conn, 'purchase_orders', 'source', "source VARCHAR(50) NOT NULL DEFAULT 'MANUAL'");
     await safeAddColumn(conn, 'purchase_orders', 'del_flg', 'del_flg TINYINT(1) NOT NULL DEFAULT 0');
+    await safeAddColumn(conn, 'purchase_orders', 'reference_no', 'reference_no VARCHAR(100) NULL');
     await safeAddColumn(conn, 'purchase_order_items', 'received_quantity', 'received_quantity DECIMAL(15,3) NOT NULL DEFAULT 0');
 
     // S4-002B: Domain B — Inventory Purchase workflow (purchase_orders + purchase_order_items).
@@ -833,6 +834,26 @@ CREATE TABLE IF NOT EXISTS supplier_partner_map (
     // BP-001B: Partner Foundation
     // Adds partner_type to customers. Existing rows get DEFAULT 2 (Customer) automatically.
     await safeAddColumn(conn, 'customers', 'partner_type', 'partner_type INT NOT NULL DEFAULT 2');
+
+    // BP-003: Domain B — add partner_id to supplier-side tables (dual-write, keep supplier_id for FK safety)
+    await safeAddColumn(conn, 'supplier_purchase_options', 'partner_id', 'partner_id BIGINT NULL');
+    await safeAddColumn(conn, 'purchase_orders', 'partner_id', 'partner_id BIGINT NULL');
+
+    // BP-003: Backfill partner_id from supplier_partner_map (idempotent — only fills NULLs)
+    if (await hasTable(conn, 'supplier_partner_map')) {
+      await conn.query(
+        `UPDATE supplier_purchase_options spo
+         INNER JOIN supplier_partner_map m ON m.supplier_id = spo.supplier_id
+         SET spo.partner_id = m.partner_id
+         WHERE spo.partner_id IS NULL`
+      );
+      await conn.query(
+        `UPDATE purchase_orders po
+         INNER JOIN supplier_partner_map m ON m.supplier_id = po.supplier_id
+         SET po.partner_id = m.partner_id
+         WHERE po.partner_id IS NULL`
+      );
+    }
 
     // BP-001B: Supplier → Partner import (idempotent — checks supplier_partner_map before each insert)
     if (await hasTable(conn, 'supplier_partner_map')) {

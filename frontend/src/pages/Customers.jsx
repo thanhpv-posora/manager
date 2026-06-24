@@ -1,4 +1,4 @@
-import React,{useEffect,useState}from'react';
+import React,{useEffect,useState,useRef}from'react';
 import api from'../api/api';
 import SafePage from'../components/SafePage';
 import {moneyVnd}from'../utils/money';
@@ -6,7 +6,7 @@ import {showSuccess,showError,showWarning}from'../utils/toast';
 
 export default function Customers(){
   const[rows,setRows]=useState([]);
-  const[form,setForm]=useState({price_mode:'COMMON_PRICE',billing_calendar_type:'SOLAR',is_active:1});
+  const[form,setForm]=useState({price_mode:'COMMON_PRICE',billing_calendar_type:'SOLAR',is_active:1,partner_type:2});
   const[editing,setEditing]=useState(null);
   const[loading,setLoading]=useState(true);
   const[error,setError]=useState('');
@@ -15,6 +15,19 @@ export default function Customers(){
   const[deleting,setDeleting]=useState(false);
   const user=JSON.parse(localStorage.getItem('user')||'{}');
   const isCustomer=user.role==='CUSTOMER';
+
+  const fieldRefs=useRef([]);
+  const handleFormKey=(e,idx)=>{
+    const isSelect=e.target.tagName==='SELECT';
+    if(e.key==='Enter'||(!isSelect&&e.key==='ArrowDown')){
+      e.preventDefault();
+      if(idx<fieldRefs.current.length-1) fieldRefs.current[idx+1]?.focus();
+      else save();
+    } else if(!isSelect&&e.key==='ArrowUp'){
+      e.preventDefault();
+      if(idx>0) fieldRefs.current[idx-1]?.focus();
+    }
+  };
 
   const load=async()=>{
     try{
@@ -33,7 +46,7 @@ export default function Customers(){
 
   useEffect(()=>{load();loadNextCode()},[]);
 
-  const reset=()=>{setEditing(null);setForm({price_mode:'COMMON_PRICE',billing_calendar_type:'SOLAR',is_active:1});loadNextCode()};
+  const reset=()=>{setEditing(null);setForm({price_mode:'COMMON_PRICE',billing_calendar_type:'SOLAR',is_active:1,partner_type:2});loadNextCode()};
 
   const save=async()=>{
     if(!String(form.name||'').trim()){
@@ -43,7 +56,7 @@ export default function Customers(){
     try{
       if(editing) await api.put('/customers/'+editing,form);
       else await api.post('/customers',form);
-      showSuccess(editing?'Đã sửa khách hàng':'Đã tạo khách hàng');
+      showSuccess(editing?'Đã cập nhật đối tác':'Đã tạo đối tác');
       reset();
       await load();
     }catch(e){
@@ -91,27 +104,31 @@ export default function Customers(){
   return <SafePage loading={loading} error={error}>
     <div className="grid cols-2">
       <div className="card">
-        <h3>{editing?'Sửa khách hàng':(isCustomer?'Tạo khách hàng riêng của user này':'Tạo khách hàng')}</h3>
+        <h3>{editing?'Cập nhật đối tác':(isCustomer?'Thêm đối tác riêng của user này':'Thêm đối tác')}</h3>
         <p className="muted">
           {isCustomer?'Khách tạo tại đây sẽ thuộc phạm vi user đang login. User chỉ thấy khách chính và khách con do user tạo.':'Admin thấy toàn bộ khách hàng.'}
         </p>
         <div className="form-grid">
-          <input className="input" placeholder="Mã khách tự động" value={form.customer_code||''} onChange={e=>setForm({...form,customer_code:e.target.value})}/>
-          <input className="input" placeholder="Tên khách hàng *" value={form.name||''} onChange={e=>setForm({...form,name:e.target.value})}/>
-          <input className="input" placeholder="Số điện thoại" value={form.phone||''} onChange={e=>setForm({...form,phone:e.target.value})}/>
-          <input className="input" placeholder="Địa chỉ" value={form.address||''} onChange={e=>setForm({...form,address:e.target.value})}/>
-          <select className="select" value={form.price_mode||'COMMON_PRICE'} onChange={e=>setForm({...form,price_mode:e.target.value})}>
+          <input className="input" placeholder="Mã khách tự động" value={form.customer_code||''} onChange={e=>setForm({...form,customer_code:e.target.value})} ref={el=>fieldRefs.current[0]=el} onKeyDown={e=>handleFormKey(e,0)}/>
+          <input className="input" placeholder="Tên khách hàng *" value={form.name||''} onChange={e=>setForm({...form,name:e.target.value})} ref={el=>fieldRefs.current[1]=el} onKeyDown={e=>handleFormKey(e,1)}/>
+          <input className="input" placeholder="Số điện thoại" value={form.phone||''} onChange={e=>setForm({...form,phone:e.target.value})} ref={el=>fieldRefs.current[2]=el} onKeyDown={e=>handleFormKey(e,2)}/>
+          <input className="input" placeholder="Địa chỉ" value={form.address||''} onChange={e=>setForm({...form,address:e.target.value})} ref={el=>fieldRefs.current[3]=el} onKeyDown={e=>handleFormKey(e,3)}/>
+          <select className="select" value={form.price_mode||'COMMON_PRICE'} onChange={e=>setForm({...form,price_mode:e.target.value})} ref={el=>fieldRefs.current[4]=el} onKeyDown={e=>handleFormKey(e,4)}>
             <option value="CUSTOM_PRICE">Giá riêng</option>
             <option value="COMMON_PRICE">Giá chung</option>
           </select>
-          <select className="select" value={form.billing_calendar_type||'SOLAR'} onChange={e=>setForm({...form,billing_calendar_type:e.target.value})}>
+          <select className="select" value={form.billing_calendar_type||'SOLAR'} onChange={e=>setForm({...form,billing_calendar_type:e.target.value})} ref={el=>fieldRefs.current[5]=el} onKeyDown={e=>handleFormKey(e,5)}>
             <option value="SOLAR">Tính bill theo dương lịch</option>
             <option value="LUNAR">Tính bill theo âm lịch</option>
           </select>
-          <input className="input" placeholder="Ghi chú" value={form.note||''} onChange={e=>setForm({...form,note:e.target.value})}/>
+          <select className="select" value={form.partner_type||2} onChange={e=>setForm({...form,partner_type:Number(e.target.value)})} ref={el=>fieldRefs.current[6]=el} onKeyDown={e=>handleFormKey(e,6)}>
+            <option value={2}>Khách hàng</option>
+            <option value={1}>Nhà cung cấp</option>
+          </select>
+          <input className="input" placeholder="Ghi chú" value={form.note||''} onChange={e=>setForm({...form,note:e.target.value})} ref={el=>fieldRefs.current[7]=el} onKeyDown={e=>handleFormKey(e,7)}/>
         </div>
         <div className="actions" style={{marginTop:12}}>
-          <button className="btn" onClick={save}>{editing?'Lưu sửa':'Tạo khách hàng'}</button>
+          <button className="btn" onClick={save}>{editing?'Cập nhật đối tác':'Thêm đối tác'}</button>
           <button className="btn secondary" onClick={reset}>Làm mới</button>
           <button className="btn secondary" onClick={loadNextCode}>Lấy mã mới</button>
         </div>
@@ -131,12 +148,13 @@ export default function Customers(){
     </div>
 
     <div className="card">
-      <h3>Danh sách khách hàng</h3>
+      <h3>Danh sách đối tác</h3>
       <table className="table">
-        <thead><tr><th>Mã</th><th>Tên</th><th>Liên hệ</th><th>Lịch tính bill</th><th>Công nợ</th><th>Thuộc khách</th><th></th></tr></thead>
+        <thead><tr><th>Mã</th><th>Tên</th><th>Loại đối tác</th><th>Liên hệ</th><th>Lịch tính bill</th><th>Công nợ</th><th>Thuộc khách</th><th></th></tr></thead>
         <tbody>{rows.map(x=><tr key={x.id}>
           <td>{x.customer_code}</td>
           <td><b>{x.name}</b><br/><span className="muted">{x.price_mode}</span></td>
+          <td>{x.partner_type===1?'Nhà cung cấp':'Khách hàng'}</td>
           <td>{x.phone}<br/><span className="muted">{x.address}</span></td>
           <td>{x.billing_calendar_type==='LUNAR'?'Âm lịch':'Dương lịch'}</td>
           <td>{moneyVnd(x.current_debt)}</td>

@@ -20,11 +20,11 @@ function makeLabel(unitName,convQty){
 }
 
 export default function SupplierPurchaseOptions(){
-  const[suppliers,setSuppliers]=useState([]);
+  const[partners,setPartners]=useState([]);
   const[allProducts,setAllProducts]=useState([]);
   const[categories,setCategories]=useState([]);
   const[units,setUnits]=useState([]);
-  const[supplierId,setSupplierId]=useState('');
+  const[partnerId,setPartnerId]=useState('');
   const[categoryId,setCategoryId]=useState('');
   const[productId,setProductId]=useState('');
   const[options,setOptions]=useState([]);
@@ -48,12 +48,12 @@ export default function SupplierPurchaseOptions(){
 
   useEffect(()=>{
     Promise.all([
-      api.get('/suppliers'),
+      api.get('/partners',{params:{role:'supplier'}}),
       api.get('/products'),
       api.get('/products/categories'),
       api.get('/supplier-purchase-options/units')
     ]).then(([s,p,c,u])=>{
-      setSuppliers(s.data||[]);
+      setPartners(s.data||[]);
       setAllProducts(p.data||[]);
       setCategories(c.data||[]);
       setUnits(u.data||[]);
@@ -61,17 +61,17 @@ export default function SupplierPurchaseOptions(){
     .finally(()=>setLoading(false));
   },[]);
 
-  const loadOptions=useCallback(async(sid,pid)=>{
-    if(!sid||!pid){setOptions([]);return;}
+  const loadOptions=useCallback(async(pid_partner,pid_product)=>{
+    if(!pid_partner||!pid_product){setOptions([]);return;}
     setLoadingOpts(true);
     try{
-      const r=await api.get('/supplier-purchase-options',{params:{supplier_id:sid,product_id:pid}});
+      const r=await api.get('/supplier-purchase-options',{params:{partner_id:pid_partner,product_id:pid_product}});
       setOptions(r.data||[]);
     }catch(e){showError(e.response?.data?.message||e.message||'Không tải được quy cách');}
     finally{setLoadingOpts(false);}
   },[]);
 
-  useEffect(()=>{loadOptions(supplierId,productId);},[supplierId,productId,loadOptions]);
+  useEffect(()=>{loadOptions(partnerId,productId);},[partnerId,productId,loadOptions]);
 
   const filteredProducts=categoryId
     ?allProducts.filter(p=>String(p.category_id)===String(categoryId))
@@ -93,7 +93,7 @@ export default function SupplierPurchaseOptions(){
   };
 
   const save=async()=>{
-    if(!supplierId||!productId){showWarning('Chọn nhà cung cấp và sản phẩm');return;}
+    if(!partnerId||!productId){showWarning('Chọn nhà cung cấp và sản phẩm');return;}
     if(!form.unit_id){showWarning('Chọn đơn vị');return;}
     const conv=Number(form.default_conversion_qty||0);
     if(conv<=0){showWarning('Quy đổi kg phải lớn hơn 0');return;}
@@ -104,12 +104,12 @@ export default function SupplierPurchaseOptions(){
         showSuccess('Đã cập nhật quy cách');
       }else{
         await api.post('/supplier-purchase-options',{
-          supplier_id:supplierId,product_id:productId,...form,default_conversion_qty:conv
+          partner_id:partnerId,product_id:productId,...form,default_conversion_qty:conv
         });
         showSuccess('Đã thêm quy cách');
       }
       reset();
-      await loadOptions(supplierId,productId);
+      await loadOptions(partnerId,productId);
     }catch(e){
       showError(e.response?.data?.message||e.message||'Lưu thất bại');
     }finally{setSaving(false);}
@@ -124,7 +124,7 @@ export default function SupplierPurchaseOptions(){
     try{
       await api.delete('/supplier-purchase-options/'+x.id);
       showSuccess('Đã tắt quy cách');
-      await loadOptions(supplierId,productId);
+      await loadOptions(partnerId,productId);
     }catch(e){showError(e.response?.data?.message||e.message||'Thao tác thất bại');}
   };
 
@@ -135,7 +135,7 @@ export default function SupplierPurchaseOptions(){
         requires_actual_weight:x.requires_actual_weight,display_order:x.display_order,is_active:1
       });
       showSuccess('Đã bật quy cách');
-      await loadOptions(supplierId,productId);
+      await loadOptions(partnerId,productId);
     }catch(e){showError(e.response?.data?.message||e.message||'Thao tác thất bại');}
   };
 
@@ -163,7 +163,7 @@ export default function SupplierPurchaseOptions(){
   const previewLabel=selectedUnit&&Number(form.default_conversion_qty)>0
     ?makeLabel(selectedUnit.name,form.default_conversion_qty):'';
 
-  const selSupplier=suppliers.find(s=>String(s.id)===String(supplierId));
+  const selPartner=partners.find(s=>String(s.id)===String(partnerId));
   const selCategory=categories.find(c=>String(c.id)===String(categoryId));
   const selProduct=allProducts.find(p=>String(p.id)===String(productId));
 
@@ -188,19 +188,19 @@ export default function SupplierPurchaseOptions(){
 
         <div>
           <label style={LBL}>Nhà cung cấp</label>
-          <select className="select" value={supplierId} onChange={e=>{
-            setSupplierId(e.target.value);
+          <select className="select" value={partnerId} onChange={e=>{
+            setPartnerId(e.target.value);
             setCategoryId('');setProductId('');setOptions([]);reset();
           }}>
             <option value="">Chọn nhà cung cấp...</option>
-            {suppliers.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}
+            {partners.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}
           </select>
         </div>
 
         <div>
           <label style={LBL}>Nhóm hàng</label>
           <select className="select" value={categoryId}
-            disabled={!supplierId}
+            disabled={!partnerId}
             onChange={e=>{
               setCategoryId(e.target.value);
               setProductId('');setOptions([]);reset();
@@ -224,30 +224,30 @@ export default function SupplierPurchaseOptions(){
     </div>
 
     {/* ── Empty states ── */}
-    {!supplierId&&(
+    {!partnerId&&(
       <div className="card" style={{textAlign:'center',padding:'28px 24px'}}>
         <p className="muted">Vui lòng chọn nhà cung cấp.</p>
       </div>
     )}
-    {supplierId&&!categoryId&&(
+    {partnerId&&!categoryId&&(
       <div className="card" style={{textAlign:'center',padding:'28px 24px'}}>
         <p className="muted">Vui lòng chọn nhóm hàng.</p>
       </div>
     )}
-    {supplierId&&categoryId&&!productId&&(
+    {partnerId&&categoryId&&!productId&&(
       <div className="card" style={{textAlign:'center',padding:'28px 24px'}}>
         <p className="muted">Vui lòng chọn sản phẩm.</p>
       </div>
     )}
 
     {/* ── Form ── */}
-    {supplierId&&categoryId&&productId&&<>
+    {partnerId&&categoryId&&productId&&<>
       <div className="card">
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:10}}>
           <h3 style={{margin:0}}>{editing?'Sửa quy cách':'Thêm quy cách mới'}</h3>
-          {selSupplier&&selProduct&&(
+          {selPartner&&selProduct&&(
             <span className="muted" style={{fontSize:12}}>
-              {selSupplier.name} › {selCategory?.name} › <b>{selProduct.name}</b>
+              {selPartner.name} › {selCategory?.name} › <b>{selProduct.name}</b>
             </span>
           )}
         </div>

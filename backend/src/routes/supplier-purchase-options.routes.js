@@ -8,9 +8,10 @@ router.get('/units', auth(['ADMIN', 'STAFF']), async (req, res, next) => {
 });
 router.get('/', auth(['ADMIN', 'STAFF']), async (req, res, next) => {
   try {
-    const { supplier_id, product_id } = req.query;
-    if (!supplier_id || !product_id) return res.status(400).json({ message: 'Thiếu supplier_id hoặc product_id' });
-    res.json(await SupplierPurchaseOptionAgent.listBySupplierProduct(supplier_id, product_id));
+    const { partner_id, supplier_id, product_id } = req.query;
+    if ((!partner_id && !supplier_id) || !product_id)
+      return res.status(400).json({ message: 'Thiếu partner_id (hoặc supplier_id) và product_id' });
+    res.json(await SupplierPurchaseOptionAgent.listBySupplierProduct(partner_id, supplier_id, product_id));
   } catch (e) { next(e); }
 });
 router.post('/', auth(['ADMIN', 'STAFF']), async (req, res, next) => {

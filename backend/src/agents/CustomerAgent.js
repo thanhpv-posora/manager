@@ -61,12 +61,13 @@ class CustomerAgent{
     const code=data.customer_code||await nextCustomerCode();
     const parentCustomerId=(user&&user.role==='CUSTOMER')?user.customer_id:(data.parent_customer_id||null);
 
+    const partner_type = Number(data.partner_type) === 1 ? 1 : 2;
     await pool.query(
-      `INSERT INTO customers(customer_code,name,phone,address,price_mode,billing_calendar_type,note,is_active,del_flg,parent_customer_id)
-       VALUES(?,?,?,?,?,?,?,1,0,?)`,
-      [code,name,data.phone||'',data.address||'',normalizePriceMode(data.price_mode),normalizeBillingCalendarType(data.billing_calendar_type),data.note||'',parentCustomerId]
+      `INSERT INTO customers(customer_code,name,phone,address,price_mode,billing_calendar_type,note,is_active,del_flg,parent_customer_id,partner_type)
+       VALUES(?,?,?,?,?,?,?,1,0,?,?)`,
+      [code,name,data.phone||'',data.address||'',normalizePriceMode(data.price_mode),normalizeBillingCalendarType(data.billing_calendar_type),data.note||'',parentCustomerId,partner_type]
     );
-    return {message:'Đã tạo khách hàng',customer_code:code};
+    return {message:'Đã tạo đối tác',customer_code:code};
   }
 
   async update(id,data,user){
@@ -75,11 +76,12 @@ class CustomerAgent{
 
     await assertCustomerScope(user,id);
 
+    const partner_type = Number(data.partner_type) === 1 ? 1 : 2;
     await pool.query(
-      `UPDATE customers SET name=?,phone=?,address=?,price_mode=?,billing_calendar_type=?,note=?,is_active=? WHERE id=? AND del_flg=0`,
-      [name,data.phone||'',data.address||'',normalizePriceMode(data.price_mode),normalizeBillingCalendarType(data.billing_calendar_type),data.note||'',data.is_active?1:0,id]
+      `UPDATE customers SET name=?,phone=?,address=?,price_mode=?,billing_calendar_type=?,note=?,is_active=?,partner_type=? WHERE id=? AND del_flg=0`,
+      [name,data.phone||'',data.address||'',normalizePriceMode(data.price_mode),normalizeBillingCalendarType(data.billing_calendar_type),data.note||'',data.is_active?1:0,partner_type,id]
     );
-    return {message:'Đã cập nhật khách hàng'};
+    return {message:'Đã cập nhật đối tác'};
   }
 
   async remove(id,reason,user){

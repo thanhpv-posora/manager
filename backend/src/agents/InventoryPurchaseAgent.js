@@ -1,29 +1,275 @@
+'use strict';
 const pool = require('../config/db');
+const { nextCode } = require('../utils/code');
 
 class InventoryPurchaseAgent {
   constructor() {
-    this.version = '1.0.0';
-    this.responsibility = 'Inventory purchase order management — create, list, get, update status';
+    this.version = '1.2.0';
+    this.responsibility = 'Inventory purchase order CRUD — Domain B (purchase_orders + purchase_order_items), partner_id primary (BP-003)';
   }
 
   async list(query) {
-    // TODO: implement list with filters (supplier_id, status, date range, pagination)
-    return { items: [], total: 0 };
+    const { partner_id, supplier_id, status, date_from, date_to, page = 1, limit = 50 } = query;
+    const where = ['po.del_flg = 0'];
+    const params = [];
+    if (partner_id)       { where.push('po.partner_id = ?');   params.push(partner_id); }
+    else if (supplier_id) { where.push('po.supplier_id = ?');  params.push(supplier_id); }
+    if (status)    { where.push('po.status = ?');      params.push(status); }
+    if (date_from) { where.push('po.order_date >= ?'); params.push(date_from); }
+    if (date_to)   { where.push('po.order_date <= ?'); params.push(date_to); }
+    const wSql = where.join(' AND ');
+    const off = (Math.max(1, Number(page)) - 1) * Number(limit);
+    const [[{ total }]] = await pool.query(
+      `SELECT COUNT(*) total FROM purchase_orders po WHERE ${wSql}`, params
+    );
+    const [rows] = await pool.query(
+      `SELECT po.id, po.order_code, po.partner_id, po.supplier_id,
+              COALESCE(p.name, s.name) supplier_name,
+              po.order_date purchase_date, po.status, po.total_amount,
+              po.note, po.reference_no, po.created_at,
+              (SELECT COUNT(*) FROM purchase_order_items WHERE purchase_order_id = po.id) item_count
+       FROM purchase_orders po
+       LEFT JOIN customers p ON p.id = po.partner_id
+       LEFT JOIN suppliers s ON s.id = po.supplier_id
+       WHERE ${wSql}
+       ORDER BY po.id DESC LIMIT ? OFFSET ?`,
+      [...params, Number(limit), off]
+    );
+    return { items: rows, total: Number(total), page: Number(page), limit: Number(limit) };
   }
 
   async get(id) {
-    // TODO: implement get by id with line items
-    return null;
+    const [[order]] = await pool.query(
+      `SELECT po.id, po.order_code, po.partner_id, po.supplier_id,
+              COALESCE(p.name, s.name) supplier_name,
+              po.order_date purchase_date, po.status, po.total_amount,
+              po.note, po.reference_no, po.created_by, po.created_at, po.updated_at
+       FROM purchase_orders po
+       LEFT JOIN customers p ON p.id = po.partner_id
+       LEFT JOIN suppliers s ON s.id = po.supplier_id
+       WHERE po.id = ? AND po.del_flg = 0`,
+      [id]
+    );
+    if (!order) return null;
+    const [items] = await pool.query(
+      `SELECT poi.id, poi.product_id, poi.product_name, poi.unit,
+              poi.quantity, poi.purchase_price, poi.total_price,
+              poi.supplier_purchase_option_id,
+              poi.expected_conversion_qty, poi.requires_actual_weight,
+              poi.expected_stock_qty, poi.inventory_status, poi.note
+       FROM purchase_order_items poi
+       WHERE poi.purchase_order_id = ?
+       ORDER BY poi.id ASC`,
+      [id]
+    );
+    return { ...order, items };
   }
 
   async create(body, userId) {
-    // TODO: implement create purchase order + items, generate order_code
-    return { id: null };
+    const { partner_id, supplier_id, purchase_date, note, reference_no } = body;
+    if (!partner_id && !supplier_id)
+      throw Object.assign(new Error('Thiếu nhà cung cấp'), { status: 400 });
+    if (!purchase_date)
+      throw Object.assign(new Error('Thiếu ngày nhập'), { status: 400 });
+
+    const { resolvedPartnerId, resolvedSupplierId } = await this._resolvePartner(partner_id, supplier_id);
+
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const code = await nextCode(conn, 'purchase_orders', 'order_code', 'PO');
+      const [r] = await conn.query(
+        `INSERT INTO purchase_orders
+           (order_code, supplier_id, partner_id, order_date, status, total_amount, note, reference_no, created_by)
+         VALUES (?, ?, ?, ?, 'DRAFT', 0, ?, ?, ?)`,
+        [code, resolvedSupplierId, resolvedPartnerId, purchase_date, note || null, reference_no || null, userId || null]
+      );
+      await conn.commit();
+      return { id: r.insertId, order_code: code };
+    } catch (e) { await conn.rollback(); throw e; } finally { conn.release(); }
+  }
+
+  async update(id, body, userId) {
+    await this._requireDraft(id);
+    const { partner_id, supplier_id, purchase_date, note, reference_no } = body;
+    if (!partner_id && !supplier_id)
+      throw Object.assign(new Error('Thiếu nhà cung cấp'), { status: 400 });
+    if (!purchase_date)
+      throw Object.assign(new Error('Thiếu ngày nhập'), { status: 400 });
+
+    const { resolvedPartnerId, resolvedSupplierId } = await this._resolvePartner(partner_id, supplier_id);
+
+    await pool.query(
+      `UPDATE purchase_orders
+       SET supplier_id=?, partner_id=?, order_date=?, note=?, reference_no=?
+       WHERE id=?`,
+      [resolvedSupplierId, resolvedPartnerId, purchase_date, note || null, reference_no || null, id]
+    );
+    return { message: 'Đã cập nhật phiếu nhập' };
+  }
+
+  async addItem(orderId, body, userId) {
+    await this._requireDraft(orderId);
+    const snap = await this._buildItemSnapshot(body);
+    const { note } = body;
+    const [r] = await pool.query(
+      `INSERT INTO purchase_order_items
+         (purchase_order_id, product_id, product_name, unit, quantity, purchase_price, total_price,
+          supplier_purchase_option_id, expected_conversion_qty, requires_actual_weight,
+          inventory_status, note)
+       VALUES (?,?,?,?,?,?,?,?,?,?,'PENDING',?)`,
+      [orderId, snap.product_id, snap.product_name, snap.unit, snap.qty, snap.price,
+       snap.total_price, snap.spo_id, snap.expected_conversion_qty,
+       snap.requires_actual_weight, note || null]
+    );
+    await this._recalcTotal(orderId);
+    return { id: r.insertId, message: 'Đã thêm dòng hàng' };
+  }
+
+  async updateItem(orderId, itemId, body, userId) {
+    await this._requireDraft(orderId);
+    const [[ex]] = await pool.query(
+      `SELECT id FROM purchase_order_items WHERE id=? AND purchase_order_id=?`, [itemId, orderId]
+    );
+    if (!ex) throw Object.assign(new Error('Không tìm thấy dòng hàng'), { status: 404 });
+    const snap = await this._buildItemSnapshot(body);
+    const { note } = body;
+    await pool.query(
+      `UPDATE purchase_order_items
+       SET product_id=?, product_name=?, unit=?, quantity=?, purchase_price=?, total_price=?,
+           supplier_purchase_option_id=?, expected_conversion_qty=?, requires_actual_weight=?,
+           inventory_status='PENDING', note=?
+       WHERE id=?`,
+      [snap.product_id, snap.product_name, snap.unit, snap.qty, snap.price, snap.total_price,
+       snap.spo_id, snap.expected_conversion_qty, snap.requires_actual_weight, note || null, itemId]
+    );
+    await this._recalcTotal(orderId);
+    return { message: 'Đã cập nhật dòng hàng' };
+  }
+
+  async deleteItem(orderId, itemId, userId) {
+    await this._requireDraft(orderId);
+    const [[ex]] = await pool.query(
+      `SELECT id FROM purchase_order_items WHERE id=? AND purchase_order_id=?`, [itemId, orderId]
+    );
+    if (!ex) throw Object.assign(new Error('Không tìm thấy dòng hàng'), { status: 404 });
+    await pool.query(`DELETE FROM purchase_order_items WHERE id=?`, [itemId]);
+    await this._recalcTotal(orderId);
+    return { message: 'Đã xóa dòng hàng' };
   }
 
   async updateStatus(id, status, userId) {
-    // TODO: implement status transition (DRAFT → CONFIRMED → RECEIVED → CANCELLED)
-    return { ok: true };
+    if (!['CONFIRMED', 'CANCELLED'].includes(status))
+      throw Object.assign(new Error('Trạng thái không hợp lệ. Chỉ CONFIRMED hoặc CANCELLED'), { status: 400 });
+    await this._requireDraft(id);
+    if (status === 'CONFIRMED') {
+      const [[{ cnt }]] = await pool.query(
+        `SELECT COUNT(*) cnt FROM purchase_order_items WHERE purchase_order_id=?`, [id]
+      );
+      if (!Number(cnt))
+        throw Object.assign(new Error('Phiếu chưa có dòng hàng, không thể xác nhận'), { status: 400 });
+    }
+    await pool.query(`UPDATE purchase_orders SET status=? WHERE id=?`, [status, id]);
+    return { message: status === 'CONFIRMED' ? 'Đã xác nhận phiếu nhập' : 'Đã hủy phiếu nhập' };
+  }
+
+  // ── Private ──────────────────────────────────────────────────────────────
+
+  async _resolvePartner(partnerId, supplierId) {
+    let resolvedPartnerId  = partnerId  ? Number(partnerId)  : null;
+    let resolvedSupplierId = supplierId ? Number(supplierId) : null;
+
+    if (resolvedPartnerId) {
+      const [[partner]] = await pool.query(
+        `SELECT id FROM customers WHERE id = ? AND (partner_type & 1) = 1 AND del_flg = 0`,
+        [resolvedPartnerId]
+      );
+      if (!partner)
+        throw Object.assign(new Error('Không tìm thấy nhà cung cấp (partner)'), { status: 404 });
+      if (!resolvedSupplierId) {
+        const [[map]] = await pool.query(
+          `SELECT supplier_id FROM supplier_partner_map WHERE partner_id = ?`, [resolvedPartnerId]
+        );
+        if (map) resolvedSupplierId = map.supplier_id;
+      }
+    }
+
+    if (resolvedSupplierId && !resolvedPartnerId) {
+      const [[sup]] = await pool.query(
+        `SELECT id FROM suppliers WHERE id = ? AND del_flg = 0`, [resolvedSupplierId]
+      );
+      if (!sup)
+        throw Object.assign(new Error('Không tìm thấy nhà cung cấp'), { status: 404 });
+      const [[map]] = await pool.query(
+        `SELECT partner_id FROM supplier_partner_map WHERE supplier_id = ?`, [resolvedSupplierId]
+      );
+      if (map) resolvedPartnerId = map.partner_id;
+    }
+
+    if (!resolvedSupplierId)
+      throw Object.assign(
+        new Error('Nhà cung cấp chưa có mapping trong hệ thống. Liên hệ admin.'), { status: 400 }
+      );
+
+    return { resolvedPartnerId, resolvedSupplierId };
+  }
+
+  async _requireDraft(id) {
+    const [[row]] = await pool.query(
+      `SELECT id, status FROM purchase_orders WHERE id=? AND del_flg=0`, [id]
+    );
+    if (!row) throw Object.assign(new Error('Không tìm thấy phiếu nhập'), { status: 404 });
+    if (row.status !== 'DRAFT')
+      throw Object.assign(new Error('Chỉ có thể chỉnh sửa phiếu nhập ở trạng thái DRAFT'), { status: 400 });
+    return row;
+  }
+
+  async _recalcTotal(orderId) {
+    await pool.query(
+      `UPDATE purchase_orders SET total_amount=(
+         SELECT COALESCE(SUM(total_price),0) FROM purchase_order_items WHERE purchase_order_id=?
+       ) WHERE id=?`,
+      [orderId, orderId]
+    );
+  }
+
+  async _buildItemSnapshot(body) {
+    const { product_id, supplier_purchase_option_id, quantity, purchase_price } = body;
+    if (!product_id) throw Object.assign(new Error('Thiếu sản phẩm'), { status: 400 });
+    const qty   = Number(quantity);
+    const price = Number(purchase_price);
+    if (!(qty > 0))               throw Object.assign(new Error('Số lượng phải lớn hơn 0'),  { status: 400 });
+    if (isNaN(price) || price < 0) throw Object.assign(new Error('Giá nhập không hợp lệ'), { status: 400 });
+
+    const [[prod]] = await pool.query(
+      `SELECT id, name, inventory_mode FROM products WHERE id=? AND del_flg=0`, [product_id]
+    );
+    if (!prod) throw Object.assign(new Error('Không tìm thấy sản phẩm'), { status: 404 });
+    if (prod.inventory_mode !== 'TRACK_STOCK')
+      throw Object.assign(new Error('Sản phẩm không có kiểm tồn kho (TRACK_STOCK)'), { status: 400 });
+
+    let unit = 'kg', expected_conversion_qty = 1, requires_actual_weight = 0;
+    const spo_id = supplier_purchase_option_id || null;
+
+    if (spo_id) {
+      const [[opt]] = await pool.query(
+        `SELECT spo.default_conversion_qty, spo.requires_actual_weight, u.code unit_code
+         FROM supplier_purchase_options spo
+         JOIN units u ON u.id = spo.unit_id
+         WHERE spo.id=? AND spo.is_active=1`,
+        [spo_id]
+      );
+      if (!opt) throw Object.assign(new Error('Quy cách nhập không tồn tại hoặc đã bị tắt'), { status: 404 });
+      unit                    = opt.unit_code;
+      expected_conversion_qty = Number(opt.default_conversion_qty);
+      requires_actual_weight  = opt.requires_actual_weight;
+    }
+
+    return {
+      product_id, product_name: prod.name, unit, qty, price,
+      total_price: qty * price, spo_id,
+      expected_conversion_qty, requires_actual_weight,
+    };
   }
 }
 

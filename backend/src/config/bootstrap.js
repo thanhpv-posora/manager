@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS customers (
   name VARCHAR(255) NOT NULL,
   phone VARCHAR(50),
   address TEXT,
+  billing_calendar_type VARCHAR(10) NOT NULL DEFAULT 'SOLAR',
   price_mode ENUM('COMMON_PRICE','PRIVATE_PRICE') NOT NULL DEFAULT 'COMMON_PRICE',
   debt_limit DECIMAL(15,2) NOT NULL DEFAULT 0,
   payment_term_days INT NOT NULL DEFAULT 0,
@@ -700,7 +701,10 @@ CREATE TABLE IF NOT EXISTS supplier_partner_map (
       await safeAddColumn(conn, 'sponsor_ad_campaigns', 'is_public', 'is_public TINYINT(1) NOT NULL DEFAULT 0');
     }
 
-    if (await hasTable(conn, 'customers')) await safeAddColumn(conn, 'customers', 'parent_customer_id', 'parent_customer_id BIGINT NULL');
+    if (await hasTable(conn, 'customers')) {
+      await safeAddColumn(conn, 'customers', 'billing_calendar_type', "billing_calendar_type VARCHAR(10) NOT NULL DEFAULT 'SOLAR'");
+      await safeAddColumn(conn, 'customers', 'parent_customer_id', 'parent_customer_id BIGINT NULL');
+    }
     if (await hasTable(conn, 'debt_installment_plans')) await safeAddColumn(conn, 'debt_installment_plans', 'target_debt_amount', 'target_debt_amount DECIMAL(15,2) NOT NULL DEFAULT 0');
 
     if (await hasTable(conn, 'debt_monthly_installments')) {
@@ -764,6 +768,25 @@ CREATE TABLE IF NOT EXISTS supplier_partner_map (
         AND inventory_mode='STOCK'`);
 
     /* V681 beef carcass safety */
+
+    // BP-006B: map beef bulk product names to standard price-resolver codes.
+    // Uniqueness guard: skips any mapping where the target code already exists.
+    // Never creates products; never changes IDs; only renames product_code.
+    for (const { name, code } of [
+      { name: 'Xô đực',  code: 'BEEF_BULK_MALE'   },
+      { name: 'Xô cái',  code: 'BEEF_BULK_FEMALE'  },
+      { name: 'Vụn xô',  code: 'BEEF_FRAGMENT'     }
+    ]) {
+      const [taken] = await conn.query(
+        `SELECT id FROM products WHERE product_code = ? LIMIT 1`, [code]
+      );
+      if (taken.length) continue; // already migrated or code taken by another product
+      await conn.query(
+        `UPDATE products SET product_code = ?
+         WHERE name = ? AND is_active = 1 AND del_flg = 0 AND unit = 'kg'`,
+        [code, name]
+      );
+    }
 
     const [customerCount] = await conn.query(`SELECT COUNT(*) cnt FROM customers`);
     if (Number(customerCount[0].cnt) === 0) {

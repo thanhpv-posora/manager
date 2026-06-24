@@ -2,7 +2,8 @@ const pool = require('../config/db');
 const { nextCode } = require('../utils/code');
 const PrintService = require('../services/PrintService');
 const SoftDeleteAgent = require('./SoftDeleteAgent');
-const { resolveBillSolarDate }=require('../utils/lunarDate');
+const { resolveBillSolarDate, solarToLunar }=require('../utils/lunarDate');
+const PriceBookService=require('../services/PriceBookService');
 
 function safeCalcExpression(expr) {
   const s = String(expr ?? '').trim();
@@ -270,6 +271,51 @@ class SupplierAgent {
       await conn.commit();
       return {message:'Đã cập nhật lô nhập',lot_code:existing[0].lot_code,total_weight:c.totalWeight,total_cost:c.totalCost};
     }catch(e){await conn.rollback();throw e;}finally{conn.release();}
+  }
+
+  async resolveSupplierBeefPrices(supplierId, purchaseDate) {
+    const pDate=String(purchaseDate||new Date().toISOString().slice(0,10)).slice(0,10);
+    const [suppRows]=await pool.query(
+      `SELECT male_price,female_price,fragment_price,billing_calendar_type FROM suppliers WHERE id=? AND del_flg=0 LIMIT 1`,
+      [supplierId]
+    );
+    if(!suppRows.length) throw Object.assign(new Error('Không tìm thấy nhà cung cấp'),{status:404});
+    const supp=suppRows[0];
+    const [mapRows]=await pool.query(
+      `SELECT m.partner_id,c.billing_calendar_type FROM supplier_partner_map m
+       JOIN customers c ON c.id=m.partner_id AND c.del_flg=0
+       WHERE m.supplier_id=? LIMIT 1`,
+      [supplierId]
+    );
+    const calType=normalizeCalendarType(mapRows.length?mapRows[0].billing_calendar_type:supp.billing_calendar_type);
+    const fallback={male_price:n(supp.male_price),female_price:n(supp.female_price),fragment_price:n(supp.fragment_price),source:'SUPPLIER_FALLBACK',calendar_type:calType};
+    if(!mapRows.length) return fallback;
+    const partnerId=mapRows[0].partner_id;
+    const [products]=await pool.query(
+      `SELECT id,product_code FROM products WHERE product_code IN ('BEEF_BULK_MALE','BEEF_BULK_FEMALE','BEEF_FRAGMENT') AND del_flg=0`
+    );
+    if(!products.length) return {...fallback,partner_id:partnerId};
+    const pm={};
+    for(const p of products) pm[p.product_code]=p.id;
+    let lunarDateText='';
+    if(calType==='LUNAR'){
+      const l=solarToLunar(pDate);
+      if(l) lunarDateText=`${String(l.day).padStart(2,'0')}/${String(l.month).padStart(2,'0')}/${l.year}`;
+    }
+    const resolve=async code=>{
+      const pid=pm[code];
+      if(!pid) return null;
+      return PriceBookService.getEffectivePrice(partnerId,pid,pDate,pool,calType,lunarDateText);
+    };
+    const [mr,fr,xr]=await Promise.all([resolve('BEEF_BULK_MALE'),resolve('BEEF_BULK_FEMALE'),resolve('BEEF_FRAGMENT')]);
+    const hasPartner=[mr,fr,xr].some(r=>r&&(r.price_type==='PRICE_BOOK'||r.price_type==='PRIVATE_PRICE'));
+    if(!hasPartner) return {...fallback,calendar_type:calType,partner_id:partnerId};
+    return {
+      male_price:(mr&&mr.price_type!=='COMMON_PRICE')?Number(mr.sale_price||0):n(supp.male_price),
+      female_price:(fr&&fr.price_type!=='COMMON_PRICE')?Number(fr.sale_price||0):n(supp.female_price),
+      fragment_price:(xr&&xr.price_type!=='COMMON_PRICE')?Number(xr.sale_price||0):n(supp.fragment_price),
+      source:'PARTNER_PRICE',calendar_type:calType,partner_id:partnerId
+    };
   }
 
   async updateLotStatus(id, targetStatus, user) {

@@ -4,6 +4,7 @@ const SupplierAgent=require('../agents/SupplierAgent');
 const router=express.Router();
 router.get('/', auth(['ADMIN','STAFF']), async (req,res,next)=>{try{res.json(await SupplierAgent.suppliers())}catch(e){next(e)}});
 router.post('/', auth(['ADMIN','STAFF']), async (req,res,next)=>{try{res.json(await SupplierAgent.addSupplier(req.body))}catch(e){next(e)}});
+router.get('/:id/beef-prices', auth(['ADMIN','STAFF']), async (req,res,next)=>{try{const d=req.query.purchase_date||new Date().toISOString().slice(0,10);res.json(await SupplierAgent.resolveSupplierBeefPrices(req.params.id,d))}catch(e){next(e)}});
 router.put('/:id', auth(['ADMIN','STAFF']), async (req,res,next)=>{try{res.json(await SupplierAgent.updateSupplier(req.params.id,req.body))}catch(e){next(e)}});
 router.delete('/:id', auth(['ADMIN','STAFF']), async (req,res,next)=>{try{res.json(await SupplierAgent.removeSupplier(req.params.id,req.body.reason,req.user.id))}catch(e){next(e)}});
 module.exports=router;

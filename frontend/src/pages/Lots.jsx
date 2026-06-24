@@ -49,13 +49,14 @@ export default function Lots(){
   const[reportTab,setReportTab]=useState('DETAIL');
   const[reportFilter,setReportFilter]=useState({from:'',to:'',supplier_id:''});
   const[editingLotId,setEditingLotId]=useState(null);
+  const[priceSource,setPriceSource]=useState(null);
 
   const setField=(k,v)=>setF(prev=>({...prev,[k]:v}));
   const selectedSupplier=s.find(x=>String(x.id)===String(f.supplier_id||''));
   const selectedSupplierCalendar=String(selectedSupplier?.billing_calendar_type||f.calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
   const selectedSupplierCalendarLabel=selectedSupplierCalendar==='LUNAR'?'Âm lịch':'Dương lịch';
 
-  const applySupplierCalendarToLot=(supplierId,purchaseDate=f.purchase_date)=>{
+  const applySupplierCalendarToLot=async(supplierId,purchaseDate=f.purchase_date)=>{
     const sp=s.find(x=>String(x.id)===String(supplierId||''));
     const type=String(sp?.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
     setF(prev=>({
@@ -68,6 +69,19 @@ export default function Lots(){
       female_price:n(sp?.female_price)||prev.female_price||prev.purchase_price||195000,
       fragment_price:n(sp?.fragment_price)||prev.fragment_price||100000
     }));
+    setPriceSource(null);
+    if(!supplierId) return;
+    try{
+      const res=await api.get(`/suppliers/${supplierId}/beef-prices`,{params:{purchase_date:purchaseDate||today}});
+      const d=res.data;
+      setF(prev=>({
+        ...prev,
+        male_price:d.male_price||prev.male_price,
+        female_price:d.female_price||prev.female_price,
+        fragment_price:d.fragment_price||prev.fragment_price
+      }));
+      setPriceSource(d.source||null);
+    }catch{/* silently keep fallback prices */}
   };
 
   const changePurchaseDate=(v)=>{
@@ -550,6 +564,7 @@ export default function Lots(){
           <label><span className="muted">Giá bò xô đực / kg</span><MoneyInput placeholder="208,000" value={f.male_price??''} onChange={v=>setField('male_price',v)}/></label>
           <label><span className="muted">Giá bò xô cái / kg</span><MoneyInput placeholder="195,000" value={f.female_price??''} onChange={v=>setField('female_price',v)}/></label>
           <label><span className="muted">Giá thịt vụn / kg</span><MoneyInput placeholder="100,000" value={f.fragment_price??''} onChange={v=>setField('fragment_price',v)}/></label>
+          {priceSource&&<div className="muted" style={{fontSize:12,gridColumn:'1/-1',marginTop:-4}}>{priceSource==='PARTNER_PRICE'?'✓ Giá lấy từ bảng giá riêng của đối tác':'Giá lấy từ thông tin NCC cũ'}</div>}
           <label><span className="muted">Thịt vụn kg</span><input ref={setNavRef(5)} onKeyDown={e=>onLotNavKey(e,5)} className="input" placeholder="0 hoặc 2 + 1" value={f.fragment_weight??''} onChange={e=>setField('fragment_weight',e.target.value)}/><small className="muted">Tính tiền riêng, không trừ khỏi kg bò xô.</small></label>
         </div>
 

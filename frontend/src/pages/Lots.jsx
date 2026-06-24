@@ -3,6 +3,7 @@ import api from'../api/api';
 import SafePage from'../components/SafePage';
 import MoneyInput from'../components/MoneyInput';
 import {calcExpression} from'../utils/expr';
+import {showSuccess,showError} from'../utils/toast';
 import {formatLunarDate,parseLunarText,lunarToSolarDate} from'../utils/lunarDate';
 
 const money=n=>Number(n||0).toLocaleString('en-US')+'đ';
@@ -414,9 +415,14 @@ export default function Lots(){
   const print=id=>window.open((import.meta.env.VITE_API_URL||(typeof window !== 'undefined' ? `${window.location.origin}/api` : '/api'))+'/lots/public/'+id+'/print','_blank');
   const payLot=async()=>{
     if(!pay.lot_id||!pay.amount)return alert('Chọn lô và nhập số tiền');
-    await api.post('/lots/'+pay.lot_id+'/payments',pay);
-    setPay({...pay,amount:''});
-    load();
+    try{
+      await api.post('/lots/'+pay.lot_id+'/payments',pay);
+      setPay({...pay,amount:''});
+      load();
+      showSuccess('Đã lưu thanh toán NCC');
+    }catch(e){
+      showError(e.response?.data?.message||'Không thể lưu thanh toán. Vui lòng thử lại.');
+    }
   };
   const fillFull=()=>{const lot=rows.find(r=>String(r.id)===String(pay.lot_id));if(lot)setPay({...pay,type:'PAYMENT',amount:lot.remaining_amount})};
   const closeLot=async(id,lot_code)=>{
@@ -704,7 +710,7 @@ export default function Lots(){
         </div>
 
         <h3>Danh sách phiếu nhập / Thanh toán NCC</h3>
-        <table className="table"><thead><tr><th>Lô</th><th>Kg</th><th>Thành tiền</th><th>Còn trả</th><th></th></tr></thead><tbody>{reportRows.length===0?<tr><td colSpan="5" className="muted" style={{textAlign:'center'}}>Không có dữ liệu trong khoảng ngày đã chọn.</td></tr>:reportRows.map(r=><tr key={r.id}><td>{r.lot_code}<br/>{r.lot_name}<br/><span className="muted">{r.supplier_name}</span></td><td>{r.total_weight}kg<br/><span className="muted">{animal(r.total_animals)} con, cái {animal(r.female_animals)}</span><br/><span className="muted">Vụn {Number(r.fragment_weight||0).toFixed(3)}kg × {money(r.fragment_price||0)}</span></td><td>{money(r.total_cost)}</td><td><b>{money(r.remaining_amount)}</b></td><td><button className="btn secondary" onClick={()=>print(r.id)}>In phiếu nhập</button><button className="btn secondary" style={{marginLeft:4}} disabled={r.status!=='OPEN'} title={r.status!=='OPEN'?'Phiếu đã chốt hoặc đã hủy.':undefined} onClick={()=>loadLotIntoForm(r)}>Sửa</button>{r.status==='OPEN'&&<button className="btn secondary" style={{marginLeft:4}} onClick={()=>closeLot(r.id,r.lot_code)}>Chốt</button>}</td></tr>)}</tbody></table>
+        <table className="table"><thead><tr><th>NCC</th><th>Kg</th><th>Thành tiền</th><th>Còn trả</th><th></th></tr></thead><tbody>{reportRows.length===0?<tr><td colSpan="5" className="muted" style={{textAlign:'center'}}>Không có dữ liệu trong khoảng ngày đã chọn.</td></tr>:reportRows.map(r=><tr key={r.id}><td>{r.supplier_name}</td><td>{r.total_weight}kg</td><td>{money(r.total_cost)}</td><td><b>{money(r.remaining_amount)}</b></td><td><button className="btn secondary" onClick={()=>print(r.id)}>In</button><button className="btn secondary" style={{marginLeft:4}} disabled={r.status!=='OPEN'} title={r.status!=='OPEN'?'Phiếu đã chốt hoặc đã hủy.':undefined} onClick={()=>loadLotIntoForm(r)}>Sửa</button>{r.status==='OPEN'&&<button className="btn secondary" style={{marginLeft:4}} onClick={()=>closeLot(r.id,r.lot_code)}>Chốt</button>}</td></tr>)}</tbody></table>
         <h3>Ứng / trả tiền nhà cung cấp</h3>
         <div className="form-grid">
           <select className="select" value={pay.lot_id||''} onChange={e=>setPay({...pay,lot_id:e.target.value})}><option value="">Chọn lô</option>{rows.map(r=><option key={r.id} value={r.id}>{r.lot_code} - còn {money(r.remaining_amount)}</option>)}</select>

@@ -604,6 +604,17 @@ CREATE TABLE IF NOT EXISTS purchase_lot_items (
   FOREIGN KEY (product_id)                  REFERENCES products(id),
   FOREIGN KEY (supplier_purchase_option_id) REFERENCES supplier_purchase_options(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS supplier_partner_map (
+  id          BIGINT   AUTO_INCREMENT PRIMARY KEY,
+  supplier_id BIGINT   NOT NULL,
+  partner_id  BIGINT   NOT NULL,
+  created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_spm_supplier (supplier_id),
+  INDEX      idx_spm_partner (partner_id),
+  FOREIGN KEY (supplier_id) REFERENCES suppliers(id),
+  FOREIGN KEY (partner_id)  REFERENCES customers(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
 
     for (const table of ['customers','products','product_categories','suppliers','purchase_lots','orders']) {
@@ -817,6 +828,61 @@ CREATE TABLE IF NOT EXISTS purchase_lot_items (
       await safeAddColumn(conn, 'debt_installment_payments', 'payment_id', 'payment_id BIGINT NULL');
       await safeAddColumn(conn, 'debt_installment_payments', 'cash_amount', 'cash_amount DECIMAL(15,2) NOT NULL DEFAULT 0');
       await safeAddColumn(conn, 'debt_installment_payments', 'bank_amount', 'bank_amount DECIMAL(15,2) NOT NULL DEFAULT 0');
+    }
+
+    // BP-001B: Partner Foundation
+    // Adds partner_type to customers. Existing rows get DEFAULT 2 (Customer) automatically.
+    await safeAddColumn(conn, 'customers', 'partner_type', 'partner_type INT NOT NULL DEFAULT 2');
+
+    // BP-001B: Supplier → Partner import (idempotent — checks supplier_partner_map before each insert)
+    if (await hasTable(conn, 'supplier_partner_map')) {
+      const [supplierRows] = await conn.query(
+        `SELECT id, name, phone, address, note, is_active, billing_calendar_type
+         FROM suppliers WHERE del_flg = 0`
+      );
+      for (const sup of supplierRows) {
+        const [[already]] = await conn.query(
+          `SELECT id FROM supplier_partner_map WHERE supplier_id = ?`, [sup.id]
+        );
+        if (already) continue;
+
+        // Duplicate detection: phone match (most reliable)
+        if (sup.phone) {
+          const [[dup]] = await conn.query(
+            `SELECT id, name FROM customers WHERE phone = ? AND del_flg = 0 LIMIT 1`, [sup.phone]
+          );
+          if (dup) {
+            console.log(`[BP-001B] DUPLICATE — supplier "${sup.name}" (id=${sup.id}) phone matches customer "${dup.name}" (id=${dup.id}) — manual review required, not imported`);
+            continue;
+          }
+        }
+
+        const partnerCode = `NCC-${String(sup.id).padStart(3, '0')}`;
+        const [[codeConflict]] = await conn.query(
+          `SELECT id FROM customers WHERE customer_code = ?`, [partnerCode]
+        );
+
+        let partnerId;
+        if (codeConflict) {
+          partnerId = codeConflict.id;
+        } else {
+          const [ins] = await conn.query(
+            `INSERT INTO customers
+               (customer_code, name, phone, address, note, is_active,
+                billing_calendar_type, partner_type, price_mode, debt_limit, payment_term_days)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'COMMON_PRICE', 0, 0)`,
+            [partnerCode, sup.name, sup.phone || null, sup.address || null,
+             sup.note || null, sup.is_active, sup.billing_calendar_type || null]
+          );
+          partnerId = ins.insertId;
+          console.log(`[BP-001B] Imported supplier "${sup.name}" → partner ${partnerCode} (customer.id=${partnerId})`);
+        }
+
+        await conn.query(
+          `INSERT IGNORE INTO supplier_partner_map (supplier_id, partner_id) VALUES (?, ?)`,
+          [sup.id, partnerId]
+        );
+      }
     }
 
   } finally {

@@ -1,5 +1,6 @@
 import React, {useEffect, useState} from 'react';
-import {BarChart3,Beef,ClipboardList,CreditCard,Home,LogOut,Package,ShoppingCart,Truck,Users,Bot,Trash2,TableProperties,Settings,CalendarDays,Megaphone,PanelLeftClose,PanelLeftOpen} from 'lucide-react';
+import {BarChart3,Beef,ClipboardList,CreditCard,Home,KeyRound,LogOut,Package,ShoppingCart,Truck,Users,Bot,Trash2,TableProperties,Settings,CalendarDays,Megaphone,PanelLeftClose,PanelLeftOpen} from 'lucide-react';
+import ChangePasswordModal from'../components/ChangePasswordModal';
 
 const menu=[
   ['dashboard','Dashboard',Home],
@@ -60,6 +61,7 @@ const pageMeta={
 };
 
 export default function MainLayout({page,setPage,user,children,onLogout,allowedMenus}){
+  const [showChangePw, setShowChangePw] = useState(false);
   const [collapsed, setCollapsed] = useState(() => {
     if (typeof window !== 'undefined' && window.innerWidth <= 1024) return true;
     return localStorage.getItem('meatbiz_sidebar_collapsed') === '1';
@@ -126,6 +128,10 @@ export default function MainLayout({page,setPage,user,children,onLogout,allowedM
 
         <div className="sidebar-footer">
           <div className="muted">{user?.full_name||user?.username||'ADMIN'}</div>
+          <button type="button" className="menu-item" onClick={()=>setShowChangePw(true)}>
+            <KeyRound size={18}/>
+            <span className="menu-label">Đổi mật khẩu</span>
+          </button>
           <button type="button" className="menu-item logout" onClick={logout}>
             <LogOut size={18}/>
             <span className="menu-label">Đăng xuất</span>
@@ -150,6 +156,8 @@ export default function MainLayout({page,setPage,user,children,onLogout,allowedM
           <span>{window.innerWidth <= 1024 ? (isMobileMenuOpen ? 'Đóng menu' : 'Mở menu') : (collapsed ? 'Mở menu' : 'Thu gọn')}</span>
         </button>
       </aside>
+
+      {showChangePw&&<ChangePasswordModal onClose={()=>setShowChangePw(false)}/>}
 
       <main className="main">
         <div className="page-hero">

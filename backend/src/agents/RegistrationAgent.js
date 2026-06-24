@@ -2,6 +2,7 @@ const pool=require('../config/db');
 const bcrypt=require('bcryptjs');
 const crypto=require('crypto');
 const notification=require('../services/notification.service');
+const {validatePasswordStrength}=require('../utils/passwordValidator');
 
 function makeCustomerCode(id){
   return 'KH'+String(id).padStart(5,'0');
@@ -121,7 +122,8 @@ class RegistrationAgent{
     if(!isValidEmail(email)) throw new Error('Email không hợp lệ. Vui lòng nhập email đúng định dạng, ví dụ: ten@posora.vn');
     if(!username) throw new Error('Nhập tài khoản hoặc số điện thoại đăng nhập');
     if(!data.password) throw new Error('Nhập mật khẩu');
-    if(String(data.password).length<6) throw new Error('Mật khẩu nên có ít nhất 6 ký tự');
+    const pwCheck=validatePasswordStrength(data.password);
+    if(!pwCheck.ok) throw new Error(pwCheck.message);
 
     const [u]=await pool.query(`SELECT id FROM users WHERE username=? OR phone=? OR email=? LIMIT 1`,[username,phone,email]);
     if(u.length) throw new Error('Tài khoản, email hoặc số điện thoại đã tồn tại');

@@ -65,12 +65,15 @@ export default function Lots(){
       purchase_date:purchaseDate,
       calendar_type:type,
       lunar_date_text:type==='LUNAR'?formatLunarDate(purchaseDate||today):'',
-      male_price:n(sp?.male_price)||prev.male_price||prev.purchase_price||200000,
-      female_price:n(sp?.female_price)||prev.female_price||prev.purchase_price||195000,
-      fragment_price:n(sp?.fragment_price)||prev.fragment_price||100000
+      // FIX-3: preserve historical snapshot prices in edit mode
+      ...(editingLotId?{}:{
+        male_price:n(sp?.male_price)||prev.male_price||prev.purchase_price||200000,
+        female_price:n(sp?.female_price)||prev.female_price||prev.purchase_price||195000,
+        fragment_price:n(sp?.fragment_price)||prev.fragment_price||100000
+      })
     }));
     setPriceSource(null);
-    if(!supplierId) return;
+    if(!supplierId||editingLotId) return;
     try{
       const res=await api.get(`/suppliers/${supplierId}/beef-prices`,{params:{purchase_date:purchaseDate||today}});
       const d=res.data;
@@ -99,6 +102,16 @@ export default function Lots(){
       lunar_date_text:v,
       purchase_date:solar||prev.purchase_date
     }));
+    // FIX-2: re-resolve prices for new effective date (create mode only)
+    if(f.supplier_id&&solar&&!editingLotId){
+      api.get(`/suppliers/${f.supplier_id}/beef-prices`,{params:{purchase_date:solar}})
+        .then(res=>{
+          const d=res.data;
+          setF(prev=>({...prev,male_price:d.male_price||prev.male_price,female_price:d.female_price||prev.female_price,fragment_price:d.fragment_price||prev.fragment_price}));
+          setPriceSource(d.source||null);
+        })
+        .catch(()=>{});
+    }
   };
 
   const navRefs=useRef([]);

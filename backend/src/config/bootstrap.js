@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS suppliers (
   phone VARCHAR(50),
   address TEXT,
   note TEXT,
+  billing_calendar_type VARCHAR(10) NOT NULL DEFAULT 'SOLAR',
   male_price DECIMAL(15,2) NOT NULL DEFAULT 0,
   female_price DECIMAL(15,2) NOT NULL DEFAULT 0,
   fragment_price DECIMAL(15,2) NOT NULL DEFAULT 0,
@@ -631,6 +632,7 @@ CREATE TABLE IF NOT EXISTS supplier_partner_map (
     await safeAddColumn(conn, 'products', 'carcass_group', 'carcass_group VARCHAR(100) NULL');
     await safeAddColumn(conn, 'products', 'allow_negative_stock', 'allow_negative_stock TINYINT(1) NOT NULL DEFAULT 0');
     await safeAddColumn(conn, 'products', 'default_supplier_id', 'default_supplier_id BIGINT NULL');
+    await safeAddColumn(conn, 'suppliers', 'billing_calendar_type', "billing_calendar_type VARCHAR(10) NOT NULL DEFAULT 'SOLAR'");
     await safeAddColumn(conn, 'suppliers', 'male_price', 'male_price DECIMAL(15,2) NOT NULL DEFAULT 0');
     await safeAddColumn(conn, 'suppliers', 'female_price', 'female_price DECIMAL(15,2) NOT NULL DEFAULT 0');
     await safeAddColumn(conn, 'suppliers', 'fragment_price', 'fragment_price DECIMAL(15,2) NOT NULL DEFAULT 0');

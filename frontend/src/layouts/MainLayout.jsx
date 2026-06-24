@@ -110,25 +110,7 @@ export default function MainLayout({page,setPage,user,children,onLogout,allowedM
           <Beef size={32}/>
           <span>MeatBiz</span>
         </div>
-        <button
-          type="button"
-          className="sidebar-toggle"
-          onClick={() => {
-            if (window.innerWidth <= 1024) {
-              setIsMobileMenuOpen(v => !v);
-              setCollapsed(true);
-              return;
-            }
-            setCollapsed(v => !v);
-          }}
-          title={collapsed ? 'Mở rộng menu' : 'Thu gọn menu'}
-          aria-label={collapsed ? 'Mở rộng menu' : 'Thu gọn menu'}
-        >
-          {(collapsed || !isMobileMenuOpen) ? <PanelLeftOpen size={18}/> : <PanelLeftClose size={18}/>}
-          <span>{window.innerWidth <= 1024 ? (isMobileMenuOpen ? 'Đóng menu' : 'Mở menu') : (collapsed ? 'Mở menu' : 'Thu gọn')}</span>
-        </button>
-
-        <nav className="menu">
+        <nav className="menu sidebar-scroll">
           {menu.filter(([key])=>!allowedMenus||allowedMenus.includes(key)).map(([key,label,Icon])=>(
             <button
               key={key}
@@ -149,6 +131,24 @@ export default function MainLayout({page,setPage,user,children,onLogout,allowedM
             <span className="menu-label">Đăng xuất</span>
           </button>
         </div>
+
+        <button
+          type="button"
+          className="sidebar-toggle"
+          onClick={() => {
+            if (window.innerWidth <= 1024) {
+              setIsMobileMenuOpen(v => !v);
+              setCollapsed(true);
+              return;
+            }
+            setCollapsed(v => !v);
+          }}
+          title={collapsed ? 'Mở rộng menu' : 'Thu gọn menu'}
+          aria-label={collapsed ? 'Mở rộng menu' : 'Thu gọn menu'}
+        >
+          {(collapsed || !isMobileMenuOpen) ? <PanelLeftOpen size={18}/> : <PanelLeftClose size={18}/>}
+          <span>{window.innerWidth <= 1024 ? (isMobileMenuOpen ? 'Đóng menu' : 'Mở menu') : (collapsed ? 'Mở menu' : 'Thu gọn')}</span>
+        </button>
       </aside>
 
       <main className="main">

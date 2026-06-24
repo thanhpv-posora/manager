@@ -21,7 +21,7 @@ body{background:#f4f7fb}
   position:sticky;
   top:0;
   height:100vh;
-  overflow-y:auto;
+  overflow:hidden;
   box-shadow:10px 0 30px rgba(15,23,42,.12);
   z-index:5;
 }
@@ -42,6 +42,10 @@ body{background:#f4f7fb}
   flex-direction:column;
   gap:7px;
   width:100%;
+  flex:1;
+  min-height:0;
+  overflow-y:auto;
+  overflow-x:hidden;
 }
 
 .menu-item{
@@ -83,6 +87,7 @@ body{background:#f4f7fb}
   display:flex;
   flex-direction:column;
   gap:8px;
+  flex-shrink:0;
 }
 
 .menu-item.logout{
@@ -198,6 +203,8 @@ h3{margin-top:0}
   .menu{
     display:grid;
     grid-template-columns:repeat(2,minmax(0,1fr));
+    flex:none;
+    overflow-y:visible;
   }
   .sidebar-footer{margin-top:12px}
   .grid.cols-2,.form-grid{grid-template-columns:1fr}
@@ -1251,8 +1258,9 @@ body{background:radial-gradient(circle at 8% 0%,#fff7ed 0,#f8fafc 30%,#eef2f7 10
 .sidebar-toggle{
   width:100%;display:flex;align-items:center;gap:10px;justify-content:center;
   border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.08);
-  color:#fff;border-radius:14px;padding:11px 12px;margin:0 0 12px;
+  color:#fff;border-radius:14px;padding:11px 12px;margin:8px 0 0;
   cursor:pointer;font-weight:900;transition:.15s ease;
+  flex-shrink:0;
 }
 .sidebar-toggle:hover{background:rgba(251,146,60,.18);border-color:rgba(251,146,60,.38)}
 @media(max-width:760px){
@@ -2572,4 +2580,16 @@ button,.btn,.menu-item,.input,.select,textarea{
 }
 @media(max-width:760px){
   .lots-header-row{grid-template-columns:1fr;}
+}
+
+/* UI-SIDEBAR-001: modern thin scrollbar — sidebar menu only */
+.sidebar-scroll{scrollbar-width:thin;scrollbar-color:rgba(148,163,184,.35) transparent;}
+.sidebar-scroll::-webkit-scrollbar{width:5px;}
+.sidebar-scroll::-webkit-scrollbar-track{background:rgba(255,255,255,.04);border-radius:999px;}
+.sidebar-scroll::-webkit-scrollbar-thumb{
+  background:linear-gradient(180deg,rgba(148,163,184,.45) 0%,rgba(100,116,139,.35) 100%);
+  border-radius:999px;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb:hover{
+  background:linear-gradient(180deg,rgba(186,200,214,.75) 0%,rgba(148,163,184,.65) 100%);
 }

@@ -50,13 +50,18 @@ export default function Lots(){
   const[reportFilter,setReportFilter]=useState({from:'',to:'',supplier_id:''});
   const[editingLotId,setEditingLotId]=useState(null);
   const[priceSource,setPriceSource]=useState(null);
+  const[dateDialogOpen,setDateDialogOpen]=useState(false);
+  const[dialogType,setDialogType]=useState('SOLAR');
+  const[dialogSupplierId,setDialogSupplierId]=useState(null);
+  const[dialogSolarDate,setDialogSolarDate]=useState(today);
+  const[dialogLunarText,setDialogLunarText]=useState('');
 
   const setField=(k,v)=>setF(prev=>({...prev,[k]:v}));
   const selectedSupplier=s.find(x=>String(x.id)===String(f.supplier_id||''));
   const selectedSupplierCalendar=String(selectedSupplier?.billing_calendar_type||f.calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
   const selectedSupplierCalendarLabel=selectedSupplierCalendar==='LUNAR'?'Âm lịch':'Dương lịch';
 
-  const applySupplierCalendarToLot=async(supplierId,purchaseDate=f.purchase_date)=>{
+  const applySupplierCalendarToLot=async(supplierId,purchaseDate=f.purchase_date,lunarTextOverride=undefined)=>{
     const sp=s.find(x=>String(x.id)===String(supplierId||''));
     const type=String(sp?.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
     setF(prev=>({
@@ -64,12 +69,12 @@ export default function Lots(){
       supplier_id:supplierId,
       purchase_date:purchaseDate,
       calendar_type:type,
-      lunar_date_text:type==='LUNAR'?formatLunarDate(purchaseDate||today):'',
-      // FIX-3: preserve historical snapshot prices in edit mode
+      lunar_date_text:type==='LUNAR'?(lunarTextOverride!==undefined?lunarTextOverride:formatLunarDate(purchaseDate||today)):'',
+      // FIX-3: preserve historical snapshot prices in edit mode; in create mode, reset to new supplier's stored prices (no fallthrough to old supplier)
       ...(editingLotId?{}:{
-        male_price:n(sp?.male_price)||prev.male_price||prev.purchase_price||200000,
-        female_price:n(sp?.female_price)||prev.female_price||prev.purchase_price||195000,
-        fragment_price:n(sp?.fragment_price)||prev.fragment_price||100000
+        male_price:n(sp?.male_price),
+        female_price:n(sp?.female_price),
+        fragment_price:n(sp?.fragment_price)
       })
     }));
     setPriceSource(null);
@@ -79,13 +84,43 @@ export default function Lots(){
       const d=res.data;
       setF(prev=>({
         ...prev,
-        male_price:d.male_price||prev.male_price,
-        female_price:d.female_price||prev.female_price,
-        fragment_price:d.fragment_price||prev.fragment_price
+        male_price:n(d.male_price),
+        female_price:n(d.female_price),
+        fragment_price:n(d.fragment_price)
       }));
       setPriceSource(d.source||null);
     }catch{/* silently keep fallback prices */}
   };
+
+  const onSupplierChange=(supplierId)=>{
+    if(!supplierId){applySupplierCalendarToLot('',f.purchase_date);return;}
+    const sp=s.find(x=>String(x.id)===String(supplierId));
+    const type=String(sp?.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
+    setDialogSupplierId(supplierId);
+    setDialogType(type);
+    setDialogSolarDate(f.purchase_date||today);
+    setDialogLunarText(type==='LUNAR'?(f.lunar_date_text||formatLunarDate(f.purchase_date||today)):'');
+    setDateDialogOpen(true);
+  };
+  const openDateDialog=()=>{
+    setDialogSupplierId(null);
+    setDialogType(selectedSupplierCalendar);
+    setDialogSolarDate(f.purchase_date||today);
+    setDialogLunarText(f.lunar_date_text||formatLunarDate(f.purchase_date||today));
+    setDateDialogOpen(true);
+  };
+  const confirmDateDialog=()=>{
+    const supplierId=dialogSupplierId!==null?dialogSupplierId:f.supplier_id;
+    if(dialogType==='SOLAR'){
+      applySupplierCalendarToLot(supplierId,dialogSolarDate);
+    }else{
+      const solar=lunarToSolarDate(parseLunarText(dialogLunarText))||f.purchase_date||today;
+      applySupplierCalendarToLot(supplierId,solar,dialogLunarText);
+    }
+    setDateDialogOpen(false);
+    setDialogSupplierId(null);
+  };
+  const cancelDateDialog=()=>{setDateDialogOpen(false);setDialogSupplierId(null);};
 
   const changePurchaseDate=(v)=>{
     setF(prev=>({
@@ -490,6 +525,19 @@ export default function Lots(){
   };
 
   return <SafePage loading={loading} error={error}>
+    {dateDialogOpen&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.45)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={cancelDateDialog}>
+      <div style={{background:'#fff',borderRadius:12,padding:'24px 28px',minWidth:300,maxWidth:420,width:'90%',boxShadow:'0 8px 32px rgba(0,0,0,0.22)'}} onClick={e=>e.stopPropagation()}>
+        <h3 style={{marginTop:0,marginBottom:16}}>{dialogType==='SOLAR'?'Chọn ngày nhập dương lịch':'Chọn ngày nhập âm lịch'}</h3>
+        {dialogType==='SOLAR'
+          ?<label style={{display:'block'}}><span className="muted">Ngày dương lịch</span><input className="input" type="date" value={dialogSolarDate} onChange={e=>setDialogSolarDate(e.target.value)} autoFocus/></label>
+          :<label style={{display:'block'}}><span className="muted">Ngày âm lịch (VD: 28/03/2026)</span><input className="input" value={dialogLunarText} onChange={e=>setDialogLunarText(e.target.value)} placeholder="VD: 28/03/2026" autoFocus/>{(()=>{const sol=lunarToSolarDate(parseLunarText(dialogLunarText));return dialogLunarText?<small className="muted" style={{display:'block',marginTop:4}}>{sol?`→ Dương lịch: ${dateText(sol)}`:'⚠ Ngày âm không hợp lệ'}</small>:null;})()}</label>
+        }
+        <div className="actions" style={{marginTop:18,justifyContent:'flex-end'}}>
+          <button className="btn secondary" onClick={cancelDateDialog}>Hủy</button>
+          <button className="btn" onClick={confirmDateDialog}>Xác nhận</button>
+        </div>
+      </div>
+    </div>}
     <div className="grid cols-2 lots-agent-page">
       <div ref={formRef} className="card lots-entry-card">
         <div className="section-toggle-header">
@@ -555,10 +603,16 @@ export default function Lots(){
         <div className="lots-entry-layout">
           <div className="lots-entry-fields">
             <div className="form-grid">
-          <label><span className="muted">Tên lô</span><input className="input" placeholder="Tên lô" value={f.lot_name||''} onChange={e=>setField('lot_name',e.target.value)}/></label>
-          <label><span className="muted">Ngày nhập</span><input className="input" type="date" value={f.purchase_date||''} onChange={e=>applySupplierCalendarToLot(f.supplier_id,e.target.value)}/></label>
-          <label><span className="muted">Nhà cung cấp</span><select className="select" value={f.supplier_id||''} onChange={e=>applySupplierCalendarToLot(e.target.value,f.purchase_date)}><option value="">Chọn nhà cung cấp</option>{s.map(x=><option key={x.id} value={x.id}>{x.name} - {x.billing_calendar_type==='LUNAR'?'Âm lịch':'Dương lịch'}</option>)}</select></label>
-          {selectedSupplierCalendar==='LUNAR'&&<label><span className="muted">Ngày âm lịch in trên phiếu NCC</span><input className="input" value={f.lunar_date_text||''} onChange={e=>changeLotLunarDateText(e.target.value)} placeholder="VD: 28/03/2026"/></label>}
+          <div className="lots-header-row" style={{gridColumn:'1/-1'}}>
+            <label style={{margin:0}}><span className="muted">Mã nhập hàng</span><input className="input" placeholder="Mã nhập hàng" value={f.lot_name||''} onChange={e=>setField('lot_name',e.target.value)}/></label>
+            <label style={{margin:0}}><span className="muted">Nhà cung cấp</span><select className="select" value={dateDialogOpen&&dialogSupplierId?dialogSupplierId:(f.supplier_id||'')} onChange={e=>onSupplierChange(e.target.value)}><option value="">Chọn nhà cung cấp</option>{s.map(x=><option key={x.id} value={x.id}>{x.name} - {x.billing_calendar_type==='LUNAR'?'Âm lịch':'Dương lịch'}</option>)}</select></label>
+            <div style={{display:'flex',flexDirection:'column',gap:2}}>
+              <span className="muted">Ngày nhập</span>
+              {f.supplier_id
+                ?<button type="button" className="btn secondary lots-date-btn" style={{fontWeight:500}} onClick={openDateDialog}>{selectedSupplierCalendar==='LUNAR'?`${f.lunar_date_text||formatLunarDate(f.purchase_date||today)} (âm lịch)`:`${dateText(f.purchase_date)} (dương lịch)`}</button>
+                :<span className="muted" style={{fontSize:12,padding:'6px 0'}}>Chọn NCC để đặt ngày</span>}
+            </div>
+          </div>
 
           <label className="kg-multiline-field"><span className="muted">Tổng kg thịt xô</span><textarea ref={rawWeightRef} className="input lots-kg-textarea" rows="5" wrap="soft" placeholder={"Nhập nhiều dòng, ví dụ:\n90.5\n75.8\n64.2"} value={f.raw_weight_expr??''} onChange={e=>setField('raw_weight_expr',e.target.value)}/><small className="muted">Có thể nhập xuống dòng hoặc dùng dấu +, ví dụ: 90.5 + 75.8</small></label>
           <label className="kg-singleline-field"><span className="muted">Xương sườn kg, tự cộng 1/2 vào thịt xô</span><input ref={setNavRef(0)} onKeyDown={e=>onLotNavKey(e,0)} className="input" placeholder="Ví dụ: 100 + 80 - 5" value={f.bone_weight_expr??''} onChange={e=>setField('bone_weight_expr',e.target.value)}/><small className="muted">Nhập 1 dòng, có thể cộng/trừ trực tiếp. Hệ thống tự lấy tổng xương sườn / 2 cộng vào thịt xô.</small></label>
@@ -623,8 +677,8 @@ export default function Lots(){
       <div className="card">
         <h3>Thống kê nhập hàng</h3>
         <div className="report-tabs">
-          <button className={`btn ${reportTab==='DETAIL'?'':'secondary'}`} onClick={()=>setReportTab('DETAIL')}>Chi tiết NCC</button>
-          <button className={`btn ${reportTab==='SUMMARY'?'':'secondary'}`} onClick={()=>setReportTab('SUMMARY')}>Tổng hợp NCC</button>
+          <button className={`btn ${reportTab==='DETAIL'?'':'secondary'}`} onClick={()=>setReportTab('DETAIL')}>Chi tiết nhập hàng</button>
+          <button className={`btn ${reportTab==='SUMMARY'?'':'secondary'}`} onClick={()=>setReportTab('SUMMARY')}>Tổng hợp nhập hàng</button>
         </div>
         <div className="form-grid supplier-report-filter">
           <label><span className="muted">Từ ngày</span><input className="input" type="date" value={reportFilter.from} onChange={e=>setReportFilter({...reportFilter,from:e.target.value})}/></label>
@@ -650,7 +704,7 @@ export default function Lots(){
         </div>
 
         <h3>Danh sách phiếu nhập / Thanh toán NCC</h3>
-        <table className="table"><thead><tr><th>Lô</th><th>Kg</th><th>Thành tiền</th><th>Còn trả</th><th></th></tr></thead><tbody>{reportRows.length===0?<tr><td colSpan="5" className="muted" style={{textAlign:'center'}}>Không có dữ liệu trong khoảng ngày đã chọn.</td></tr>:reportRows.map(r=><tr key={r.id}><td>{r.lot_code}<br/>{r.lot_name}<br/><span className="muted">{r.supplier_name}</span></td><td>{r.total_weight}kg<br/><span className="muted">{animal(r.total_animals)} con, cái {animal(r.female_animals)}</span><br/><span className="muted">Vụn {Number(r.fragment_weight||0).toFixed(3)}kg × {money(r.fragment_price||0)}</span></td><td>{money(r.total_cost)}</td><td><b>{money(r.remaining_amount)}</b></td><td><button className="btn secondary" onClick={()=>print(r.id)}>In NCC</button><button className="btn secondary" style={{marginLeft:4}} disabled={r.status!=='OPEN'} title={r.status!=='OPEN'?'Phiếu đã chốt hoặc đã hủy.':undefined} onClick={()=>loadLotIntoForm(r)}>Sửa</button>{r.status==='OPEN'&&<button className="btn secondary" style={{marginLeft:4}} onClick={()=>closeLot(r.id,r.lot_code)}>Chốt</button>}</td></tr>)}</tbody></table>
+        <table className="table"><thead><tr><th>Lô</th><th>Kg</th><th>Thành tiền</th><th>Còn trả</th><th></th></tr></thead><tbody>{reportRows.length===0?<tr><td colSpan="5" className="muted" style={{textAlign:'center'}}>Không có dữ liệu trong khoảng ngày đã chọn.</td></tr>:reportRows.map(r=><tr key={r.id}><td>{r.lot_code}<br/>{r.lot_name}<br/><span className="muted">{r.supplier_name}</span></td><td>{r.total_weight}kg<br/><span className="muted">{animal(r.total_animals)} con, cái {animal(r.female_animals)}</span><br/><span className="muted">Vụn {Number(r.fragment_weight||0).toFixed(3)}kg × {money(r.fragment_price||0)}</span></td><td>{money(r.total_cost)}</td><td><b>{money(r.remaining_amount)}</b></td><td><button className="btn secondary" onClick={()=>print(r.id)}>In phiếu nhập</button><button className="btn secondary" style={{marginLeft:4}} disabled={r.status!=='OPEN'} title={r.status!=='OPEN'?'Phiếu đã chốt hoặc đã hủy.':undefined} onClick={()=>loadLotIntoForm(r)}>Sửa</button>{r.status==='OPEN'&&<button className="btn secondary" style={{marginLeft:4}} onClick={()=>closeLot(r.id,r.lot_code)}>Chốt</button>}</td></tr>)}</tbody></table>
         <h3>Ứng / trả tiền nhà cung cấp</h3>
         <div className="form-grid">
           <select className="select" value={pay.lot_id||''} onChange={e=>setPay({...pay,lot_id:e.target.value})}><option value="">Chọn lô</option>{rows.map(r=><option key={r.id} value={r.id}>{r.lot_code} - còn {money(r.remaining_amount)}</option>)}</select>

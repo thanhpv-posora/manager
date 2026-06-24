@@ -12,6 +12,7 @@ import Prices from'./pages/Prices';
 import Lots from'./pages/Lots';
 import Units from'./pages/Units';
 import SupplierPurchaseOptions from'./pages/SupplierPurchaseOptions';
+import InventoryPurchases from'./pages/InventoryPurchases';
 import Revenue from'./pages/Revenue';
 import Profit from'./pages/Profit';
 import Agents from'./pages/Agents';
@@ -100,6 +101,7 @@ export default function App(){
     lots:<Lots/>,
     units:<Units/>,
     'supplier-purchase-options':<SupplierPurchaseOptions/>,
+    'inventory-purchases':<InventoryPurchases/>,
     revenue:<Revenue/>,
     profit:<Profit/>,
     agents:<Agents/>,

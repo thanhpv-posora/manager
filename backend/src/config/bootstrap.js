@@ -931,6 +931,66 @@ CREATE TABLE IF NOT EXISTS supplier_partner_map (
       }
     }
 
+    // BP-009B: Partner → Supplier sync (idempotent — links customers.partner_type=1 that have no supplier_partner_map entry)
+    if (await hasTable(conn, 'supplier_partner_map')) {
+      const [partnerRows] = await conn.query(
+        `SELECT c.id, c.name, c.phone, c.address, c.note, c.billing_calendar_type, c.is_active
+         FROM customers c
+         WHERE c.partner_type = 1 AND c.del_flg = 0
+           AND NOT EXISTS (SELECT 1 FROM supplier_partner_map m WHERE m.partner_id = c.id)`
+      );
+      for (const p of partnerRows) {
+        let supplierId = null;
+
+        // Phone match against unmapped suppliers (preferred)
+        if (p.phone) {
+          const [[byPhone]] = await conn.query(
+            `SELECT s.id FROM suppliers s
+             WHERE s.phone = ? AND s.del_flg = 0
+               AND NOT EXISTS (SELECT 1 FROM supplier_partner_map m WHERE m.supplier_id = s.id)
+             LIMIT 1`,
+            [p.phone]
+          );
+          if (byPhone) supplierId = byPhone.id;
+        }
+
+        // Name match against unmapped suppliers (fallback)
+        if (!supplierId) {
+          const [[byName]] = await conn.query(
+            `SELECT s.id FROM suppliers s
+             WHERE s.name = ? AND s.del_flg = 0
+               AND NOT EXISTS (SELECT 1 FROM supplier_partner_map m WHERE m.supplier_id = s.id)
+             LIMIT 1`,
+            [p.name]
+          );
+          if (byName) supplierId = byName.id;
+        }
+
+        // No reusable supplier row — create one from customer data
+        if (!supplierId) {
+          const code = 'NCC' + Date.now() + '-' + p.id;
+          const [ins] = await conn.query(
+            `INSERT INTO suppliers(supplier_code, name, phone, address, note, billing_calendar_type, is_active, del_flg)
+             VALUES(?, ?, ?, ?, ?, ?, ?, 0)`,
+            [code, p.name, p.phone || '', p.address || '', p.note || '',
+             p.billing_calendar_type || 'SOLAR', p.is_active]
+          );
+          supplierId = ins.insertId;
+          console.log(`[BP-009B] Created suppliers row for partner "${p.name}" (customer.id=${p.id}) → supplier.id=${supplierId}`);
+        } else {
+          console.log(`[BP-009B] Linked partner "${p.name}" (customer.id=${p.id}) → existing supplier.id=${supplierId}`);
+        }
+
+        await conn.query(
+          `INSERT IGNORE INTO supplier_partner_map(supplier_id, partner_id) VALUES(?, ?)`,
+          [supplierId, p.id]
+        );
+      }
+      if (!partnerRows.length) {
+        console.log('[BP-009B] No unmapped supplier-partners found — already migrated or none exist.');
+      }
+    }
+
   } finally {
     conn.release();
   }

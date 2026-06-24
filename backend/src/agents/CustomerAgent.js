@@ -28,8 +28,65 @@ function cleanName(data){
 
 class CustomerAgent{
   constructor(){
-    this.version='6.27.0';
+    this.version='6.28.0';
     this.responsibility='Customer CRUD scoped by user/customer, child customers, validation';
+  }
+
+  // Ensures a suppliers row and supplier_partner_map entry exist for this partner.
+  // Idempotent: safe to call multiple times. Used when partner_type becomes 1 (supplier).
+  async _syncPartnerToSupplier(customerId){
+    const [[partner]]=await pool.query(
+      `SELECT id,name,phone,address,note,billing_calendar_type,is_active FROM customers WHERE id=? AND del_flg=0`,
+      [customerId]
+    );
+    if(!partner) return null;
+
+    // Already mapped — nothing to do
+    const [[existing]]=await pool.query(
+      `SELECT supplier_id FROM supplier_partner_map WHERE partner_id=?`,[customerId]
+    );
+    if(existing) return {partner_id:customerId,supplier_id:existing.supplier_id,message:'Đã liên kết trước đó'};
+
+    // Find an unmapped supplier row: prefer phone match, then name match
+    let supplierId=null;
+    if(partner.phone){
+      const [[byPhone]]=await pool.query(
+        `SELECT s.id FROM suppliers s
+         WHERE s.phone=? AND s.del_flg=0
+         AND NOT EXISTS (SELECT 1 FROM supplier_partner_map m WHERE m.supplier_id=s.id)
+         LIMIT 1`,
+        [partner.phone]
+      );
+      if(byPhone) supplierId=byPhone.id;
+    }
+    if(!supplierId){
+      const [[byName]]=await pool.query(
+        `SELECT s.id FROM suppliers s
+         WHERE s.name=? AND s.del_flg=0
+         AND NOT EXISTS (SELECT 1 FROM supplier_partner_map m WHERE m.supplier_id=s.id)
+         LIMIT 1`,
+        [partner.name]
+      );
+      if(byName) supplierId=byName.id;
+    }
+
+    // No reusable supplier row — create one
+    if(!supplierId){
+      const code='NCC'+Date.now();
+      const [ins]=await pool.query(
+        `INSERT INTO suppliers(supplier_code,name,phone,address,note,billing_calendar_type,is_active,del_flg)
+         VALUES(?,?,?,?,?,?,?,0)`,
+        [code,partner.name,partner.phone||'',partner.address||'',partner.note||'',
+         partner.billing_calendar_type||'SOLAR',partner.is_active]
+      );
+      supplierId=ins.insertId;
+    }
+
+    await pool.query(
+      `INSERT IGNORE INTO supplier_partner_map(supplier_id,partner_id) VALUES(?,?)`,
+      [supplierId,customerId]
+    );
+    return {partner_id:customerId,supplier_id:supplierId,message:'Đã liên kết nhà cung cấp'};
   }
 
   async list(user){
@@ -62,12 +119,13 @@ class CustomerAgent{
     const parentCustomerId=(user&&user.role==='CUSTOMER')?user.customer_id:(data.parent_customer_id||null);
 
     const partner_type = Number(data.partner_type) === 1 ? 1 : 2;
-    await pool.query(
+    const [ins]=await pool.query(
       `INSERT INTO customers(customer_code,name,phone,address,price_mode,billing_calendar_type,note,is_active,del_flg,parent_customer_id,partner_type)
        VALUES(?,?,?,?,?,?,?,1,0,?,?)`,
       [code,name,data.phone||'',data.address||'',normalizePriceMode(data.price_mode),normalizeBillingCalendarType(data.billing_calendar_type),data.note||'',parentCustomerId,partner_type]
     );
-    return {message:'Đã tạo đối tác',customer_code:code};
+    const sync=partner_type===1?await this._syncPartnerToSupplier(ins.insertId):null;
+    return {message:'Đã tạo đối tác',customer_code:code,...(sync||{})};
   }
 
   async update(id,data,user){
@@ -81,7 +139,8 @@ class CustomerAgent{
       `UPDATE customers SET name=?,phone=?,address=?,price_mode=?,billing_calendar_type=?,note=?,is_active=?,partner_type=? WHERE id=? AND del_flg=0`,
       [name,data.phone||'',data.address||'',normalizePriceMode(data.price_mode),normalizeBillingCalendarType(data.billing_calendar_type),data.note||'',data.is_active?1:0,partner_type,id]
     );
-    return {message:'Đã cập nhật đối tác'};
+    const sync=partner_type===1?await this._syncPartnerToSupplier(id):null;
+    return {message:'Đã cập nhật đối tác',...(sync||{})};
   }
 
   async remove(id,reason,user){

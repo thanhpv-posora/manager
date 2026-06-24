@@ -2538,3 +2538,38 @@ button,.btn,.menu-item,.input,.select,textarea{
 .app-dialog-btn-confirm{background:#2563eb;color:#fff;box-shadow:0 10px 24px rgba(37,99,235,.22)}.app-dialog-btn-confirm:hover{background:#1d4ed8}
 .app-dialog-btn-confirm.danger{background:#dc2626;box-shadow:0 10px 24px rgba(220,38,38,.24)}.app-dialog-btn-confirm.danger:hover{background:#b91c1c}
 @media(max-width:520px){.app-dialog{border-radius:18px;padding:18px}.app-dialog-actions{flex-direction:column-reverse}.app-dialog-btn{width:100%}}
+
+/* BP-010B - Lots header row: Mã lô | Nhà cung cấp | Ngày nhập */
+.lots-header-row{
+  display:grid;
+  grid-template-columns:minmax(120px,160px) minmax(260px,1fr) minmax(180px,220px);
+  gap:8px;
+  align-items:end;
+}
+.lots-header-row>*>span.muted{
+  display:block;
+  white-space:nowrap;
+  margin-bottom:6px;
+}
+.lots-header-row label>.input,
+.lots-header-row label>.select,
+.lots-header-row label>input,
+.lots-header-row label>select{
+  height:56px;
+  min-height:56px;
+  box-sizing:border-box;
+  width:100%;
+}
+.lots-date-btn{
+  height:56px;
+  min-height:56px;
+  box-sizing:border-box;
+  width:100%;
+  text-align:left!important;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+@media(max-width:760px){
+  .lots-header-row{grid-template-columns:1fr;}
+}

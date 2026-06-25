@@ -48,6 +48,9 @@ async function ensureColumn(table,column,definition){
 async function ensureAuthSchema(){
   await ensureColumn('users','phone',`VARCHAR(50) NULL`);
   await ensureColumn('users','email',`VARCHAR(255) NULL`);
+  await ensureColumn('users','failed_login_count',`INT NOT NULL DEFAULT 0`);
+  await ensureColumn('users','locked_until',`DATETIME NULL`);
+  await ensureColumn('users','last_failed_login',`DATETIME NULL`);
 
   await pool.query(`CREATE TABLE IF NOT EXISTS user_login_otps (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -79,7 +82,7 @@ async function ensureAuthSchema(){
 
 async function findUserByLogin(username){
   const value=String(username||'').trim();
-  const [rows]=await pool.query(`SELECT id,username,full_name,password_hash,role,customer_id,is_active,phone,email FROM users WHERE username=? OR phone=? OR email=? LIMIT 1`, [value,value,value]);
+  const [rows]=await pool.query(`SELECT id,username,full_name,password_hash,role,customer_id,is_active,phone,email,failed_login_count,locked_until,last_failed_login FROM users WHERE username=? OR phone=? OR email=? LIMIT 1`, [value,value,value]);
   return rows[0]||null;
 }
 
@@ -89,13 +92,44 @@ router.post('/login', loginLimiter, async (req,res,next)=>{
     const {username,password}=req.body;
     const u=await findUserByLogin(username);
     if (!u || !u.is_active) return res.status(401).json({message:'Sai user hoặc mật khẩu'});
+
+    if (u.locked_until && new Date(u.locked_until) > new Date()) {
+      return res.status(423).json({message:'Tài khoản tạm khóa. Vui lòng thử lại sau 15 phút.'});
+    }
+
     let ok=false;
     if (String(u.password_hash||'').startsWith('$2')) ok=await bcrypt.compare(password,u.password_hash);
     else if (process.env.ALLOW_PLAIN_PASSWORD==='true') {
       ok=password===u.password_hash;
       if (ok) await pool.query(`UPDATE users SET password_hash=? WHERE id=?`, [await bcrypt.hash(password,10), u.id]);
     }
-    if (!ok) return res.status(401).json({message:'Sai user hoặc mật khẩu'});
+
+    if (!ok) {
+      await pool.query(
+        `UPDATE users
+         SET failed_login_count = failed_login_count + 1,
+             last_failed_login = NOW(),
+             locked_until = CASE
+               WHEN failed_login_count + 1 >= 5 THEN DATE_ADD(NOW(), INTERVAL 15 MINUTE)
+               ELSE locked_until
+             END
+         WHERE id = ?`,
+        [u.id]
+      );
+      const [[updated]]=await pool.query(
+        `SELECT failed_login_count,locked_until FROM users WHERE id=?`,
+        [u.id]
+      );
+      if (updated.locked_until && new Date(updated.locked_until) > new Date()) {
+        return res.status(423).json({message:'Tài khoản tạm khóa do nhập sai mật khẩu quá nhiều lần. Vui lòng thử lại sau 15 phút.'});
+      }
+      return res.status(401).json({message:'Sai user hoặc mật khẩu'});
+    }
+
+    await pool.query(
+      `UPDATE users SET failed_login_count=0,locked_until=NULL,last_failed_login=NULL WHERE id=?`,
+      [u.id]
+    );
     res.json(signUser(u));
   } catch(e) { next(e); }
 });

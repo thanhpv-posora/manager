@@ -17,6 +17,18 @@ const authLimiter = rateLimit({
   message: { message: 'Quá nhiều yêu cầu. Vui lòng thử lại sau 15 phút.' },
 });
 
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const username = String(req.body.username || '').toLowerCase().trim();
+    return username ? `${req.ip}:${username}` : req.ip;
+  },
+  message: { message: 'Đăng nhập sai quá nhiều lần. Vui lòng thử lại sau 15 phút.' },
+});
+
 function signUser(u){
   const token=jwt.sign({id:u.id,username:u.username,full_name:u.full_name,role:u.role,customer_id:u.customer_id}, process.env.JWT_SECRET, {expiresIn:'7d'});
   return {token,user:{id:u.id,username:u.username,full_name:u.full_name,role:u.role,customer_id:u.customer_id}};
@@ -71,7 +83,7 @@ async function findUserByLogin(username){
   return rows[0]||null;
 }
 
-router.post('/login', authLimiter, async (req,res,next)=>{
+router.post('/login', loginLimiter, async (req,res,next)=>{
   try {
     await ensureAuthSchema();
     const {username,password}=req.body;

@@ -43,7 +43,7 @@ export default function LandingPage({onLoginClick,onRegisterClick}){
     <section className="ai-hero">
       <div className="ai-hero-copy">
         <div className="ai-pill"><Sparkles size={16}/> AI Operating System for Meat Wholesalers</div>
-        <h1>Không chỉ quản lý bán thịt. MeatBiz giúp chủ sạp <span>điều hành bằng AI.</span></h1>
+        <h1>Không chỉ quản lý bán thịt. MeatBiz giúp chủ cửa hàng <span>điều hành bằng AI.</span></h1>
         <p>{intro}</p>
         <div className="hero-actions">
           <button className="btn ai-primary" onClick={onLoginClick}>Vào hệ thống <ChevronRight size={18}/></button>
@@ -122,7 +122,7 @@ export default function LandingPage({onLoginClick,onRegisterClick}){
       <div className="landing-contact-title"><div><div className="eyebrow">Support Center</div><h2>Thông tin liên hệ</h2><p className="muted">Cần tư vấn, hỗ trợ triển khai hoặc đăng ký sử dụng MeatBiz, vui lòng liên hệ:</p></div></div>
       <div className="landing-contact-grid">
         <div className="landing-contact-card"><div className="landing-contact-icon">✉️</div><div><b>Email hỗ trợ</b><p>support@posora.vn</p></div></div>
-        <div className="landing-contact-card"><div className="landing-contact-icon">☎️</div><div><b>Điện thoại liên hệ</b><p>0848 778 222</p><p>0935 363 468</p><p>0935 695 006</p></div></div>
+        <div className="landing-contact-card"><div className="landing-contact-icon">☎️</div><div><b>Điện thoại liên hệ</b><p>0848 778 222 - 0935 363 468 - 0935 695 006</p></div></div>
         <div className="landing-contact-card"><div className="landing-contact-icon">💬</div><div><b>Zalo hỗ trợ</b><p>0935 363 468</p></div></div>
       </div>
     </section>

@@ -1,10 +1,10 @@
 import React,{useEffect,useMemo,useState}from'react';
+import {Eye,Printer,CheckCircle2,Lock}from'lucide-react';
 import api from'../api/api';
 import SafePage from'../components/SafePage';
 const parseMoney=v=>Number(String(v??'').replace(/[^0-9.-]/g,'')||0);
 const money=n=>parseMoney(n).toLocaleString('en-US')+'đ';
 const moneyInput=v=>String(v??'')===''?'':parseMoney(v).toLocaleString('en-US');
-const pageSize=15;
 const isoDate=v=>String(v||'').slice(0,10);
 const ymd=v=>{
  const raw=isoDate(v);
@@ -25,22 +25,6 @@ const billDisplayTotal=o=>{
  return Number(o?.total_amount||0);
 };
 
-function Pager({page,totalPages,total,onChange,label='dòng'}){
- const current=Math.min(Math.max(1,page),totalPages||1);
- const pages=[];
- const start=Math.max(1,current-2),end=Math.min(totalPages,start+4);
- for(let i=start;i<=end;i++)pages.push(i);
- return <div className="pager-bar">
-  <div className="muted">Tổng {total} {label} • Trang {current}/{totalPages}</div>
-  <div className="pager-actions">
-   <button className="btn secondary" disabled={current<=1} onClick={()=>onChange(1)}>Đầu</button>
-   <button className="btn secondary" disabled={current<=1} onClick={()=>onChange(current-1)}>‹</button>
-   {pages.map(p=><button key={p} className={p===current?'btn':'btn secondary'} onClick={()=>onChange(p)}>{p}</button>)}
-   <button className="btn secondary" disabled={current>=totalPages} onClick={()=>onChange(current+1)}>›</button>
-   <button className="btn secondary" disabled={current>=totalPages} onClick={()=>onChange(totalPages)}>Cuối</button>
-  </div>
- </div>;
-}
 
 export default function Orders(){
  const[rows,setRows]=useState([]),[detail,setDetail]=useState(null),[qr,setQr]=useState(null),[loading,setLoading]=useState(true),[error,setError]=useState('');
@@ -52,6 +36,11 @@ export default function Orders(){
  const[filters,setFilters]=useState({from:'',to:'',customer:''});
  const[paymentReportRows,setPaymentReportRows]=useState([]);
  const[page,setPage]=useState(1);
+ const[billPageSize,setBillPageSize]=useState(20);
+ const[receiptPage,setReceiptPage]=useState(1);
+ const[receiptPageSize,setReceiptPageSize]=useState(20);
+ const[summaryPage,setSummaryPage]=useState(1);
+ const[summaryPageSize,setSummaryPageSize]=useState(20);
  const base=import.meta.env.VITE_API_URL||(typeof window !== 'undefined' ? `${window.location.origin}/api` : '/api');
  const load=async()=>{try{setRows((await api.get('/orders')).data||[])}catch(e){setError(e.response?.data?.message||e.message)}finally{setLoading(false)}};
  useEffect(()=>{load()},[]);
@@ -75,9 +64,9 @@ export default function Orders(){
    return true;
   });
  },[rows,filters]);
- const totalPages=Math.max(1,Math.ceil(filtered.length/pageSize));
+ const totalPages=Math.max(1,Math.ceil(filtered.length/billPageSize));
  const currentPage=Math.min(page,totalPages);
- const pageRows=filtered.slice((currentPage-1)*pageSize,currentPage*pageSize);
+ const pageRows=filtered.slice((currentPage-1)*billPageSize,currentPage*billPageSize);
  const changeFilter=(k,v)=>{setFilters(f=>({...f,[k]:v}));setPage(1)};
  const open=async id=>{const d=(await api.get('/orders/'+id)).data;const q=(await api.get('/orders/'+id+'/qrcode')).data;setDetail(d);setQr(q);setAddLine({product_id:'',product_name:'',quantity:'',sale_price:'',unit:'kg'})};
  const getToken=async order=>{let token=qr?.token;if(!token||detail?.id!==order.id){token=(await api.get('/orders/'+order.id+'/qrcode')).data.token}return token};
@@ -162,6 +151,12 @@ export default function Orders(){
   total:a.total+Number(p.amount||0),
   allocated:a.allocated+Number(p.allocated_total||p.amount||0)
  }),{receipts:0,cash:0,bank:0,total:0,allocated:0});
+ const receiptTotalPages=Math.max(1,Math.ceil(receiptRows.length/receiptPageSize));
+ const receiptCp=Math.min(receiptPage,receiptTotalPages);
+ const visibleReceipts=receiptRows.slice((receiptCp-1)*receiptPageSize,receiptCp*receiptPageSize);
+ const summaryTotalPages=Math.max(1,Math.ceil(customerSummaryRows.length/summaryPageSize));
+ const summaryCp=Math.min(summaryPage,summaryTotalPages);
+ const visibleSummary=customerSummaryRows.slice((summaryCp-1)*summaryPageSize,summaryCp*summaryPageSize);
  const paymentDateLabel=p=>ymd(p.payment_date||p.created_at);
  const allocationText=p=>String(p.allocation_text||'').trim()||'Chưa phân bổ';
  const printReportHtml=(title,tableHtml)=>{
@@ -193,16 +188,15 @@ export default function Orders(){
  return <SafePage loading={loading} error={error}>
   <div className="orders-page orders-page-full">
    <div className="card">
-    <div className="section-head"><h3>Bill bán hàng</h3><span className="muted">15 bill/trang</span></div>
+    <div className="section-head"><h3>Danh sách bill</h3></div>
     <div className="filter-row">
      <label className="field-label"><span>Từ ngày</span><input className="input" type="date" value={filters.from} onChange={e=>changeFilter('from',e.target.value)}/></label>
      <label className="field-label"><span>Đến ngày</span><input className="input" type="date" value={filters.to} onChange={e=>changeFilter('to',e.target.value)}/></label>
      <label className="field-label"><span>Tên khách hàng</span><input className="input" placeholder="Nhập tên khách" value={filters.customer} onChange={e=>changeFilter('customer',e.target.value)}/></label>
      <button className="btn secondary" onClick={()=>{setFilters({from:'',to:'',customer:''});setPage(1)}}>Xóa lọc</button>
     </div>
-    <Pager page={currentPage} totalPages={totalPages} total={filtered.length} label="bill" onChange={setPage}/>
-    <div className="table-wrap"><table className="table orders-table"><thead><tr><th>Thao tác</th><th>Ngày</th><th>Khách hàng</th><th>Tổng</th><th>Trạng thái</th><th>Bill</th></tr></thead><tbody>{pageRows.map(o=><tr key={o.id}><td><div className="row-actions bill-actions"><button className="btn secondary" onClick={()=>open(o.id)}>Xem</button><button className="btn" onClick={()=>print(o)}>In A4</button><button className="btn secondary" onClick={()=>printK80(o)}>K80</button><button className="btn secondary" disabled={isLocked(o)} onClick={()=>lockOrder(o)}>{isLocked(o)?'Đã chốt':'Chốt'}</button></div></td><td>{billDateLabel(o)}</td><td>{o.customer_name}</td><td>{money(o.total_amount)}</td><td>{o.payment_status}{isLocked(o)?' / Đã chốt':''}</td><td><b>{o.order_code}</b></td></tr>)}</tbody></table></div>
-    <Pager page={currentPage} totalPages={totalPages} total={filtered.length} label="bill" onChange={setPage}/>
+    <div className="table-wrap"><table className="table orders-table"><thead><tr><th>Thao tác</th><th>Ngày</th><th>Khách hàng</th><th>Tổng</th><th>Trạng thái</th><th>Bill</th></tr></thead><tbody>{pageRows.map(o=><tr key={o.id}><td><div style={{display:'flex',flexWrap:'nowrap',gap:6,alignItems:'center',justifyContent:'center'}}><button className="btn secondary" title="Xem" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>open(o.id)}><Eye size={14}/></button><button className="btn" title="In A4" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>print(o)}><Printer size={14}/></button><button className="btn secondary" title="In K80" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>printK80(o)}><Printer size={12}/></button><button className="btn secondary" title={isLocked(o)?'Đã chốt':'Chốt'} style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} disabled={isLocked(o)} onClick={()=>lockOrder(o)}>{isLocked(o)?<Lock size={14}/>:<CheckCircle2 size={14}/>}</button></div></td><td>{billDateLabel(o)}</td><td>{o.customer_name}</td><td>{money(o.total_amount)}</td><td>{o.payment_status}{isLocked(o)?' / Đã chốt':''}</td><td><b>{o.order_code}</b></td></tr>)}</tbody></table></div>
+    <div style={{display:'flex',justifyContent:'flex-end',alignItems:'center',gap:8,marginTop:12,flexWrap:'wrap'}}><select className="select" value={billPageSize} onChange={e=>{setBillPageSize(Number(e.target.value));setPage(1);}} style={{width:'auto'}}><option value={10}>10 / trang</option><option value={20}>20 / trang</option><option value={50}>50 / trang</option><option value={100}>100 / trang</option></select><span className="muted">Trang {currentPage} / {totalPages}</span><button className="btn secondary" disabled={currentPage<=1} onClick={()=>setPage(p=>Math.max(1,p-1))}>Trước</button><button className="btn secondary" disabled={currentPage>=totalPages} onClick={()=>setPage(p=>Math.min(totalPages,p+1))}>Sau</button></div>
    </div>
 
    <div className="card customer-bill-report-card">
@@ -222,10 +216,12 @@ export default function Orders(){
      <div><span>Tổng chuyển khoản</span><b>{money(receiptTotals.bank)}</b></div>
      <div><span>Tổng khách đưa</span><b>{money(receiptTotals.total)}</b></div>
     </div>
-    <div className="table-wrap"><table className="table compact"><thead><tr><th>Ngày thu</th><th>Phiếu thu</th><th>Khách hàng</th><th>Tiền mặt</th><th>Chuyển khoản</th><th>Tổng khách đưa</th><th>Phân bổ vào bill</th></tr></thead><tbody>{receiptRows.map(p=><tr key={p.id}><td>{paymentDateLabel(p)}</td><td>{p.payment_code}</td><td>{p.customer_name}</td><td>{money(p.cash_amount)}</td><td>{money(p.bank_amount)}</td><td>{money(p.amount)}</td><td>{allocationText(p)}</td></tr>)}</tbody><tfoot><tr><td colSpan="3">Tổng cộng</td><td>{money(receiptTotals.cash)}</td><td>{money(receiptTotals.bank)}</td><td>{money(receiptTotals.total)}</td><td>{receiptTotals.receipts} phiếu thu</td></tr></tfoot></table></div>
+    <div className="table-wrap"><table className="table compact"><thead><tr><th>Ngày thu</th><th>Phiếu thu</th><th>Khách hàng</th><th>Tiền mặt</th><th>Chuyển khoản</th><th>Tổng khách đưa</th><th>Phân bổ vào bill</th></tr></thead><tbody>{visibleReceipts.map(p=><tr key={p.id}><td>{paymentDateLabel(p)}</td><td>{p.payment_code}</td><td>{p.customer_name}</td><td>{money(p.cash_amount)}</td><td>{money(p.bank_amount)}</td><td>{money(p.amount)}</td><td>{allocationText(p)}</td></tr>)}</tbody><tfoot><tr><td colSpan="3">Tổng cộng</td><td>{money(receiptTotals.cash)}</td><td>{money(receiptTotals.bank)}</td><td>{money(receiptTotals.total)}</td><td>{receiptTotals.receipts} phiếu thu</td></tr></tfoot></table></div>
+    <div style={{display:'flex',justifyContent:'flex-end',alignItems:'center',gap:8,marginTop:8,flexWrap:'wrap'}}><select className="select" value={receiptPageSize} onChange={e=>{setReceiptPageSize(Number(e.target.value));setReceiptPage(1);}} style={{width:'auto'}}><option value={10}>10 / trang</option><option value={20}>20 / trang</option><option value={50}>50 / trang</option><option value={100}>100 / trang</option></select><span className="muted">Trang {receiptCp} / {receiptTotalPages}</span><button className="btn secondary" disabled={receiptCp<=1} onClick={()=>setReceiptPage(p=>Math.max(1,p-1))}>Trước</button><button className="btn secondary" disabled={receiptCp>=receiptTotalPages} onClick={()=>setReceiptPage(p=>Math.min(receiptTotalPages,p+1))}>Sau</button></div>
     <div className="table-wrap"><table className="table compact"><thead><tr><th>Ngày lập</th><th>Ngày xuất hàng</th><th>Bill</th><th>Khách hàng</th><th>Tổng</th><th>Đã thu</th><th>Còn nợ</th><th>Trạng thái</th></tr></thead><tbody>{reportRows.map(o=><tr key={o.id}><td>{orderCreatedDate(o)}</td><td><b>{billDateLabel(o)}</b><br/><span className="muted">{billCalendarLabel(o)}</span></td><td>{o.order_code}</td><td>{o.customer_name}</td><td>{money(o.total_amount)}</td><td>{money(o.paid_amount)}</td><td>{money(o.debt_amount)}</td><td>{statusText(o)}</td></tr>)}</tbody><tfoot><tr><td colSpan="4">Tổng cộng</td><td>{money(reportTotals.total)}</td><td>{money(reportTotals.paid)}</td><td>{money(reportTotals.debt)}</td><td>{reportTotals.bills} bill</td></tr></tfoot></table></div>
     <h3 style={{marginTop:16}}>Tổng hợp theo khách hàng</h3>
-    <div className="table-wrap"><table className="table compact"><thead><tr><th>Khách hàng</th><th>Loại lịch</th><th>Số bill</th><th>Tổng tiền</th><th>Đã thu</th><th>Còn nợ</th></tr></thead><tbody>{customerSummaryRows.map(r=><tr key={r.customer_id}><td>{r.customer_name}</td><td>{String(r.calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'Âm lịch':'Dương lịch'}</td><td>{r.bills}</td><td>{money(r.total)}</td><td>{money(r.paid)}</td><td>{money(r.debt)}</td></tr>)}</tbody><tfoot><tr><td colSpan="2">Tổng cộng</td><td>{reportTotals.bills}</td><td>{money(reportTotals.total)}</td><td>{money(reportTotals.paid)}</td><td>{money(reportTotals.debt)}</td></tr></tfoot></table></div>
+    <div className="table-wrap"><table className="table compact"><thead><tr><th>Khách hàng</th><th>Loại lịch</th><th>Số bill</th><th>Tổng tiền</th><th>Đã thu</th><th>Còn nợ</th></tr></thead><tbody>{visibleSummary.map(r=><tr key={r.customer_id}><td>{r.customer_name}</td><td>{String(r.calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'Âm lịch':'Dương lịch'}</td><td>{r.bills}</td><td>{money(r.total)}</td><td>{money(r.paid)}</td><td>{money(r.debt)}</td></tr>)}</tbody><tfoot><tr><td colSpan="2">Tổng cộng</td><td>{reportTotals.bills}</td><td>{money(reportTotals.total)}</td><td>{money(reportTotals.paid)}</td><td>{money(reportTotals.debt)}</td></tr></tfoot></table></div>
+    <div style={{display:'flex',justifyContent:'flex-end',alignItems:'center',gap:8,marginTop:8,flexWrap:'wrap'}}><select className="select" value={summaryPageSize} onChange={e=>{setSummaryPageSize(Number(e.target.value));setSummaryPage(1);}} style={{width:'auto'}}><option value={10}>10 / trang</option><option value={20}>20 / trang</option><option value={50}>50 / trang</option><option value={100}>100 / trang</option></select><span className="muted">Trang {summaryCp} / {summaryTotalPages}</span><button className="btn secondary" disabled={summaryCp<=1} onClick={()=>setSummaryPage(p=>Math.max(1,p-1))}>Trước</button><button className="btn secondary" disabled={summaryCp>=summaryTotalPages} onClick={()=>setSummaryPage(p=>Math.min(summaryTotalPages,p+1))}>Sau</button></div>
    </div>
    {detail&&<div className="bill-edit-overlay"><div className="card detail-card bill-edit-panel bill-edit-wide bill-edit-compact">
     <div className="bill-edit-shell">

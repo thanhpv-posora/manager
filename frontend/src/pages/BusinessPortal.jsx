@@ -1,4 +1,5 @@
 import React,{useEffect,useState}from'react';
+import {Pencil}from'lucide-react';
 import api from'../api/api';
 import SafePage from'../components/SafePage';
 
@@ -26,7 +27,7 @@ export default function BusinessPortal(){
     <input className="input" placeholder="Tiêu đề" value={page.title||''} onChange={e=>setPage({...page,title:e.target.value})}/>
     <textarea className="input" style={{minHeight:160,gridColumn:'1 / -1'}} placeholder="Nội dung" value={page.content||''} onChange={e=>setPage({...page,content:e.target.value})}/>
    </div><button className="btn" style={{marginTop:10}} onClick={savePage}>Lưu trang</button>
-   <div className="portal-list">{pages.map(p=><div className="portal-item" key={p.id}><b>{p.title}</b><span>{p.page_key}</span><button className="btn secondary" onClick={()=>editPage(p)}>Sửa</button></div>)}</div></div>
+   <div className="portal-list">{pages.map(p=><div className="portal-item" key={p.id}><b>{p.title}</b><span>{p.page_key}</span><button className="btn secondary" title="Sửa" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>editPage(p)}><Pencil size={14}/></button></div>)}</div></div>
    <div className="card"><h3>Nhà tài trợ / Quảng cáo</h3><div className="form-grid">
     <input className="input" placeholder="Tên nhà tài trợ" value={sponsor.name||''} onChange={e=>setSponsor({...sponsor,name:e.target.value})}/>
     <input className="input" placeholder="Logo URL" value={sponsor.logo_url||''} onChange={e=>setSponsor({...sponsor,logo_url:e.target.value})}/>
@@ -34,7 +35,7 @@ export default function BusinessPortal(){
     <input className="input" placeholder="Thứ tự" value={sponsor.sort_order||0} onChange={e=>setSponsor({...sponsor,sort_order:e.target.value})}/>
     <textarea className="input" style={{gridColumn:'1 / -1'}} placeholder="Mô tả quảng cáo" value={sponsor.description||''} onChange={e=>setSponsor({...sponsor,description:e.target.value})}/>
    </div><button className="btn" style={{marginTop:10}} onClick={saveSponsor}>Lưu nhà tài trợ</button>
-   <div className="portal-list">{sponsors.map(s=><div className="portal-item" key={s.id}><b>{s.name}</b><span>{s.website_url}</span><button className="btn secondary" onClick={()=>editSponsor(s)}>Sửa</button></div>)}</div></div>
+   <div className="portal-list">{sponsors.map(s=><div className="portal-item" key={s.id}><b>{s.name}</b><span>{s.website_url}</span><button className="btn secondary" title="Sửa" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>editSponsor(s)}><Pencil size={14}/></button></div>)}</div></div>
   </div>
   <div className="card"><h3>Agent AI tạo ý tưởng video quảng cáo theo ngày</h3><div className="form-grid"><select className="select" value={ad.sponsor_id||''} onChange={e=>setAd({...ad,sponsor_id:e.target.value})}><option value="">Chọn nhà tài trợ</option>{sponsors.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select><input className="input" type="date" value={ad.campaign_date} onChange={e=>setAd({...ad,campaign_date:e.target.value})}/></div><button className="btn" style={{marginTop:10}} onClick={createAd}>Tạo ý tưởng video hôm nay</button><table className="table"><tbody>{ads.map(a=><tr key={a.id}><td><b>{a.title}</b><br/><span className="muted">{a.campaign_date} · {a.sponsor_name}</span></td><td style={{whiteSpace:'pre-wrap'}}>{a.video_idea}</td></tr>)}</tbody></table></div>
  </SafePage>

@@ -1,4 +1,5 @@
 import React,{useEffect,useRef,useState}from'react';
+import {CheckCircle2,Pencil,Printer}from'lucide-react';
 import api from'../api/api';
 import SafePage from'../components/SafePage';
 import MoneyInput from'../components/MoneyInput';
@@ -52,6 +53,8 @@ export default function Lots(){
   const[editingLotId,setEditingLotId]=useState(null);
   const[priceSource,setPriceSource]=useState(null);
   const[dateDialogOpen,setDateDialogOpen]=useState(false);
+  const[lotPage,setLotPage]=useState(1);
+  const[lotPageSize,setLotPageSize]=useState(20);
   const[dialogType,setDialogType]=useState('SOLAR');
   const[dialogSupplierId,setDialogSupplierId]=useState(null);
   const[dialogSolarDate,setDialogSolarDate]=useState(today);
@@ -508,6 +511,10 @@ export default function Lots(){
     return m;
   },{}));
 
+  const lotTotalPages=Math.max(1,Math.ceil(reportRows.length/lotPageSize));
+  const lotCp=Math.min(lotPage,lotTotalPages);
+  const lotPaginated=reportRows.slice((lotCp-1)*lotPageSize,lotCp*lotPageSize);
+
   const reportRangeText=`Theo ngày nhập hàng: từ ${reportFilter.from||'...'} đến ${reportFilter.to||'...'}`;
   const printHtml=(title,tableHtml)=>{
     const w=window.open('','_blank');
@@ -710,7 +717,38 @@ export default function Lots(){
         </div>
 
         <h3>Danh sách phiếu nhập / Thanh toán NCC</h3>
-        <table className="table"><thead><tr><th>NCC</th><th>Kg</th><th>Thành tiền</th><th>Còn trả</th><th></th></tr></thead><tbody>{reportRows.length===0?<tr><td colSpan="5" className="muted" style={{textAlign:'center'}}>Không có dữ liệu trong khoảng ngày đã chọn.</td></tr>:reportRows.map(r=><tr key={r.id}><td>{r.supplier_name}</td><td>{r.total_weight}kg</td><td>{money(r.total_cost)}</td><td><b>{money(r.remaining_amount)}</b></td><td><button className="btn secondary" onClick={()=>print(r.id)}>In</button><button className="btn secondary" style={{marginLeft:4}} disabled={r.status!=='OPEN'} title={r.status!=='OPEN'?'Phiếu đã chốt hoặc đã hủy.':undefined} onClick={()=>loadLotIntoForm(r)}>Sửa</button>{r.status==='OPEN'&&<button className="btn secondary" style={{marginLeft:4}} onClick={()=>closeLot(r.id,r.lot_code)}>Chốt</button>}</td></tr>)}</tbody></table>
+        <table className="table">
+          <thead><tr><th>NCC</th><th>Kg</th><th>Thành tiền</th><th>Còn trả</th><th></th></tr></thead>
+          <tbody>
+            {reportRows.length===0
+              ?<tr><td colSpan="5" className="muted" style={{textAlign:'center'}}>Không có dữ liệu trong khoảng ngày đã chọn.</td></tr>
+              :lotPaginated.map(r=><tr key={r.id}>
+                <td>{r.supplier_name}</td>
+                <td>{r.total_weight}kg</td>
+                <td>{money(r.total_cost)}</td>
+                <td><b>{money(r.remaining_amount)}</b></td>
+                <td>
+                  <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                    <button className="btn secondary" style={{padding:0,width:30,height:30,display:'inline-flex',alignItems:'center',justifyContent:'center'}} title="In" onClick={()=>print(r.id)}><Printer size={14}/></button>
+                    <button className="btn secondary" style={{padding:0,width:30,height:30,display:'inline-flex',alignItems:'center',justifyContent:'center'}} title="Sửa" disabled={r.status!=='OPEN'} onClick={()=>loadLotIntoForm(r)}><Pencil size={14}/></button>
+                    {r.status==='OPEN'&&<button className="btn" style={{padding:0,width:30,height:30,display:'inline-flex',alignItems:'center',justifyContent:'center',background:'#16a34a',borderColor:'#16a34a',color:'#fff'}} title="Chốt" onClick={()=>closeLot(r.id,r.lot_code)}><CheckCircle2 size={14}/></button>}
+                  </div>
+                </td>
+              </tr>)
+            }
+          </tbody>
+        </table>
+        <div style={{display:'flex',justifyContent:'flex-end',alignItems:'center',gap:8,marginTop:12,flexWrap:'wrap'}}>
+          <select className="select" value={lotPageSize} onChange={e=>{setLotPageSize(Number(e.target.value));setLotPage(1);}} style={{width:'auto'}}>
+            <option value={10}>10 / trang</option>
+            <option value={20}>20 / trang</option>
+            <option value={50}>50 / trang</option>
+            <option value={100}>100 / trang</option>
+          </select>
+          <span className="muted">Trang {lotCp} / {lotTotalPages}</span>
+          <button className="btn secondary" onClick={()=>setLotPage(p=>Math.max(1,p-1))} disabled={lotCp<=1}>Trước</button>
+          <button className="btn secondary" onClick={()=>setLotPage(p=>Math.min(lotTotalPages,p+1))} disabled={lotCp>=lotTotalPages}>Sau</button>
+        </div>
         <h3>Ứng / trả tiền nhà cung cấp</h3>
         <div className="form-grid">
           <select className="select" value={pay.lot_id||''} onChange={e=>setPay({...pay,lot_id:e.target.value})}><option value="">Chọn lô</option>{rows.map(r=><option key={r.id} value={r.id}>{r.lot_code} - còn {money(r.remaining_amount)}</option>)}</select>

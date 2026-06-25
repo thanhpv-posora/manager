@@ -1,4 +1,5 @@
 import React,{useEffect,useState}from'react';
+import {CheckCircle2,XCircle}from'lucide-react';
 import api from'../api/api';
 import SafePage from'../components/SafePage';
 import {showSuccess,showError,showWarning}from'../utils/toast';
@@ -93,8 +94,10 @@ export default function UserCustomerMapping(){
           </td>
           <td><b>{x.username}</b><br/><span className="muted">{x.service_plan||'TRIAL'}</span></td>
           <td>
-            <button className="btn" onClick={()=>approve(x.id)}>Duyệt & tạo user</button>{' '}
-            <button className="btn danger" onClick={()=>reject(x.id)}>Từ chối</button>
+            <div style={{display:'flex',flexWrap:'nowrap',gap:6,alignItems:'center',justifyContent:'center'}}>
+              <button className="btn" title="Duyệt & tạo user" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>approve(x.id)}><CheckCircle2 size={14}/></button>
+              <button className="btn danger" title="Từ chối" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>reject(x.id)}><XCircle size={14}/></button>
+            </div>
           </td>
         </tr>)}</tbody>
       </table>

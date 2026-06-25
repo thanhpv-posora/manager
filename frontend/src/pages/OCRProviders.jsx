@@ -1,4 +1,5 @@
 import React,{useEffect,useState}from'react';
+import {Pencil}from'lucide-react';
 import api from'../api/api';
 import SafePage from'../components/SafePage';
 
@@ -64,7 +65,7 @@ export default function OCRProviders(){
    <h3>Cấu hình hiện tại</h3>
    <table className="table">
     <thead><tr><th>Module</th><th>Provider</th><th>Endpoint</th><th>Active</th><th></th></tr></thead>
-    <tbody>{configs.map(c=><tr key={c.id}><td>{c.module_key}</td><td>{c.provider}</td><td>{c.endpoint_url}</td><td>{c.is_active?'YES':'NO'}</td><td><button className="btn secondary" onClick={()=>edit(c)}>Sửa</button></td></tr>)}</tbody>
+    <tbody>{configs.map(c=><tr key={c.id}><td>{c.module_key}</td><td>{c.provider}</td><td>{c.endpoint_url}</td><td>{c.is_active?'YES':'NO'}</td><td><div style={{display:'flex',flexWrap:'nowrap',gap:6,alignItems:'center',justifyContent:'center'}}><button className="btn secondary" title="Sửa" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>edit(c)}><Pencil size={14}/></button></div></td></tr>)}</tbody>
    </table>
   </div>
  </SafePage>

@@ -118,6 +118,7 @@ class RegistrationAgent{
 
     if(!fullName) throw new Error('Nhập họ tên');
     if(!phone) throw new Error('Nhập số điện thoại liên hệ');
+    if(!/^[0-9]+$/.test(phone)) throw new Error('Số điện thoại chỉ được nhập số');
     if(!email) throw new Error('Vui lòng nhập email để xác minh tài khoản. Đăng ký chỉ bằng số điện thoại đang phát triển.');
     if(!isValidEmail(email)) throw new Error('Email không hợp lệ. Vui lòng nhập email đúng định dạng, ví dụ: ten@posora.vn');
     if(!username) throw new Error('Nhập tài khoản hoặc số điện thoại đăng nhập');

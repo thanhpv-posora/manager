@@ -17,19 +17,23 @@ const registerStyles=`
 .mb-register-v7{min-height:100vh;width:100%;padding:28px;background:#F8FAFC;color:#1F2937;}
 .mb-register-v7 *{box-sizing:border-box;}
 .mb-register-v7__wrap{max-width:1280px;margin:0 auto;display:grid;grid-template-columns:minmax(420px,.92fr) minmax(420px,520px);gap:24px;align-items:start;min-height:calc(100vh - 56px);padding-top:18px;padding-bottom:18px;}
-.mb-register-v7__hero{border-radius:34px;padding:30px;position:sticky;top:24px;background:linear-gradient(145deg,#1558B0 0%,#1A73E8 60%,#2563EB 100%);color:white;box-shadow:0 8px 40px rgba(26,115,232,.22);position:relative;overflow:hidden;}
-.mb-register-v7__hero:before{content:"";position:absolute;right:-90px;top:-90px;width:270px;height:270px;border-radius:999px;background:rgba(255,255,255,.08);}
-.mb-register-v7__hero:after{content:"";position:absolute;left:-70px;bottom:-105px;width:285px;height:285px;border-radius:999px;background:rgba(191,219,254,.14);}
+.mb-register-v7__hero{border-radius:34px;padding:30px;position:sticky;top:24px;background:linear-gradient(145deg,#EFF6FF 0%,#DBEAFE 55%,#FFFFFF 100%);color:#1E293B;box-shadow:0 4px 24px rgba(15,23,42,.08);position:relative;overflow:hidden;}
+.mb-register-v7__hero:before{content:"";position:absolute;right:-90px;top:-90px;width:270px;height:270px;border-radius:999px;background:rgba(191,219,254,.22);}
+.mb-register-v7__hero:after{content:"";position:absolute;left:-70px;bottom:-105px;width:285px;height:285px;border-radius:999px;background:rgba(219,234,254,.18);}
 .mb-register-v7__hero>*{position:relative;z-index:1;}
-.mb-register-v7__pill{display:inline-flex;align-items:center;gap:8px;padding:9px 14px;border-radius:999px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.28);font-weight:600;margin-bottom:22px;}
-.mb-register-v7 h1{font-size:42px;line-height:1.05;margin:0 0 16px;font-weight:800;letter-spacing:-1.7px;}
-.mb-register-v7__lead{font-size:17px;line-height:1.68;color:rgba(255,255,255,.82);max-width:640px;margin:0 0 20px;}
+.mb-register-v7__logo{display:flex;align-items:center;gap:14px;margin-bottom:24px;}
+.mb-register-v7__logo>span{width:52px;height:52px;border-radius:18px;background:#fff;display:grid;place-items:center;font-size:28px;box-shadow:0 4px 16px rgba(26,115,232,.12);border:1px solid #BFDBFE;}
+.mb-register-v7__logo b{font-size:26px;color:#1558B0;letter-spacing:-.03em;}
+.mb-register-v7__logo small{display:block;color:#1A73E8;font-weight:600;text-transform:uppercase;letter-spacing:.06em;font-size:12px;margin-top:3px;}
+.mb-register-v7__pill{display:inline-flex;align-items:center;gap:8px;padding:9px 14px;border-radius:999px;background:#EFF6FF;border:1px solid #BFDBFE;color:#1558B0;font-weight:600;margin-bottom:22px;}
+.mb-register-v7 h1{font-size:42px;line-height:1.05;margin:0 0 16px;font-weight:700;letter-spacing:-1.7px;color:#111827;}
+.mb-register-v7__lead{font-size:17px;line-height:1.68;color:#64748B;max-width:640px;margin:0 0 20px;}
 .mb-register-v7__features{display:grid;grid-template-columns:1fr;gap:10px;margin:18px 0;}
-.mb-register-v7__feature{background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.18);border-radius:18px;padding:12px 14px;backdrop-filter:blur(10px);}
-.mb-register-v7__feature b{display:block;font-size:15px;margin-bottom:7px;color:#fff;}
-.mb-register-v7__feature span{display:block;color:rgba(255,255,255,.72);font-size:13px;line-height:1.48;}
+.mb-register-v7__feature{background:rgba(255,255,255,.92);border:1px solid #BFDBFE;border-radius:18px;padding:12px 14px;box-shadow:0 4px 16px rgba(15,23,42,.05);}
+.mb-register-v7__feature b{display:block;font-size:15px;margin-bottom:7px;color:#1E293B;}
+.mb-register-v7__feature span{display:block;color:#64748B;font-size:13px;line-height:1.48;}
 .mb-register-v7__steps{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:18px;}
-.mb-register-v7__step{display:flex;gap:8px;align-items:center;background:#fff;border-radius:16px;padding:10px;color:#1558B0;font-weight:600;min-width:0;}
+.mb-register-v7__step{display:flex;gap:8px;align-items:center;background:#fff;border-radius:16px;padding:10px;color:#1558B0;font-weight:600;min-width:0;border:1px solid #E2E8F0;}
 .mb-register-v7__step strong{flex:0 0 auto;display:grid;place-items:center;width:31px;height:31px;border-radius:999px;background:#EFF6FF;color:#1A73E8;}
 .mb-register-v7__card{width:100%;border-radius:30px;padding:24px;border:1px solid #E2E8F0;background:#FFFFFF;box-shadow:0 4px 24px rgba(15,23,42,.08);}
 .mb-register-v7__eyebrow{font-size:12px;text-transform:uppercase;letter-spacing:1.6px;color:#1A73E8;font-weight:600;margin-bottom:6px;}
@@ -106,7 +110,8 @@ export default function RegisterAccount({onBack}){
   setDone('');
 
   if(!form.full_name?.trim()){showWarning('Nhập họ tên');return setError('Nhập họ tên');}
-  if(!form.phone?.trim()){showWarning('Nhập số điện thoại liên hệ');return setError('Nhập số điện thoại liên hệ');}
+  if(!form.phone?.trim()){showWarning('Nhập số điện thoại');return setError('Nhập số điện thoại');}
+  if(!/^[0-9]+$/.test(form.phone.trim())){showWarning('Số điện thoại chỉ được nhập số');return setError('Số điện thoại chỉ được nhập số');}
   if(!form.email?.trim()){showWarning('Nhập email để xác minh tài khoản');return setError('Nhập email để xác minh tài khoản. Đăng ký chỉ bằng số điện thoại đang phát triển.');}
   if(!isValidEmail(form.email)){showWarning('Email không hợp lệ');return setError('Email không hợp lệ. Vui lòng nhập đúng định dạng, ví dụ: ten@posora.vn');}
   if(!form.password){showWarning('Nhập mật khẩu');return setError('Nhập mật khẩu');}
@@ -152,7 +157,11 @@ export default function RegisterAccount({onBack}){
   <style>{registerStyles}</style>
   <div className="mb-register-v7__wrap">
    <section className="mb-register-v7__hero">
-    <div className="mb-register-v7__pill">MeatBiz AI-native ERP</div>
+    <div className="mb-register-v7__logo">
+     <span>🥩</span>
+     <div><b>MeatBiz</b><small>AI-native ERP</small></div>
+    </div>
+    <div className="mb-register-v7__pill">Hệ thống quản lý thịt bán sỉ</div>
     <h1>Đăng ký dùng MeatBiz</h1>
     <p className="mb-register-v7__lead">Hệ thống quản lý bán sỉ thịt tươi với POS, công nợ, tồn kho, nhập hàng và AI điều hành trong một giao diện gọn.</p>
 
@@ -181,7 +190,7 @@ export default function RegisterAccount({onBack}){
     <div className="mb-register-v7__grid">
      <label className="mb-register-v7__field"><span>Họ tên *</span><input className="mb-register-v7__input" autoComplete="off" placeholder="Họ và tên" value={form.full_name} onChange={e=>set('full_name',e.target.value)}/></label>
      <label className="mb-register-v7__field"><span>Tên đăng nhập</span><input className="mb-register-v7__input" autoComplete="new-username" placeholder="Tên đăng nhập" value={form.username} onChange={e=>set('username',e.target.value)}/></label>
-     <label className="mb-register-v7__field"><span>Số điện thoại *</span><input className="mb-register-v7__input" autoComplete="off" placeholder="Số điện thoại" value={form.phone} onChange={e=>set('phone',e.target.value)}/></label>
+     <label className="mb-register-v7__field"><span>Số điện thoại *</span><input className="mb-register-v7__input" autoComplete="off" inputMode="numeric" pattern="[0-9]*" placeholder="Số điện thoại" value={form.phone} onChange={e=>set('phone',e.target.value.replace(/[^0-9]/g,''))}/></label>
      <label className="mb-register-v7__field"><span>Email *</span><input className="mb-register-v7__input" autoComplete="off" type="email" inputMode="email" placeholder="Email" value={form.email} onChange={e=>set('email',e.target.value)}/></label>
 
      <label className="mb-register-v7__field"><span>Mật khẩu *</span><div className="mb-register-v7__password">

@@ -21,6 +21,7 @@ export default function UserCustomerMapping({setPage}){
   const[error,setError]=useState('');
   const[pwModal,setPwModal]=useState(null);
   const[pwValue,setPwValue]=useState('');
+  const[staffFormKey,setStaffFormKey]=useState(0);
 
   const load=async()=>{
     try{
@@ -67,6 +68,7 @@ export default function UserCustomerMapping({setPage}){
       await api.post('/user-mapping/user',{...payload,role:'STAFF'});
       showSuccess('Đã tạo user nội bộ');
       setForm({username:'',full_name:'',password:'',confirm_password:''});
+      setStaffFormKey(k=>k+1);
       await load();
     }catch(e){showError(e.response?.data?.message||e.message);}
   };
@@ -167,11 +169,11 @@ export default function UserCustomerMapping({setPage}){
       <div className="card">
         <h3>Tạo user nội bộ</h3>
         <p className="muted">Nhân viên (Cashier, Warehouse, Operator, Accountant, Manager) đều dùng role STAFF. Phân quyền chức năng qua trang Phân quyền user.</p>
-        <div className="form-grid">
-          <input className="input" placeholder="Username" value={form.username||''} onChange={e=>setForm({...form,username:e.target.value})}/>
-          <input className="input" placeholder="Tên hiển thị" value={form.full_name||''} onChange={e=>setForm({...form,full_name:e.target.value})}/>
-          <input className="input" placeholder="Mật khẩu" type="password" value={form.password||''} onChange={e=>setForm({...form,password:e.target.value})}/>
-          <input className="input" placeholder="Nhập lại mật khẩu" type="password" value={form.confirm_password||''} onChange={e=>setForm({...form,confirm_password:e.target.value})}/>
+        <div key={staffFormKey} className="form-grid">
+          <input className="input" placeholder="Username" name="internal_user_code" autoComplete="new-username" value={form.username||''} onChange={e=>setForm({...form,username:e.target.value})}/>
+          <input className="input" placeholder="Tên hiển thị" name="internal_display_name" autoComplete="off" value={form.full_name||''} onChange={e=>setForm({...form,full_name:e.target.value})}/>
+          <input className="input" placeholder="Mật khẩu" type="password" name="internal_new_password" autoComplete="new-password" value={form.password||''} onChange={e=>setForm({...form,password:e.target.value})}/>
+          <input className="input" placeholder="Nhập lại mật khẩu" type="password" name="internal_confirm_password" autoComplete="new-password" value={form.confirm_password||''} onChange={e=>setForm({...form,confirm_password:e.target.value})}/>
         </div>
         <button className="btn" style={{marginTop:10}} onClick={createStaff}>Tạo user nội bộ</button>
       </div>

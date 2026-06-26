@@ -27,7 +27,7 @@ const menu=[
   ['sponsor-videos','Video nhà tài trợ',Megaphone],
   ['user-permissions','Phân quyền user',Settings],
   ['registrations','Đăng ký khách hàng',Settings],
-  ['user-mapping','Mapping user-KH',Settings],
+  ['user-mapping','Quản lý tài khoản',Settings],
 ];
 
 const pageMeta={
@@ -56,7 +56,7 @@ const pageMeta={
   'sponsor-videos':['Video nhà tài trợ','Quản lý video và nội dung truyền thông.'],
   'user-permissions':['Phân quyền user','Thiết lập quyền truy cập chức năng theo user.'],
   registrations:['Đăng ký khách hàng','Duyệt tài khoản đăng ký mới.'],
-  'user-mapping':['Mapping user-KH','Gắn user với khách hàng được phép thao tác.']
+  'user-mapping':['Quản lý tài khoản','Tạo user nội bộ, quản lý khách hàng và duyệt đăng ký.']
 };
 
 export default function MainLayout({page,setPage,user,children,onLogout,allowedMenus}){

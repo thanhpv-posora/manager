@@ -112,7 +112,7 @@ export default function App(){
     'production-check':<ProductionCheck/>,
     'user-permissions':<UserPermissions onSaved={refreshPermissions}/>,
     'registrations':<Registrations/>,
-    'user-mapping':<UserCustomerMapping/>
+    'user-mapping':<UserCustomerMapping setPage={setPage}/>
   };
 
   const visiblePage=allowedMenus&&allowedMenus.includes(page)?page:roleDefaultPage(user,allowedMenus);

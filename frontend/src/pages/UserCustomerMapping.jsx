@@ -59,8 +59,12 @@ export default function UserCustomerMapping({setPage}){
   };
 
   const createStaff=async()=>{
+    if(!form.password) return showError('Nhập mật khẩu');
+    if(!form.confirm_password) return showError('Nhập lại mật khẩu');
+    if(form.password!==form.confirm_password) return showError('Mật khẩu nhập lại không khớp');
+    const{confirm_password:_,...payload}=form;
     try{
-      await api.post('/user-mapping/user',{...form,role:'STAFF'});
+      await api.post('/user-mapping/user',{...payload,role:'STAFF'});
       showSuccess('Đã tạo user nội bộ');
       setForm({});
       await load();
@@ -167,6 +171,7 @@ export default function UserCustomerMapping({setPage}){
           <input className="input" placeholder="Username" value={form.username||''} onChange={e=>setForm({...form,username:e.target.value})}/>
           <input className="input" placeholder="Tên hiển thị" value={form.full_name||''} onChange={e=>setForm({...form,full_name:e.target.value})}/>
           <input className="input" placeholder="Mật khẩu" type="password" value={form.password||''} onChange={e=>setForm({...form,password:e.target.value})}/>
+          <input className="input" placeholder="Nhập lại mật khẩu" type="password" value={form.confirm_password||''} onChange={e=>setForm({...form,confirm_password:e.target.value})}/>
         </div>
         <button className="btn" style={{marginTop:10}} onClick={createStaff}>Tạo user nội bộ</button>
       </div>

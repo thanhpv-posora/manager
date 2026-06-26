@@ -66,7 +66,7 @@ export default function UserCustomerMapping({setPage}){
     try{
       await api.post('/user-mapping/user',{...payload,role:'STAFF'});
       showSuccess('Đã tạo user nội bộ');
-      setForm({});
+      setForm({username:'',full_name:'',password:'',confirm_password:''});
       await load();
     }catch(e){showError(e.response?.data?.message||e.message);}
   };

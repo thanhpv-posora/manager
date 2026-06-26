@@ -88,7 +88,7 @@ export default function App(){
 
   const pages={
     dashboard:<Dashboard/>,
-    'create-order':<CreateOrder/>,
+    'create-order':<CreateOrder setPage={setPage}/>,
     orders:<Orders/>,
     payments:<Payments/>,
     installments:<Installments/>,

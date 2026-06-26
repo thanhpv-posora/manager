@@ -193,7 +193,7 @@ class PriceMatrixAgent {
         const price = await PriceBookService.getEffectivePrice(customerId, r.product_id, new Date().toISOString().slice(0,10), pool, customers[0].billing_calendar_type, '');
         if(price){ r.sale_price=price.sale_price; r.price_type=price.price_type; r.price_book_id=price.price_book_id || null; }
       }
-      return {customer:customers[0], products:catalogRows, source:'CUSTOMER_CATALOG'};
+      return {customer:customers[0], products:catalogRows.filter(r=>r.price_type&&r.price_type!=='COMMON_PRICE'), source:'CUSTOMER_CATALOG'};
     }
 
     const [fallback] = await pool.query(
@@ -213,7 +213,7 @@ class PriceMatrixAgent {
       const price = await PriceBookService.getEffectivePrice(customerId, r.product_id, new Date().toISOString().slice(0,10), pool, customers[0].billing_calendar_type, '');
       if(price){ r.sale_price=price.sale_price; r.price_type=price.price_type; r.price_book_id=price.price_book_id || null; }
     }
-    return {customer:customers[0], products:fallback, source:'ALL_PRODUCTS_FALLBACK'};
+    return {customer:customers[0], products:fallback.filter(r=>r.price_type&&r.price_type!=='COMMON_PRICE'), source:'ALL_PRODUCTS_FALLBACK'};
   }
 
   async reorderCatalog(customerId, items) {

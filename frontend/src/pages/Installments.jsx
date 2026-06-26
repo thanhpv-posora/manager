@@ -3,6 +3,7 @@ import {Pencil,Save,Trash2,XCircle}from'lucide-react';
 import api from'../api/api';
 import SafePage from'../components/SafePage';
 import MoneyInput from'../components/MoneyInput';
+import EnterpriseAutocomplete from'../components/common/EnterpriseAutocomplete';
 import {formatLunarDate,solarToLunar}from'../utils/lunarDate';
 
 const money=n=>Number(n||0).toLocaleString('en-US')+'đ';
@@ -243,10 +244,7 @@ th{background:#1A73E8;color:white}
    <div className="form-grid">
     <label className="field-label">
      <span>Khách hàng</span>
-     <select className="input" value={customerId} onChange={e=>setCustomerId(e.target.value)}>
-      <option value="">-- Chọn khách hàng --</option>
-      {customers.map(c=><option key={c.id} value={c.id}>{c.name}{c.phone?` - ${c.phone}`:''}</option>)}
-     </select>
+     <EnterpriseAutocomplete items={customers} value={customers.find(c=>String(c.id)===String(customerId))||null} onChange={item=>setCustomerId(item?String(item.id):'')} placeholder="Tìm khách hàng..." displayField="name" secondaryFields={['customer_code','phone']} searchFields={['name','customer_code','phone','address']} filter={item=>(Number(item.partner_type||2)&2)===2} emptyText="Không tìm thấy khách hàng" getItemKey={item=>item.id}/>
     </label>
     <label className="field-label">
      <span>Ngày góp bill</span>
@@ -300,10 +298,7 @@ th{background:#1A73E8;color:white}
    <p className="muted">Chọn khách hàng trước. Khoảng thời gian sẽ tự chạy theo loại lịch tính bill của khách; không hiển thị lẫn lộn âm/dương.</p>
    <div className="form-grid" style={{gridTemplateColumns:'1.3fr 1fr 1fr auto auto',alignItems:'end'}}>
     <label className="field-label"><span>Khách hàng thống kê</span>
-     <select className="input" value={statsCustomerId} onChange={e=>setStatsCustomerId(e.target.value)}>
-      <option value="">Tất cả khách hàng - Dương lịch</option>
-      {customers.map(c=><option key={c.id} value={c.id}>{c.name} • {String(c.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'Âm lịch':'Dương lịch'}{c.phone?` - ${c.phone}`:''}</option>)}
-     </select>
+     <EnterpriseAutocomplete items={customers} value={customers.find(c=>String(c.id)===String(statsCustomerId))||null} onChange={item=>setStatsCustomerId(item?String(item.id):'')} placeholder="Tất cả khách hàng..." displayField="name" secondaryFields={['customer_code','phone']} searchFields={['name','customer_code','phone','address']} filter={item=>(Number(item.partner_type||2)&2)===2} emptyText="Không tìm thấy khách hàng" getItemKey={item=>item.id}/>
     </label>
     {statsCalendarType==='LUNAR'?<>
      <label className="field-label"><span>{statsFromLabel}</span><input className="input" value={statsFromLunar} onChange={e=>changeStatsFromLunar(e.target.value)} placeholder="VD: 01/03/2026"/></label>

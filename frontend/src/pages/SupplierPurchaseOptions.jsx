@@ -1,6 +1,7 @@
 import React,{useEffect,useMemo,useRef,useState,useCallback}from'react';
 import {createPortal}from'react-dom';
 import {Pencil,Power,PowerOff}from'lucide-react';
+import EnterpriseAutocomplete from'../components/common/EnterpriseAutocomplete';
 import api from'../api/api';
 import SafePage from'../components/SafePage';
 import {showSuccess,showError,showWarning}from'../utils/toast';
@@ -243,13 +244,18 @@ export default function SupplierPurchaseOptions(){
 
         <div>
           <label style={LBL}>Nhà cung cấp</label>
-          <select className="select" value={partnerId} onChange={e=>{
-            setPartnerId(e.target.value);
-            setCategoryId('');setProductId('');setProductSearch('');setProductDropdownOpen(false);setOptions([]);reset();
-          }}>
-            <option value="">Chọn nhà cung cấp...</option>
-            {partners.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}
-          </select>
+          <EnterpriseAutocomplete
+            items={partners}
+            value={selPartner||null}
+            onChange={p=>{setPartnerId(p?String(p.id):'');setCategoryId('');setProductId('');setOptions([]);reset();}}
+            placeholder="Tìm nhà cung cấp..."
+            displayField="name"
+            secondaryFields={['customer_code','phone']}
+            searchFields={['name','customer_code','phone']}
+            filter={item=>(Number(item.partner_type||0)&1)===1}
+            emptyText="Không tìm thấy nhà cung cấp"
+            getItemKey={item=>item.id}
+          />
         </div>
 
         <div>
@@ -265,46 +271,20 @@ export default function SupplierPurchaseOptions(){
           </select>
         </div>
 
-        <div style={{position:'relative'}}>
+        <div>
           <label style={LBL}>Sản phẩm</label>
-          <input
-            ref={productInputRef}
-            className="input"
+          <EnterpriseAutocomplete
+            items={categoryId?allProducts.filter(p=>String(p.category_id)===String(categoryId)):allProducts}
+            value={selProduct||null}
+            onChange={p=>{if(p){setProductId(String(p.id));reset();}else{setProductId('');setOptions([]);reset();}}}
             placeholder="Tìm sản phẩm..."
-            value={productSearch}
+            displayField="name"
+            secondaryFields={['product_code','barcode']}
+            searchFields={['name','product_code','code','barcode']}
             disabled={!partnerId}
-            autoComplete="off"
-            onChange={e=>{calcProductPos();setProductSearch(e.target.value);setProductId('');setProductDropdownOpen(true);setProductHighlight(-1);}}
-            onFocus={()=>{calcProductPos();setProductDropdownOpen(true);setProductHighlight(-1);}}
-            onKeyDown={handleProductKeyDown}
+            emptyText="Không tìm thấy sản phẩm"
+            getItemKey={item=>item.id}
           />
-          {productDropdownOpen&&productCandidates.length>0&&createPortal(
-            <div ref={productDropdownRef} style={{
-              position:'fixed',
-              top:productDropdownPos.top,
-              left:productDropdownPos.left,
-              width:productDropdownPos.width,
-              zIndex:9999,
-              background:'#fff',border:'1px solid #d1d5db',borderRadius:10,
-              boxShadow:'0 4px 18px rgba(0,0,0,.13)',maxHeight:320,overflowY:'auto'
-            }}>
-              {productCandidates.map((p,i)=>(
-                <div key={p.id}
-                  style={{
-                    padding:'8px 12px',cursor:'pointer',fontSize:13,
-                    background:i===productHighlight?'#eff6ff':'#fff',
-                    borderBottom:'1px solid #f3f4f6'
-                  }}
-                  onMouseDown={e=>{e.preventDefault();selectProduct(p);}}
-                  onMouseEnter={()=>setProductHighlight(i)}>
-                  <span style={{fontWeight:600}}>{p.name}</span>
-                  {(p.code||p.product_code)&&<span style={{color:'#6b7280',fontSize:11,marginLeft:6}}>{p.code||p.product_code}</span>}
-                </div>
-              ))}
-            </div>,
-            document.body
-          )}
-          {productId&&<p style={{...HINT,marginTop:4}}>Đã chọn: <b>{selProduct?.name}</b></p>}
         </div>
 
       </div>

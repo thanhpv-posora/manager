@@ -5,6 +5,7 @@ import SafePage from'../components/SafePage';
 import MoneyInput from'../components/MoneyInput';
 import {calcExpression} from'../utils/expr';
 import {showSuccess,showError} from'../utils/toast';
+import EnterpriseAutocomplete from'../components/common/EnterpriseAutocomplete';
 import {formatLunarDate,parseLunarText,lunarToSolarDate} from'../utils/lunarDate';
 
 const money=n=>Number(n||0).toLocaleString('en-US')+'đ';
@@ -618,12 +619,12 @@ export default function Lots(){
             <div className="form-grid">
           <div className="lots-header-row" style={{gridColumn:'1/-1'}}>
             <label style={{margin:0}}><span className="muted">Mã nhập hàng</span><input className="input" placeholder="Mã nhập hàng" value={f.lot_name||''} onChange={e=>setField('lot_name',e.target.value)}/></label>
-            <label style={{margin:0}}><span className="muted">Nhà cung cấp</span><select className="select" value={dateDialogOpen&&dialogSupplierId?dialogSupplierId:(f.supplier_id||'')} onChange={e=>onSupplierChange(e.target.value)}><option value="">Chọn nhà cung cấp</option>{s.map(x=><option key={x.id} value={x.id}>{x.name} - {x.billing_calendar_type==='LUNAR'?'Âm lịch':'Dương lịch'}</option>)}</select></label>
+            <label style={{margin:0}}><span className="muted">Nhà cung cấp</span><EnterpriseAutocomplete items={s} value={s.find(x=>String(x.id)===String(dateDialogOpen&&dialogSupplierId?dialogSupplierId:(f.supplier_id||'')))||null} onChange={item=>onSupplierChange(item?String(item.id):'')} placeholder="Tìm NCC..." displayField="name" secondaryFields={['phone']} searchFields={['name','supplier_code','customer_code','phone','address']} emptyText="Không tìm thấy NCC" getItemKey={item=>item.id}/></label>
             <div style={{display:'flex',flexDirection:'column',gap:2}}>
               <span className="muted">Ngày nhập</span>
               {f.supplier_id
-                ?<button type="button" className="btn secondary lots-date-btn" style={{fontWeight:500}} onClick={openDateDialog}>{selectedSupplierCalendar==='LUNAR'?`${f.lunar_date_text||formatLunarDate(f.purchase_date||today)} (âm lịch)`:`${dateText(f.purchase_date)} (dương lịch)`}</button>
-                :<span className="muted" style={{fontSize:12,padding:'6px 0'}}>Chọn NCC để đặt ngày</span>}
+                ?<button type="button" className="btn secondary lots-date-btn" style={{fontWeight:500}} onClick={openDateDialog}>{selectedSupplierCalendar==='LUNAR'?`${f.lunar_date_text||formatLunarDate(f.purchase_date||today)} (AL)`:`${dateText(f.purchase_date)} (DL)`}</button>
+                :<span className="muted" style={{fontSize:12,padding:'6px 0'}}>Chọn ngày</span>}
             </div>
           </div>
 
@@ -696,7 +697,7 @@ export default function Lots(){
         <div className="form-grid supplier-report-filter">
           <label><span className="muted">Từ ngày</span><input className="input" type="date" value={reportFilter.from} onChange={e=>setReportFilter({...reportFilter,from:e.target.value})}/></label>
           <label><span className="muted">Đến ngày</span><input className="input" type="date" value={reportFilter.to} onChange={e=>setReportFilter({...reportFilter,to:e.target.value})}/></label>
-          <label><span className="muted">Nhà cung cấp</span><select className="select" value={reportFilter.supplier_id} onChange={e=>setReportFilter({...reportFilter,supplier_id:e.target.value})}><option value="">Tất cả NCC</option>{s.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
+          <label><span className="muted">Nhà cung cấp</span><EnterpriseAutocomplete items={s} value={s.find(x=>String(x.id)===String(reportFilter.supplier_id))||null} onChange={item=>setReportFilter({...reportFilter,supplier_id:item?String(item.id):''})} placeholder="Tất cả NCC..." displayField="name" secondaryFields={['phone']} searchFields={['name','supplier_code','customer_code','phone','address']} emptyText="Không tìm thấy NCC" getItemKey={item=>item.id}/></label>
           <div className="actions" style={{alignItems:'end'}}>
             {reportTab==='DETAIL'?<button className="btn secondary" disabled={!reportRows.length} onClick={printDetail}>🖨 In chi tiết</button>:<button className="btn secondary" disabled={!summaryRows.length} onClick={printSummary}>🖨 In tổng hợp</button>}
           </div>

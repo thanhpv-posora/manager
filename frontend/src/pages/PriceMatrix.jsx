@@ -1,4 +1,4 @@
-import React,{useEffect,useMemo,useRef,useState}from'react';import {Trash2} from'lucide-react';import api from'../api/api';import SafePage from'../components/SafePage';import MoneyInput from'../components/MoneyInput';import {moneyVnd} from'../utils/money';import {handlePosInputKeyNavigation} from'../utils/focusNavigation';
+import React,{useEffect,useMemo,useRef,useState}from'react';import {Trash2} from'lucide-react';import api from'../api/api';import SafePage from'../components/SafePage';import MoneyInput from'../components/MoneyInput';import {moneyVnd} from'../utils/money';import {handlePosInputKeyNavigation} from'../utils/focusNavigation';import EnterpriseAutocomplete from'../components/common/EnterpriseAutocomplete';
 
 export default function PriceMatrix(){
   const[customers,setCustomers]=useState([]);
@@ -265,11 +265,22 @@ export default function PriceMatrix(){
       <div className="card price-matrix-table-card">
         <h3>Price Matrix Agent - bảng giá riêng theo từng bạn hàng</h3>
         <div className="actions">
-          <select className="select" style={{width:260}} value={cid} onChange={e=>changeCustomer(e.target.value)} disabled={customerLoading}>
-            <option value="">--- Chọn khách hàng ---</option>
-            {customers.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-          {customerLoading&&<span className="muted">Đang tải...</span>}
+          <div style={{width:280,display:'inline-flex'}}>
+            <EnterpriseAutocomplete
+              items={customers}
+              value={customers.find(c=>String(c.id)===String(cid))||null}
+              onChange={item=>changeCustomer(item?String(item.id):'')}
+              placeholder="Tìm khách hàng..."
+              displayField="name"
+              secondaryFields={['customer_code','phone']}
+              searchFields={['customer_code','name','phone','address']}
+              filter={item=>(Number(item.partner_type??2)&2)===2}
+              disabled={customerLoading}
+              loading={customerLoading}
+              emptyText="Không tìm thấy khách hàng"
+              getItemKey={item=>item.id}
+            />
+          </div>
           <select className="select" style={{width:260}} value={copyTo} onChange={e=>setCopyTo(e.target.value)}>
             <option value="">Copy bảng này sang khách...</option>
             {customers.filter(c=>String(c.id)!==String(cid)).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}

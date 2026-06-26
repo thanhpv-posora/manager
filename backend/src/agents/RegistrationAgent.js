@@ -260,11 +260,11 @@ class RegistrationAgent{
 
       const fullName=r.full_name||r.owner_name||r.business_name||r.username;
       if(!r.password_hash) throw new Error('Đăng ký chưa có password_hash, vui lòng yêu cầu khách đăng ký lại');
-      const [user]=await conn.query(
-        `INSERT INTO users(username,full_name,phone,email,password_hash,role,customer_id,is_active) VALUES(?,?,?,?,?,'CUSTOMER',?,1)`,
-        [r.username,fullName,r.phone||'',r.email||'',r.password_hash,customerId]
-      );
-      const userId=user.insertId;
+      const MappingAgent=require('./UserCustomerMappingAgent');
+      const {user_id:userId}=await MappingAgent.createUser({
+        username:r.username,full_name:fullName,phone:r.phone||'',email:r.email||'',
+        password_hash:r.password_hash,role:'CUSTOMER',customer_id:customerId
+      },conn);
       await conn.query(`UPDATE customer_account_registrations SET status='APPROVED',verification_status='VERIFIED',customer_id=?,user_id=?,approved_at=NOW(),approved_by=?,updated_at=NOW() WHERE id=?`,[customerId,userId,adminUserId||null,id]);
       await conn.commit();
 

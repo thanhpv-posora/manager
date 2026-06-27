@@ -39,6 +39,7 @@ export default function App(){
   const[token,setToken]=useState(localStorage.getItem('token'));
   const[user,setUser]=useState(()=>{try{return JSON.parse(localStorage.getItem('user')||'null')}catch{return null}});
   const[allowedMenus,setAllowedMenus]=useState(()=>{try{return JSON.parse(localStorage.getItem('allowedMenus')||'null')}catch{return null}});
+  const[menusMeta,setMenusMeta]=useState(()=>{try{return JSON.parse(localStorage.getItem('menusMeta')||'[]')}catch{return[]}});
   const[showLogin,setShowLogin]=useState(false);
   const[showRegister,setShowRegister]=useState(false);
   const[page,setPage]=useState(()=>roleDefaultPage(user,allowedMenus));
@@ -47,9 +48,12 @@ export default function App(){
     if(!localStorage.getItem('token'))return;
     try{
       const r=await api.get('/permissions/me');
-      const menus=r.data?.menus||null;
+      const menus=r.data?.allowedMenus||null;
+      const meta=r.data?.menus||[];
       setAllowedMenus(menus);
+      setMenusMeta(meta);
       localStorage.setItem('allowedMenus',JSON.stringify(menus));
+      localStorage.setItem('menusMeta',JSON.stringify(meta));
       setPage(p=>menus&&menus.includes(p)?p:roleDefaultPage(user,menus));
     }catch(e){
       console.warn('Permission reload failed',e);
@@ -61,7 +65,7 @@ export default function App(){
   const onLoggedIn=(data)=>{
     localStorage.setItem('token',data.token);
     localStorage.setItem('user',JSON.stringify(data.user));
-    const menus=data.permissions?.menus||null;
+    const menus=data.permissions?.allowedMenus||null;
     localStorage.setItem('allowedMenus',JSON.stringify(menus));
     setToken(data.token);
     setUser(data.user);
@@ -74,9 +78,11 @@ export default function App(){
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     localStorage.removeItem('allowedMenus');
+    localStorage.removeItem('menusMeta');
     setToken(null);
     setUser(null);
     setAllowedMenus(null);
+    setMenusMeta([]);
     setShowLogin(false);
   };
 
@@ -119,7 +125,7 @@ export default function App(){
 
   const visiblePage=allowedMenus&&allowedMenus.includes(page)?page:roleDefaultPage(user,allowedMenus);
 
-  return <MainLayout page={visiblePage} setPage={setPage} user={user} onLogout={logout} allowedMenus={allowedMenus}>
+  return <MainLayout page={visiblePage} setPage={setPage} user={user} onLogout={logout} allowedMenus={allowedMenus} menusMeta={menusMeta}>
     {pages[visiblePage]||pages[roleDefaultPage(user,allowedMenus)]}
   </MainLayout>
 }

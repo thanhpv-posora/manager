@@ -633,6 +633,41 @@ CREATE TABLE IF NOT EXISTS retail_daily_summary (
   UNIQUE KEY uq_retail_date_cal (business_date, calendar_type),
   INDEX idx_retail_date (business_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS app_menus (
+  id                 BIGINT       AUTO_INCREMENT PRIMARY KEY,
+  menu_key           VARCHAR(100) NOT NULL,
+  title              VARCHAR(200) NOT NULL,
+  subtitle           TEXT         NULL,
+  route              VARCHAR(200) NULL,
+  page_component     VARCHAR(200) NULL,
+  icon_key           VARCHAR(100) NOT NULL DEFAULT 'Circle',
+  group_key          VARCHAR(100) NOT NULL DEFAULT 'other',
+  parent_menu_key    VARCHAR(100) NULL,
+  menu_type          VARCHAR(50)  NOT NULL DEFAULT 'page',
+  sort_order         INT          NOT NULL DEFAULT 99,
+  is_system          TINYINT(1)   NOT NULL DEFAULT 0,
+  is_active          TINYINT(1)   NOT NULL DEFAULT 1,
+  visible_in_sidebar TINYINT(1)   NOT NULL DEFAULT 1,
+  created_at         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at         DATETIME     NULL     ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_app_menus_key (menu_key),
+  INDEX idx_app_menus_sort (group_key, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS user_menu_preferences (
+  id         BIGINT    AUTO_INCREMENT PRIMARY KEY,
+  user_id    BIGINT    NOT NULL,
+  menu_id    BIGINT    NOT NULL,
+  sort_order INT       NOT NULL DEFAULT 99,
+  is_pinned  TINYINT(1) NOT NULL DEFAULT 0,
+  is_hidden  TINYINT(1) NOT NULL DEFAULT 0,
+  created_at DATETIME  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME  NULL     ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_ump_user_menu (user_id, menu_id),
+  INDEX idx_ump_user (user_id),
+  FOREIGN KEY (menu_id) REFERENCES app_menus(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
 
     for (const table of ['customers','products','product_categories','suppliers','purchase_lots','orders']) {
@@ -855,6 +890,16 @@ CREATE TABLE IF NOT EXISTS retail_daily_summary (
       ('kh001','Quán A','0900000001','kh001123','CUSTOMER',1)`);
     }
 
+    // MENU-SYSTEM-001-FINAL-FIX: new app_menus columns for existing installs
+    await safeAddColumn(conn, 'app_menus', 'page_component',  'page_component VARCHAR(200) NULL');
+    await safeAddColumn(conn, 'app_menus', 'parent_menu_key', 'parent_menu_key VARCHAR(100) NULL');
+    await safeAddColumn(conn, 'app_menus', 'menu_type',       "menu_type VARCHAR(50) NOT NULL DEFAULT 'page'");
+
+    // INVENTORY-SCHEMA-RUNTIME-FIX-001: units columns missing on older installs
+    await safeAddColumn(conn, 'units', 'sort_order', 'sort_order INT NOT NULL DEFAULT 0');
+    await safeAddColumn(conn, 'units', 'created_at', "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP");
+    await safeAddColumn(conn, 'units', 'updated_at', 'updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP');
+
     // V6.51 order payable split: today's bill + effective daily installment.
     await safeAddColumn(conn, 'orders', 'current_bill_amount', 'current_bill_amount DECIMAL(15,2) NOT NULL DEFAULT 0 AFTER debt_amount');
     await safeAddColumn(conn, 'orders', 'installment_amount', 'installment_amount DECIMAL(15,2) NOT NULL DEFAULT 0 AFTER current_bill_amount');
@@ -1005,6 +1050,71 @@ CREATE TABLE IF NOT EXISTS retail_daily_summary (
       if (!partnerRows.length) {
         console.log('[BP-009B] No unmapped supplier-partners found — already migrated or none exist.');
       }
+    }
+
+    // MENU-SYSTEM-001: Seed app_menus (INSERT IGNORE — idempotent, preserves admin edits)
+    // [menu_key, title, subtitle, route, icon_key, group_key, sort_order, is_system, visible_in_sidebar, page_component]
+    const appMenusSeed = [
+      ['dashboard','AI Operating Center','Tổng quan điều hành, cảnh báo và hành động AI trong ngày.','dashboard','Home','sales',1,1,1,'Dashboard'],
+      ['create-order','Tạo bill POS','Tạo bill nhanh, kiểm tồn, công nợ và hỗ trợ nhập bằng AI.','create-order','ShoppingCart','sales',2,1,1,'CreateOrder'],
+      ['orders','Bill bán hàng','Theo dõi bill, in phiếu và trạng thái thanh toán.','orders','ClipboardList','sales',3,1,1,'Orders'],
+      ['retail-daily-summary','Bán lẻ tổng hợp','Ghi nhận tổng tiền bán lẻ theo ngày kinh doanh (không liên kết đơn hàng).','retail-daily-summary','BarChart3','sales',4,0,1,'RetailDailySummary'],
+      ['payments','Thu tiền','Ghi nhận tiền mặt, chuyển khoản và lịch sử thu.','payments','CreditCard','sales',5,1,1,'Payments'],
+      ['installments','Góp bill','Quản lý góp bill theo khách hàng và lịch âm/dương.','installments','CalendarDays','sales',6,0,1,'Installments'],
+      ['customers','Đối tác','Quản lý đối tác, khách hàng và nhà cung cấp.','customers','Users','sales',7,0,1,'Customers'],
+      ['products','Mặt hàng','Quản lý sản phẩm, tồn kho, giá bán và chế độ kiểm tồn.','products','Package','catalog',1,0,1,'Products'],
+      ['product-import','Import mặt hàng từ ảnh','Nhập danh mục nhanh từ hình ảnh hoặc file dữ liệu.','product-import','Package','catalog',2,0,1,'ProductImageImport'],
+      ['ocr-providers','Cấu hình OCR nâng cao','Thiết lập nhận diện hình ảnh và alias sản phẩm.','ocr-providers','Bot','catalog',3,0,1,'OCRProviders'],
+      ['price-matrix','Bảng giá riêng','Sắp xếp danh mục và bảng giá theo từng bạn hàng.','price-matrix','TableProperties','catalog',4,1,1,'PriceMatrix'],
+      ['lots','Nhập hàng / Nhà cung cấp','Quản lý nhập lô, trọng lượng, thanh toán và nhà cung cấp.','lots','Truck','purchase',1,0,1,'Lots'],
+      ['units','Đơn vị tính','Quản lý đơn vị quy đổi dùng cho nhập hàng và tồn kho.','units','TableProperties','purchase',2,0,1,'Units'],
+      ['supplier-purchase-options','Cấu hình quy cách nhập','Cấu hình đơn vị và quy đổi kg theo từng nhà cung cấp và sản phẩm.','supplier-purchase-options','Truck','purchase',3,0,1,'SupplierPurchaseOptions'],
+      ['inventory-purchases','Nhập hàng tồn kho','Nhập hàng có kiểm tồn kho, theo đối tác và quy cách nhập hàng.','inventory-purchases','Package','purchase',4,0,1,'InventoryPurchases'],
+      ['revenue','Doanh thu','Xem doanh thu, đã thu và công nợ theo thời gian.','revenue','BarChart3','report',1,0,1,'Revenue'],
+      ['profit','Lợi nhuận','Thống kê lợi nhuận theo ngày/tháng/năm, giá vốn FIFO và ngày nhập NCC.','profit','BarChart3','report',2,0,1,'Profit'],
+      ['agents','Agent AI','Các kỹ năng AI phục vụ vận hành bán sỉ.','agents','Bot','ai',1,0,1,'Agents'],
+      ['portal','Trang thông tin / tài trợ','Quản lý nội dung giới thiệu và portal.','portal','Megaphone','ai',2,0,1,'BusinessPortal'],
+      ['sponsor-videos','Video nhà tài trợ','Quản lý video và nội dung truyền thông.','sponsor-videos','Megaphone','ai',3,0,1,'SponsorVideos'],
+      ['production-check','Kiểm tra production','Kiểm tra cấu hình, dữ liệu và trạng thái hệ thống.','production-check','Bot','ai',4,0,1,'ProductionCheck'],
+      ['trash','Đã xóa / lịch sử','Theo dõi dữ liệu đã xóa mềm và audit.','trash','Trash2','system',1,0,1,'Trash'],
+      ['settings','Cấu hình cửa hàng','Thông tin cửa hàng, in bill và thiết lập chung.','settings','Settings','system',2,0,1,'SettingsPage'],
+      ['user-permissions','Phân quyền user','Thiết lập quyền truy cập chức năng theo user.','user-permissions','Settings','system',3,1,1,'UserPermissions'],
+      ['registrations','Đăng ký khách hàng','Duyệt tài khoản đăng ký mới.','registrations','Settings','system',4,0,1,'Registrations'],
+      ['user-mapping','Quản lý tài khoản','Tạo user nội bộ, quản lý khách hàng và duyệt đăng ký.','user-mapping','Settings','system',5,1,1,'UserCustomerMapping'],
+    ];
+    for (const [menu_key,title,subtitle,route,icon_key,group_key,sort_order,is_system,visible_in_sidebar,page_component] of appMenusSeed) {
+      await conn.query(
+        `INSERT IGNORE INTO app_menus (menu_key,title,subtitle,route,icon_key,group_key,sort_order,is_system,visible_in_sidebar,page_component,menu_type)
+         VALUES (?,?,?,?,?,?,?,?,?,?,'page')`,
+        [menu_key,title,subtitle,route,icon_key,group_key,sort_order,is_system,visible_in_sidebar,page_component]
+      );
+      // Backfill new columns on existing rows (inserted before this schema version)
+      await conn.query(
+        `UPDATE app_menus SET page_component=?, menu_type='page' WHERE menu_key=? AND page_component IS NULL`,
+        [page_component, menu_key]
+      );
+    }
+
+    // Validate parent_menu_key references — warn on orphans, do not crash
+    const [orphanMenus]=await conn.query(
+      `SELECT menu_key,parent_menu_key FROM app_menus
+       WHERE parent_menu_key IS NOT NULL
+         AND parent_menu_key NOT IN (SELECT menu_key FROM app_menus WHERE is_active=1)`
+    );
+    for(const row of orphanMenus){
+      console.warn(`[MENU-SYSTEM] Invalid parent_menu_key: ${row.menu_key} -> ${row.parent_menu_key}`);
+    }
+
+    // Seed role defaults into role_menu_permissions (INSERT IGNORE — preserves existing customizations)
+    await conn.query(
+      `INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled)
+       SELECT 'ADMIN', menu_key, 1 FROM app_menus WHERE is_active = 1`
+    );
+    for (const mk of ['create-order','orders','retail-daily-summary','payments','customers','products','product-import','ocr-providers','price-matrix','lots','revenue','profit','portal']) {
+      await conn.query(`INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled) VALUES ('STAFF', ?, 1)`, [mk]);
+    }
+    for (const mk of ['orders','payments','portal','customers']) {
+      await conn.query(`INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled) VALUES ('CUSTOMER', ?, 1)`, [mk]);
     }
 
   } finally {

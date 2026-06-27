@@ -1,4 +1,7 @@
-import React,{useEffect,useState,useCallback}from'react';
+import React,{useEffect,useMemo,useRef,useState,useCallback}from'react';
+import {createPortal}from'react-dom';
+import {Pencil,Power,PowerOff}from'lucide-react';
+import EnterpriseAutocomplete from'../components/common/EnterpriseAutocomplete';
 import api from'../api/api';
 import SafePage from'../components/SafePage';
 import {showSuccess,showError,showWarning}from'../utils/toast';
@@ -38,6 +41,18 @@ export default function SupplierPurchaseOptions(){
   const[showAddUnit,setShowAddUnit]=useState(false);
   const[addUnitForm,setAddUnitForm]=useState(EMPTY_UNIT_FORM);
   const[savingUnit,setSavingUnit]=useState(false);
+  const[productSearch,setProductSearch]=useState('');
+  const[productDropdownOpen,setProductDropdownOpen]=useState(false);
+  const[productHighlight,setProductHighlight]=useState(-1);
+  const[productDropdownPos,setProductDropdownPos]=useState({top:0,left:0,width:200});
+  const productInputRef=useRef(null);
+  const productDropdownRef=useRef(null);
+  const calcProductPos=()=>{
+    if(productInputRef.current){
+      const r=productInputRef.current.getBoundingClientRect();
+      setProductDropdownPos({top:r.bottom+4,left:r.left,width:r.width});
+    }
+  };
 
   const reloadUnits=async()=>{
     const r=await api.get('/supplier-purchase-options/units');
@@ -72,6 +87,15 @@ export default function SupplierPurchaseOptions(){
   },[]);
 
   useEffect(()=>{loadOptions(partnerId,productId);},[partnerId,productId,loadOptions]);
+  useEffect(()=>{
+    const h=e=>{
+      if(productInputRef.current&&!productInputRef.current.contains(e.target)&&
+         !(productDropdownRef.current&&productDropdownRef.current.contains(e.target)))
+        setProductDropdownOpen(false);
+    };
+    document.addEventListener('mousedown',h);
+    return()=>document.removeEventListener('mousedown',h);
+  },[]);
 
   const filteredProducts=categoryId
     ?allProducts.filter(p=>String(p.category_id)===String(categoryId))
@@ -169,6 +193,38 @@ export default function SupplierPurchaseOptions(){
 
   const closeAddUnit=()=>{setShowAddUnit(false);setAddUnitForm(EMPTY_UNIT_FORM);};
 
+  const productCandidates=useMemo(()=>{
+    const base=categoryId
+      ?allProducts.filter(p=>String(p.category_id)===String(categoryId))
+      :allProducts;
+    const q=String(productSearch||'').trim().toLowerCase();
+    if(!q)return base.slice(0,50);
+    return base.filter(p=>
+      String(p.name||'').toLowerCase().includes(q)||
+      String(p.code||p.product_code||'').toLowerCase().includes(q)||
+      String(p.barcode||'').toLowerCase().includes(q)
+    ).slice(0,100);
+  },[allProducts,categoryId,productSearch]);
+
+  const selectProduct=p=>{
+    setProductId(String(p.id));
+    setProductSearch(p.name);
+    setProductDropdownOpen(false);
+    setProductHighlight(-1);
+    reset();
+  };
+
+  const handleProductKeyDown=e=>{
+    if(!productDropdownOpen){
+      if(e.key==='ArrowDown'||e.key==='Enter'){setProductDropdownOpen(true);}
+      return;
+    }
+    if(e.key==='ArrowDown'){e.preventDefault();setProductHighlight(h=>Math.min(h+1,productCandidates.length-1));}
+    else if(e.key==='ArrowUp'){e.preventDefault();setProductHighlight(h=>Math.max(h-1,0));}
+    else if(e.key==='Enter'){e.preventDefault();if(productHighlight>=0&&productCandidates[productHighlight])selectProduct(productCandidates[productHighlight]);}
+    else if(e.key==='Escape'){setProductDropdownOpen(false);}
+  };
+
   return <SafePage loading={loading} error={error}>
 
     {/* ── Banner ── */}
@@ -188,13 +244,18 @@ export default function SupplierPurchaseOptions(){
 
         <div>
           <label style={LBL}>Nhà cung cấp</label>
-          <select className="select" value={partnerId} onChange={e=>{
-            setPartnerId(e.target.value);
-            setCategoryId('');setProductId('');setOptions([]);reset();
-          }}>
-            <option value="">Chọn nhà cung cấp...</option>
-            {partners.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}
-          </select>
+          <EnterpriseAutocomplete
+            items={partners}
+            value={selPartner||null}
+            onChange={p=>{setPartnerId(p?String(p.id):'');setCategoryId('');setProductId('');setOptions([]);reset();}}
+            placeholder="Tìm nhà cung cấp..."
+            displayField="name"
+            secondaryFields={['customer_code','phone']}
+            searchFields={['name','customer_code','phone']}
+            filter={item=>(Number(item.partner_type||0)&1)===1}
+            emptyText="Không tìm thấy nhà cung cấp"
+            getItemKey={item=>item.id}
+          />
         </div>
 
         <div>
@@ -203,7 +264,7 @@ export default function SupplierPurchaseOptions(){
             disabled={!partnerId}
             onChange={e=>{
               setCategoryId(e.target.value);
-              setProductId('');setOptions([]);reset();
+              setProductId('');setProductSearch('');setProductDropdownOpen(false);setOptions([]);reset();
             }}>
             <option value="">Chọn nhóm hàng...</option>
             {categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
@@ -212,12 +273,18 @@ export default function SupplierPurchaseOptions(){
 
         <div>
           <label style={LBL}>Sản phẩm</label>
-          <select className="select" value={productId}
-            disabled={!categoryId}
-            onChange={e=>{setProductId(e.target.value);reset();}}>
-            <option value="">Chọn sản phẩm...</option>
-            {filteredProducts.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}
-          </select>
+          <EnterpriseAutocomplete
+            items={categoryId?allProducts.filter(p=>String(p.category_id)===String(categoryId)):allProducts}
+            value={selProduct||null}
+            onChange={p=>{if(p){setProductId(String(p.id));reset();}else{setProductId('');setOptions([]);reset();}}}
+            placeholder="Tìm sản phẩm..."
+            displayField="name"
+            secondaryFields={['product_code','barcode']}
+            searchFields={['name','product_code','code','barcode']}
+            disabled={!partnerId}
+            emptyText="Không tìm thấy sản phẩm"
+            getItemKey={item=>item.id}
+          />
         </div>
 
       </div>
@@ -371,10 +438,12 @@ export default function SupplierPurchaseOptions(){
                     </span>
                   </td>
                   <td>
-                    <button className="btn secondary" onClick={()=>editRow(x)}>Sửa</button>{' '}
-                    {x.is_active
-                      ?<button className="btn danger" onClick={()=>disable(x)}>Tắt</button>
-                      :<button className="btn secondary" onClick={()=>enable(x)}>Bật</button>}
+                    <div style={{display:'flex',flexWrap:'nowrap',gap:6,alignItems:'center',justifyContent:'center'}}>
+                      <button className="btn secondary" title="Sửa" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>editRow(x)}><Pencil size={14}/></button>
+                      {x.is_active
+                        ?<button className="btn danger" title="Tắt" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>disable(x)}><PowerOff size={14}/></button>
+                        :<button className="btn secondary" title="Bật" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>enable(x)}><Power size={14}/></button>}
+                    </div>
                   </td>
                 </tr>
               ))}

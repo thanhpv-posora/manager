@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import {Pencil,Trash2}from'lucide-react';
 import api from '../api/api';
 import SafePage from '../components/SafePage';
 import { showSuccess, showError, showWarning } from '../utils/toast';
@@ -627,10 +628,10 @@ export default function InventoryPurchases() {
                           <td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(item.total_price)} ₫</td>
                           <td style={{ fontSize: 13, color: '#6b7280' }}>{item.note || <span style={{ color: '#d1d5db' }}>—</span>}</td>
                           <td>
-                            {isDraft && <>
-                              <button className="btn secondary" onClick={() => startEdit(item)} style={{ marginRight: 4 }}>Sửa</button>
-                              <button className="btn danger" onClick={() => deleteItem(item)}>Xóa</button>
-                            </>}
+                            {isDraft && <div style={{display:'flex',flexWrap:'nowrap',gap:6,alignItems:'center',justifyContent:'center'}}>
+                              <button className="btn secondary" title="Sửa" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={() => startEdit(item)}><Pencil size={14}/></button>
+                              <button className="btn danger" title="Xóa" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={() => deleteItem(item)}><Trash2 size={14}/></button>
+                            </div>}
                           </td>
                         </tr>
                       );

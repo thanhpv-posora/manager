@@ -2,6 +2,7 @@ import React,{useEffect,useState}from'react';
 import {Brain,ChevronRight,Lock,Phone,ShieldCheck,Sparkles,TrendingUp,Truck,Wallet} from'lucide-react';
 import api from'../api/api';
 import {showSuccess,showError,showWarning,showInfo} from'../utils/toast';
+import {validatePasswordStrength} from'../utils/passwordValidator';
 
 export default function Login({onLogin,onRegister}){
  const[mode,setMode]=useState('PASSWORD');
@@ -33,6 +34,8 @@ export default function Login({onLogin,onRegister}){
   e.preventDefault();
   setError('');
   setInfo('');
+  if(!username.trim()){showWarning('Nhập tên đăng nhập');return;}
+  if(!password){showWarning('Nhập mật khẩu');return;}
   setLoading(true);
   try{
     const r=await api.post('/auth/login',{username,password,remember});
@@ -120,7 +123,8 @@ export default function Login({onLogin,onRegister}){
   setInfo('');
   if(!forgotIdentifier.trim()){showWarning('Nhập tài khoản');return setError('Nhập tài khoản');}
   if(!forgotCode.trim()){showWarning('Nhập mã xác nhận');return setError('Nhập mã xác nhận');}
-  if(forgotPasswordNew.length<6){showWarning('Mật khẩu mới nên có ít nhất 6 ký tự');return setError('Mật khẩu mới nên có ít nhất 6 ký tự');}
+  const pwCheck=validatePasswordStrength(forgotPasswordNew);
+  if(!pwCheck.ok){showWarning(pwCheck.message);return setError(pwCheck.message);}
   setLoading(true);
   try{
     const r=await api.post('/auth/reset-password',{identifier:forgotIdentifier.trim(),code:forgotCode.trim(),password:forgotPasswordNew});
@@ -184,7 +188,7 @@ export default function Login({onLogin,onRegister}){
 
    {mode==='PASSWORD'&&<form onSubmit={submitPassword} className="login-form-stack ai-login-form">
     <label>Tên đăng nhập</label>
-    <input className="input" value={username} onChange={e=>setUsername(e.target.value)} placeholder="admin / kh001" autoComplete="username"/>
+    <input className="input" value={username} onChange={e=>setUsername(e.target.value)} placeholder="Tên đăng nhập" autoComplete="username"/>
 
     <label>Mật khẩu</label>
     <input className="input" type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="Nhập mật khẩu" autoComplete="current-password"/>
@@ -232,7 +236,7 @@ export default function Login({onLogin,onRegister}){
      <label>Mã xác nhận</label>
      <input className="input" value={forgotCode} onChange={e=>setForgotCode(e.target.value)} placeholder="Nhập mã đã nhận" inputMode="numeric"/>
      <label>Mật khẩu mới</label>
-     <input className="input" type="password" value={forgotPasswordNew} onChange={e=>setForgotPasswordNew(e.target.value)} placeholder="Tối thiểu 6 ký tự" autoComplete="new-password"/>
+     <input className="input" type="password" value={forgotPasswordNew} onChange={e=>setForgotPasswordNew(e.target.value)} placeholder="Mật khẩu mới" autoComplete="new-password"/>
     </>}
 
     <button className="btn login-btn ai-login-submit" disabled={loading}>{loading?'Đang xử lý...':(forgotSent?'Đổi mật khẩu':'Gửi mã đặt lại mật khẩu')}</button>

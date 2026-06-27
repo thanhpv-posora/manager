@@ -1,4 +1,5 @@
 import React,{useEffect,useState}from'react';
+import {Save,Trash2}from'lucide-react';
 import api from'../api/api';
 import SafePage from'../components/SafePage';
 import MoneyInput from'../components/MoneyInput';
@@ -51,6 +52,8 @@ export default function Products(){
   const[pendingDelete,setPendingDelete]=useState(null);
   const[deleteReason,setDeleteReason]=useState('');
   const[deleting,setDeleting]=useState(false);
+  const[page,setPage]=useState(1);
+  const[pageSize,setPageSize]=useState(20);
 
   const saveDefaults=async(nextDefaults)=>{
     setDefaults(nextDefaults);
@@ -185,6 +188,7 @@ export default function Products(){
     return [
       x.product_code,
       x.name,
+      x.barcode,
       x.category_name,
       x.unit,
       x.inventory_mode,
@@ -192,6 +196,9 @@ export default function Products(){
       x.price
     ].some(v=>String(v||'').toLowerCase().includes(q));
   });
+  const totalPages=Math.max(1,Math.ceil(filteredRows.length/pageSize));
+  const cp=Math.min(page,totalPages);
+  const paginated=filteredRows.slice((cp-1)*pageSize,cp*pageSize);
 
   return <SafePage loading={loading} error={error}>
     <div className="grid cols-2">
@@ -242,21 +249,15 @@ export default function Products(){
     </div>
 
     <div className="card">
-      <div className="product-list-head">
-        <div>
-          <h3>Danh sách mặt hàng</h3>
-          <p className="muted">Tìm theo mã, tên mặt hàng, nhóm hàng, đơn vị, mode hoặc giá.</p>
-        </div>
-        <input
-          className="input product-search-input"
-          placeholder="Tìm kiếm mặt hàng..."
-          value={productSearch}
-          onChange={e=>setProductSearch(e.target.value)}
-        />
+      <h3>Danh sách mặt hàng</h3>
+      <div style={{marginBottom:12,display:'flex',gap:8,alignItems:'center'}}>
+        <input className="input" placeholder="Tìm theo mã, tên, barcode, đơn vị..." value={productSearch} onChange={e=>{setProductSearch(e.target.value);setPage(1);}} style={{maxWidth:420}}/>
+        {productSearch&&<button className="btn secondary" onClick={()=>{setProductSearch('');setPage(1);}}>Xóa lọc</button>}
+        <span className="muted">{filteredRows.length} mặt hàng</span>
       </div>
       <table className="table product-inline-table">
         <thead><tr><th>Mã</th><th>Tên</th><th>Nhóm</th><th>ĐVT</th><th>Giá bán</th><th>Mode</th><th></th></tr></thead>
-        <tbody>{filteredRows.map(x=><tr key={x.id}>
+        <tbody>{paginated.map(x=><tr key={x.id}>
           <td>{x.product_code}</td>
           <td><input className="input" value={rowValue(x,'name')} onChange={e=>updateGrid(x.id,{name:e.target.value})}/></td>
           <td>
@@ -275,13 +276,26 @@ export default function Products(){
             </select>
           </td>
           <td>
-            <button className="btn secondary" onClick={()=>saveGridRow(x)} disabled={!gridEdits[x.id]}>Lưu</button>{' '}
-            <button className="btn danger" onClick={()=>remove(x)}>Xóa</button>
+            <div style={{display:'flex',flexWrap:'nowrap',gap:6,alignItems:'center',justifyContent:'center'}}>
+              <button className="btn secondary" title="Lưu" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>saveGridRow(x)} disabled={!gridEdits[x.id]}><Save size={14}/></button>
+              <button className="btn danger" title="Xóa" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>remove(x)}><Trash2 size={14}/></button>
+            </div>
           </td>
         </tr>)}
         {!filteredRows.length&&<tr><td colSpan="7" className="muted">Không tìm thấy mặt hàng phù hợp.</td></tr>}
         </tbody>
       </table>
+      <div style={{display:'flex',justifyContent:'flex-end',alignItems:'center',gap:8,marginTop:12,flexWrap:'wrap'}}>
+        <span className="muted">Trang {cp} / {totalPages}</span>
+        <button className="btn secondary" onClick={()=>setPage(p=>Math.max(1,p-1))} disabled={cp<=1}>Trước</button>
+        <button className="btn secondary" onClick={()=>setPage(p=>Math.min(totalPages,p+1))} disabled={cp>=totalPages}>Sau</button>
+        <select className="select" value={pageSize} onChange={e=>{setPageSize(Number(e.target.value));setPage(1);}} style={{width:'auto'}}>
+          <option value={10}>10 / trang</option>
+          <option value={20}>20 / trang</option>
+          <option value={50}>50 / trang</option>
+          <option value={100}>100 / trang</option>
+        </select>
+      </div>
     </div>
 
 

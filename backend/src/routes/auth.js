@@ -4,8 +4,10 @@ const jwt=require('jsonwebtoken');
 const rateLimit=require('express-rate-limit');
 const pool=require('../config/db');
 const router=express.Router();
+const {auth}=require('../middleware/auth');
 const UserPermissionAgent=require('../agents/UserPermissionAgent');
 const notification=require('../services/notification.service');
+const {validatePasswordStrength}=require('../utils/passwordValidator');
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -13,6 +15,18 @@ const authLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { message: 'Quá nhiều yêu cầu. Vui lòng thử lại sau 15 phút.' },
+});
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const username = String(req.body.username || '').toLowerCase().trim();
+    return username ? `${req.ip}:${username}` : req.ip;
+  },
+  message: { message: 'Đăng nhập sai quá nhiều lần. Vui lòng thử lại sau 15 phút.' },
 });
 
 function signUser(u){
@@ -34,6 +48,9 @@ async function ensureColumn(table,column,definition){
 async function ensureAuthSchema(){
   await ensureColumn('users','phone',`VARCHAR(50) NULL`);
   await ensureColumn('users','email',`VARCHAR(255) NULL`);
+  await ensureColumn('users','failed_login_count',`INT NOT NULL DEFAULT 0`);
+  await ensureColumn('users','locked_until',`DATETIME NULL`);
+  await ensureColumn('users','last_failed_login',`DATETIME NULL`);
 
   await pool.query(`CREATE TABLE IF NOT EXISTS user_login_otps (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -65,23 +82,54 @@ async function ensureAuthSchema(){
 
 async function findUserByLogin(username){
   const value=String(username||'').trim();
-  const [rows]=await pool.query(`SELECT id,username,full_name,password_hash,role,customer_id,is_active,phone,email FROM users WHERE username=? OR phone=? OR email=? LIMIT 1`, [value,value,value]);
+  const [rows]=await pool.query(`SELECT id,username,full_name,password_hash,role,customer_id,is_active,phone,email,failed_login_count,locked_until,last_failed_login FROM users WHERE username=? OR phone=? OR email=? LIMIT 1`, [value,value,value]);
   return rows[0]||null;
 }
 
-router.post('/login', authLimiter, async (req,res,next)=>{
+router.post('/login', loginLimiter, async (req,res,next)=>{
   try {
     await ensureAuthSchema();
     const {username,password}=req.body;
     const u=await findUserByLogin(username);
     if (!u || !u.is_active) return res.status(401).json({message:'Sai user hoặc mật khẩu'});
+
+    if (u.locked_until && new Date(u.locked_until) > new Date()) {
+      return res.status(423).json({message:'Tài khoản tạm khóa. Vui lòng thử lại sau 15 phút.'});
+    }
+
     let ok=false;
     if (String(u.password_hash||'').startsWith('$2')) ok=await bcrypt.compare(password,u.password_hash);
     else if (process.env.ALLOW_PLAIN_PASSWORD==='true') {
       ok=password===u.password_hash;
       if (ok) await pool.query(`UPDATE users SET password_hash=? WHERE id=?`, [await bcrypt.hash(password,10), u.id]);
     }
-    if (!ok) return res.status(401).json({message:'Sai user hoặc mật khẩu'});
+
+    if (!ok) {
+      await pool.query(
+        `UPDATE users
+         SET failed_login_count = failed_login_count + 1,
+             last_failed_login = NOW(),
+             locked_until = CASE
+               WHEN failed_login_count + 1 >= 5 THEN DATE_ADD(NOW(), INTERVAL 15 MINUTE)
+               ELSE locked_until
+             END
+         WHERE id = ?`,
+        [u.id]
+      );
+      const [[updated]]=await pool.query(
+        `SELECT failed_login_count,locked_until FROM users WHERE id=?`,
+        [u.id]
+      );
+      if (updated.locked_until && new Date(updated.locked_until) > new Date()) {
+        return res.status(423).json({message:'Tài khoản tạm khóa do nhập sai mật khẩu quá nhiều lần. Vui lòng thử lại sau 15 phút.'});
+      }
+      return res.status(401).json({message:'Sai user hoặc mật khẩu'});
+    }
+
+    await pool.query(
+      `UPDATE users SET failed_login_count=0,locked_until=NULL,last_failed_login=NULL WHERE id=?`,
+      [u.id]
+    );
     res.json(signUser(u));
   } catch(e) { next(e); }
 });
@@ -144,7 +192,8 @@ router.post('/reset-password', authLimiter, async(req,res,next)=>{
     const password=String(req.body.password||'');
     if(!identifier) return res.status(400).json({message:'Nhập email, số điện thoại hoặc tên đăng nhập'});
     if(!code) return res.status(400).json({message:'Nhập mã xác nhận'});
-    if(password.length<6) return res.status(400).json({message:'Mật khẩu mới nên có ít nhất 6 ký tự'});
+    const pwCheck=validatePasswordStrength(password);
+    if(!pwCheck.ok) return res.status(400).json({message:pwCheck.message});
     const u=await findUserByLogin(identifier);
     if(!u || !u.is_active) return res.status(404).json({message:'Không tìm thấy tài khoản đang hoạt động'});
     const [rows]=await pool.query(`SELECT * FROM password_reset_requests WHERE user_id=? AND status='PENDING' AND expires_at>NOW() ORDER BY id DESC LIMIT 1`,[u.id]);
@@ -155,6 +204,30 @@ router.post('/reset-password', authLimiter, async(req,res,next)=>{
     await pool.query(`UPDATE users SET password_hash=? WHERE id=?`,[await bcrypt.hash(password,10),u.id]);
     await pool.query(`UPDATE password_reset_requests SET status='USED',used_at=NOW() WHERE id=?`,[r.id]);
     res.json({message:'Đã đổi mật khẩu. Bạn có thể đăng nhập bằng mật khẩu mới.'});
+  }catch(e){next(e)}
+});
+
+router.post('/change-password', auth(), async(req,res,next)=>{
+  try{
+    const userId=req.user.id;
+    const current_password=String(req.body.current_password||'');
+    const new_password=String(req.body.new_password||'');
+    const confirm_password=String(req.body.confirm_password||'');
+    if(!current_password) return res.status(400).json({message:'Nhập mật khẩu hiện tại'});
+    if(!new_password) return res.status(400).json({message:'Nhập mật khẩu mới'});
+    if(!confirm_password) return res.status(400).json({message:'Xác nhận mật khẩu mới'});
+    if(new_password!==confirm_password) return res.status(400).json({message:'Mật khẩu xác nhận không khớp'});
+    const pwCheck=validatePasswordStrength(new_password);
+    if(!pwCheck.ok) return res.status(400).json({message:pwCheck.message});
+    const [rows]=await pool.query(`SELECT id,password_hash FROM users WHERE id=? AND is_active=1 LIMIT 1`,[userId]);
+    if(!rows.length) return res.status(404).json({message:'Không tìm thấy tài khoản'});
+    const u=rows[0];
+    const currentOk=await bcrypt.compare(current_password,u.password_hash);
+    if(!currentOk) return res.status(400).json({message:'Mật khẩu hiện tại không đúng'});
+    const sameAsCurrent=await bcrypt.compare(new_password,u.password_hash);
+    if(sameAsCurrent) return res.status(400).json({message:'Mật khẩu mới phải khác mật khẩu hiện tại'});
+    await pool.query(`UPDATE users SET password_hash=? WHERE id=?`,[await bcrypt.hash(new_password,10),userId]);
+    res.json({message:'Đã đổi mật khẩu'});
   }catch(e){next(e)}
 });
 

@@ -10,6 +10,8 @@ import {formatLunarDate,solarToLunar,parseLunarText,lunarToSolarDate}from'../uti
 import {createSpeechRecognition,parseVoiceBillCommand,voiceSupported} from'../utils/voiceBillParser';
 import {matchImportedRows,parseOrderText,rematchOne} from'../utils/orderImportParser';
 import {parseHandwritingText} from'../utils/handwritingBillParser';
+import EnterpriseAutocomplete from'../components/common/EnterpriseAutocomplete';
+import {showWarning,showSuccess}from'../utils/toast';
 
 const money=n=>Number(n||0).toLocaleString('en-US')+'đ';
 
@@ -25,94 +27,8 @@ const solarMonthYearLocal=(dateText)=>{
   return {month:d.getMonth()+1,year:d.getFullYear()};
 };
 
-function CustomerSearch({ customers, value, onSelect }) {
-  const [search, setSearch] = useState('');
-  const [open, setOpen] = useState(false);
-  const [hiIdx, setHiIdx] = useState(0);
-  const inputRef = useRef();
 
-  const filtered = useMemo(() => {
-    if (!search) return customers.slice(0, 20);
-    const q = search.toLowerCase();
-    return customers.filter(c =>
-      (c.name || '').toLowerCase().includes(q) ||
-      (c.phone || '').includes(q) ||
-      (c.customer_code || '').toLowerCase().includes(q)
-    ).slice(0, 20);
-  }, [customers, search]);
-
-  const selected = value ? customers.find(c => String(c.id) === String(value)) : null;
-
-  const pick = c => {
-    onSelect(String(c.id));
-    setSearch('');
-    setOpen(false);
-    setHiIdx(0);
-  };
-
-  const handleKey = e => {
-    if (e.key === 'ArrowDown') { e.preventDefault(); setOpen(true); setHiIdx(i => Math.min(i + 1, filtered.length - 1)); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); setHiIdx(i => Math.max(i - 1, 0)); }
-    else if (e.key === 'Enter') { e.preventDefault(); if (filtered[hiIdx]) pick(filtered[hiIdx]); }
-    else if (e.key === 'Escape') { setOpen(false); }
-  };
-
-  if (selected) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0' }}>
-        <b style={{ fontSize: 14 }}>{selected.name}</b>
-        {selected.phone && <span style={{ color: '#6b7280', fontSize: 13 }}>{selected.phone}</span>}
-        <span style={{ color: '#9ca3af', fontSize: 12 }}>{selected.customer_code}</span>
-        {selected.billing_calendar_type === 'LUNAR' && <span style={{ color: '#7c3aed', fontSize: 12 }}>Âm lịch</span>}
-        <button type="button" onClick={() => onSelect('')}
-          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', fontSize: 20, lineHeight: 1, marginLeft: 4 }}>×</button>
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ position: 'relative' }}>
-      <input
-        ref={inputRef}
-        className="input"
-        placeholder="Tìm khách theo tên, SĐT, mã..."
-        value={search}
-        onChange={e => { setSearch(e.target.value); setOpen(true); setHiIdx(0); }}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setTimeout(() => setOpen(false), 160)}
-        onKeyDown={handleKey}
-        autoComplete="off"
-      />
-      {open && (
-        <div style={{
-          position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 400,
-          background: '#fff', border: '1px solid #d1d5db', borderRadius: 4,
-          boxShadow: '0 4px 16px rgba(0,0,0,0.12)', maxHeight: 280, overflowY: 'auto',
-        }}>
-          {filtered.length === 0
-            ? <div style={{ padding: '8px 12px', fontSize: 13, color: '#6b7280' }}>Không tìm thấy khách hàng</div>
-            : filtered.map((c, i) => (
-              <div key={c.id}
-                onMouseDown={e => { e.preventDefault(); pick(c); }}
-                style={{
-                  padding: '8px 12px', cursor: 'pointer', fontSize: 13,
-                  background: i === hiIdx ? '#eff6ff' : '',
-                  borderBottom: '1px solid #f3f4f6',
-                }}>
-                <b>{c.name}</b>
-                {c.phone && <span style={{ color: '#6b7280', marginLeft: 6 }}>{c.phone}</span>}
-                <span style={{ color: '#9ca3af', marginLeft: 6, fontSize: 12 }}>{c.customer_code}</span>
-                {c.billing_calendar_type === 'LUNAR' && <span style={{ color: '#7c3aed', marginLeft: 6, fontSize: 11 }}>Âm lịch</span>}
-              </div>
-            ))
-          }
-        </div>
-      )}
-    </div>
-  );
-}
-
-export default function CreateOrder(){
+export default function CreateOrder({setPage}){
   const toLocalIsoDate=(d=new Date())=>{
     const y=d.getFullYear();
     const m=String(d.getMonth()+1).padStart(2,'0');
@@ -143,6 +59,7 @@ export default function CreateOrder(){
   const[customerOpen,setCustomerOpen]=useState(false);
   const[saveNotice,setSaveNotice]=useState('');
   const[saving,setSaving]=useState(false);
+  const[noPrivatePrice,setNoPrivatePrice]=useState(false);
   const[pendingFocusQty,setPendingFocusQty]=useState(false);
 
   const[quickOpen,setQuickOpen]=useState(false);
@@ -168,6 +85,9 @@ export default function CreateOrder(){
   const[excelBillIndex,setExcelBillIndex]=useState(-1);
 
   const qtyRefs=useRef({});
+  const priceRefs=useRef({});
+  const customerAutocompleteRef=useRef(null);
+  const[pendingFocusCustomer,setPendingFocusCustomer]=useState(false);
   const importExcelFileRef=useRef(null);
   const importImageFileRef=useRef(null);
   const importReadSeqRef=useRef(0);
@@ -339,6 +259,7 @@ export default function CreateOrder(){
       };
     });
     setItems(await applyEffectivePrices(mapped));
+    setNoPrivatePrice(!!r.no_private_prices);
   };
 
 
@@ -355,6 +276,7 @@ export default function CreateOrder(){
       sort_order:p.sort_order||idx+1
     }));
     setItems(await applyEffectivePrices(mapped,{customer_id:id,calendar_type:billCalendarType,order_date:orderDate,lunar_date_text:billCalendarType==='LUNAR'?billLunarDateText:''}));
+    setNoPrivatePrice(!!r.no_private_prices);
     setPendingFocusQty(true);
   };
 
@@ -394,7 +316,13 @@ export default function CreateOrder(){
     const nextLunarDateText=billCalendarType==='LUNAR'?billLunarDateText:'';
     if(nextOrderDate!==orderDate)setOrderDate(nextOrderDate);
     setShipDateModalOpen(false);
-    setSaveNotice(`Đã chọn ngày xuất hàng ${nextCalendarType==='LUNAR'?`${billLunarDateText} ÂL`:(nextOrderDate||today)}. Bảng giá sẽ lấy theo đúng ngày này.`);
+    const dateLabel=nextCalendarType==='LUNAR'?`${billLunarDateText} ÂL`:(nextOrderDate||today);
+    // Only show price-book lookup notice when customer actually has a price matrix.
+    // Manual-price mode (no price matrix, walk-in) has nothing to look up.
+    setSaveNotice((!noPrivatePrice&&!walkInCustomer)
+      ? `Đã chọn ngày xuất hàng ${dateLabel}. Bảng giá sẽ lấy theo đúng ngày này.`
+      : `Đã chọn ngày xuất hàng ${dateLabel}.`
+    );
     await refreshCurrentItemPrices({calendar_type:nextCalendarType,order_date:nextOrderDate,lunar_date_text:nextLunarDateText});
   };
 
@@ -438,7 +366,9 @@ export default function CreateOrder(){
       selected:false,
       sort_order:p.sort_order||idx+1
     }));
-    setItems(await applyEffectivePrices(mapped,{customer_id:id,calendar_type:pickedCalendarType,order_date:orderDate,lunar_date_text:pickedCalendarType==='LUNAR'?pickedLunarText:''}));
+    const catalog=await applyEffectivePrices(mapped,{customer_id:id,calendar_type:pickedCalendarType,order_date:orderDate,lunar_date_text:pickedCalendarType==='LUNAR'?pickedLunarText:''});
+    setItems(catalog);
+    setNoPrivatePrice(!!r.no_private_prices);
     setPendingFocusQty(true);
   };
 
@@ -450,6 +380,11 @@ export default function CreateOrder(){
   const updateQtyExpr=(idx,expr)=>{
     const qty=calcQtyExpression(expr);
     update(idx,{quantity_expr:expr,quantity:qty,selected:qty>0});
+  };
+
+  const updatePrice=(idx,priceStr)=>{
+    const price=Number(String(priceStr||'').replace(/[^0-9]/g,''))||0;
+    update(idx,{sale_price:price,manual_price:true});
   };
 
   const shown=useMemo(()=>{
@@ -474,6 +409,15 @@ export default function CreateOrder(){
     },120);
     return()=>clearTimeout(t);
   },[pendingFocusQty,cid,shown.length]);
+
+  useEffect(()=>{
+    if(!pendingFocusCustomer||!customerOpen)return;
+    const t=setTimeout(()=>{
+      customerAutocompleteRef.current?.focus();
+      setPendingFocusCustomer(false);
+    },80);
+    return()=>clearTimeout(t);
+  },[pendingFocusCustomer,customerOpen]);
 
   const selected=items
     .map(i=>({...i,quantity:calcQtyExpression(i.quantity_expr)||Number(i.quantity||0)}))
@@ -537,6 +481,8 @@ export default function CreateOrder(){
     if(checkedDate.solarDate&&checkedDate.solarDate!==orderDate)setOrderDate(checkedDate.solarDate);
     if(!selected.length)return alert('Nhập số lượng ít nhất 1 mặt hàng');
 
+    const needManualPrice=walkInCustomer||noPrivatePrice;
+    const wasNoPrivatePrice=noPrivatePrice;
     const payloadItems=selected.map(i=>({
       product_id:i.product_id,
       product_name:i.product_name,
@@ -545,7 +491,8 @@ export default function CreateOrder(){
       sale_price:Number(i.sale_price||0),
       price_type:i.price_type||'MANUAL_PRICE',
       price_book_id:i.price_book_id||null,
-      note:i.quantity_expr&&i.quantity_expr!==String(i.quantity)?`SL nhập: ${i.quantity_expr}`:''
+      note:i.quantity_expr&&i.quantity_expr!==String(i.quantity)?`SL nhập: ${i.quantity_expr}`:'',
+      ...(needManualPrice?{manual_price:true}:{})
     }));
 
     let actualPaid=Number(cashAmount||0)+Number(bankAmount||0);
@@ -592,6 +539,25 @@ export default function CreateOrder(){
         setImportMsg('');
       }
       focusFirstQtyInput();
+      if(wasNoPrivatePrice&&payloadItems.length){
+        const savedCid=cid;
+        const yes=await window.appConfirm(
+          'Khách hàng này chưa có bảng giá riêng.\nBạn có muốn sử dụng các mức giá vừa nhập để tạo bảng giá riêng cho khách hàng này không?',
+          {title:'Tạo bảng giá riêng',confirmText:'Có, tạo ngay',cancelText:'Không',variant:'info'}
+        );
+        if(yes){
+          try{
+            await api.put('/price-matrix/'+savedCid,{
+              items:payloadItems.map(i=>({product_id:i.product_id,in_catalog:1,sort_order:0,private_price:i.sale_price})),
+              effective_calendar_type:billCalendarType,
+              effective_from:checkedDate.solarDate||orderDate,
+              effective_lunar_date_text:billCalendarType==='LUNAR'?billLunarDateText:''
+            });
+            setNoPrivatePrice(false);
+            showSuccess('Đã tạo bảng giá riêng cho khách hàng.');
+          }catch(_){}
+        }
+      }
     }catch(e){
       const data=e.response?.data||{};
       let message=data.message||e.message||'Không thể lưu bill';
@@ -826,10 +792,12 @@ export default function CreateOrder(){
     setSource('');
     setMsg('');
     setSaveNotice('');
+    setNoPrivatePrice(false);
     setPaid(0);
     setCashAmount(0);
     setBankAmount(0);
     setCustomerOpen(true);
+    setPendingFocusCustomer(true);
   };
 
   const previewImport=(sourceType='text')=>{
@@ -1235,7 +1203,19 @@ export default function CreateOrder(){
               {customerOpen&&(
                 <div className="pos-customer-collapse-body">
 
-              <CustomerSearch customers={customers} value={cid} onSelect={id=>loadCustomerCatalog(id)}/>
+              <EnterpriseAutocomplete
+                ref={customerAutocompleteRef}
+                items={customers}
+                value={customers.find(c=>String(c.id)===String(cid))||null}
+                onChange={item=>loadCustomerCatalog(item?String(item.id):'')}
+                placeholder="Tìm khách hàng..."
+                displayField="name"
+                secondaryFields={['customer_code','phone']}
+                searchFields={['name','customer_code','phone','address']}
+                filter={item=>(Number(item.partner_type||2)&2)===2}
+                emptyText="Không tìm thấy khách hàng"
+                getItemKey={item=>item.id}
+              />
 
               <p className="muted">
                 Nguồn danh mục: {source||'chưa chọn'}. Enter nhảy dòng tiếp theo. Kéo thả dòng để đổi thứ tự.
@@ -1375,10 +1355,13 @@ export default function CreateOrder(){
               dragId={dragId}
               setDragId={setDragId}
               handleDrop={handleDrop}
+              allowManualPrice={walkInCustomer||noPrivatePrice}
+              updatePrice={updatePrice}
+              priceRefs={priceRefs}
             />
           </main>
 
-          <aside className="card pos-payment-panel">
+          <aside className="card pos-payment-panel pos-agent-payment">
             <h3>Thông tin thanh toán</h3>
             <p className="muted">Từ V65.47, Bill chỉ quản lý hàng và giá. Tiền mặt/chuyển khoản xử lý ở menu <b>Thu tiền</b> để công nợ và phân bổ bill cũ không bị rối.</p>
             <div className="payment-total-box"><div>Tổng bill</div><b>{money(total)}</b><span>Góp/ngày: {money(monthlyInstallment)}</span><span>Thanh toán: vào menu Thu tiền</span></div>

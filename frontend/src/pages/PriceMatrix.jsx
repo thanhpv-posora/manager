@@ -1,4 +1,4 @@
-import React,{useEffect,useRef,useState}from'react';import api from'../api/api';import SafePage from'../components/SafePage';import MoneyInput from'../components/MoneyInput';import {moneyVnd} from'../utils/money';import {handlePosInputKeyNavigation} from'../utils/focusNavigation';
+import React,{useEffect,useMemo,useRef,useState}from'react';import {Trash2} from'lucide-react';import api from'../api/api';import SafePage from'../components/SafePage';import MoneyInput from'../components/MoneyInput';import {moneyVnd} from'../utils/money';import {handlePosInputKeyNavigation} from'../utils/focusNavigation';import EnterpriseAutocomplete from'../components/common/EnterpriseAutocomplete';
 
 export default function PriceMatrix(){
   const[customers,setCustomers]=useState([]);
@@ -28,6 +28,9 @@ export default function PriceMatrix(){
   const[customerLoading,setCustomerLoading]=useState(false);
   const[bookAddItems,setBookAddItems]=useState([]);
   const[showDateDialog,setShowDateDialog]=useState(false);
+  const[rowSearch,setRowSearch]=useState('');
+  const[rowPage,setRowPage]=useState(1);
+  const[rowPageSize,setRowPageSize]=useState(20);
 
   const loadCustomers=async()=>{
     const c=(await api.get('/customers')).data||[];
@@ -61,6 +64,7 @@ export default function PriceMatrix(){
   const changeCustomer=async(id)=>{
     setShowPickModal(false);setShowDateDialog(false);setNewBookMode(false);
     setBookDetail(null);setBookItems([]);setBookAddItems([]);
+    setRowSearch('');setRowPage(1);
     if(!id){setCid('');setData(null);setRows([]);setBooks([]);return;}
     setCid(id);setData(null);setRows([]);setBooks([]);
     setCustomerLoading(true);
@@ -252,16 +256,31 @@ export default function PriceMatrix(){
     await loadMatrix(cid);
   };
 
+  const filteredRows=useMemo(()=>{const q=String(rowSearch||'').trim().toLowerCase();if(!q)return rows;return rows.filter(r=>String(r.product_name||'').toLowerCase().includes(q)||String(r.product_code||'').toLowerCase().includes(q)||String(r.category_name||'').toLowerCase().includes(q));},[rows,rowSearch]);
+  const rowTotalPages=Math.max(1,Math.ceil(filteredRows.length/rowPageSize));
+  const rowCp=Math.min(rowPage,rowTotalPages);
+  const visibleRows=filteredRows.slice((rowCp-1)*rowPageSize,rowCp*rowPageSize);
   return <SafePage loading={loading} error={error}>
     <div className="grid">
       <div className="card price-matrix-table-card">
         <h3>Price Matrix Agent - bảng giá riêng theo từng bạn hàng</h3>
         <div className="actions">
-          <select className="select" style={{width:260}} value={cid} onChange={e=>changeCustomer(e.target.value)} disabled={customerLoading}>
-            <option value="">--- Chọn khách hàng ---</option>
-            {customers.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-          {customerLoading&&<span className="muted">Đang tải...</span>}
+          <div style={{width:280,display:'inline-flex'}}>
+            <EnterpriseAutocomplete
+              items={customers}
+              value={customers.find(c=>String(c.id)===String(cid))||null}
+              onChange={item=>changeCustomer(item?String(item.id):'')}
+              placeholder="Tìm khách hàng..."
+              displayField="name"
+              secondaryFields={['customer_code','phone']}
+              searchFields={['customer_code','name','phone','address']}
+              filter={item=>(Number(item.partner_type??2)&2)===2}
+              disabled={customerLoading}
+              loading={customerLoading}
+              emptyText="Không tìm thấy khách hàng"
+              getItemKey={item=>item.id}
+            />
+          </div>
           <select className="select" style={{width:260}} value={copyTo} onChange={e=>setCopyTo(e.target.value)}>
             <option value="">Copy bảng này sang khách...</option>
             {customers.filter(c=>String(c.id)!==String(cid)).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
@@ -278,9 +297,10 @@ export default function PriceMatrix(){
 
       {newBookMode&&cid&&<p className="notice" style={{marginBottom:8}}>Đang tạo bảng giá mới cho khách <b>{selectedCustomer.name||''}</b> từ ngày <b>{effectiveLabel}</b></p>}
       <div className="card">
+        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:10}}><input className="input" style={{maxWidth:320}} placeholder="Tìm sản phẩm..." value={rowSearch} onChange={e=>{setRowSearch(e.target.value);setRowPage(1);}}/>{rowSearch&&<button className="btn secondary" onClick={()=>{setRowSearch('');setRowPage(1);}}>Xóa lọc</button>}<span className="muted">{filteredRows.length}/{rows.length} sản phẩm</span></div>
         <table className="table">
           <thead><tr><th></th><th>Dùng trong bill</th><th>STT</th><th>Mặt hàng</th><th>Giá chung</th><th>Giá riêng khách này</th><th>Mode</th></tr></thead>
-          <tbody>{rows.map((r,idx)=><tr key={r.product_id} draggable onDragStart={()=>setDragId(r.product_id)} onDragOver={e=>e.preventDefault()} onDrop={()=>handleDrop(r.product_id)} style={{cursor:'move'}}>
+          <tbody>{visibleRows.map(r=>{const idx=rows.findIndex(x=>x.product_id===r.product_id);return <tr key={r.product_id} draggable onDragStart={()=>setDragId(r.product_id)} onDragOver={e=>e.preventDefault()} onDrop={()=>handleDrop(r.product_id)} style={{cursor:'move'}}>
             <td>☰</td>
             <td><input type="checkbox" checked={!!r.in_catalog} onChange={e=>setRow(idx,{in_catalog:e.target.checked})}/></td>
             <td><input className="input" style={{width:70}} value={idx+1} readOnly/></td>
@@ -288,14 +308,15 @@ export default function PriceMatrix(){
             <td>{moneyVnd(r.default_sale_price)}</td>
             <td><MoneyInput value={r.private_price??0} onChange={v=>setRow(idx,{private_price:v,...(newBookMode&&{in_catalog:Number(v)>0})})} data-pos-nav="true" onKeyDown={handlePosInputKeyNavigation}/></td>
             <td>{r.inventory_mode}</td>
-          </tr>)}</tbody>
+          </tr>;})}</tbody>
         </table>
+        <div style={{display:'flex',justifyContent:'flex-end',alignItems:'center',gap:8,marginTop:12,flexWrap:'wrap'}}><select className="select" value={rowPageSize} onChange={e=>{setRowPageSize(Number(e.target.value));setRowPage(1);}} style={{width:'auto'}}><option value={10}>10 / trang</option><option value={20}>20 / trang</option><option value={50}>50 / trang</option><option value={100}>100 / trang</option></select><span className="muted">Trang {rowCp} / {rowTotalPages}</span><button className="btn secondary" disabled={rowCp<=1} onClick={()=>setRowPage(p=>Math.max(1,p-1))}>Trước</button><button className="btn secondary" disabled={rowCp>=rowTotalPages} onClick={()=>setRowPage(p=>Math.min(rowTotalPages,p+1))}>Sau</button></div>
       </div>
     </div>
 
 
     {bookDetail&&<div className="modal-backdrop">
-      <div className="modal-card excel-price-preview">
+      <div className="modal-card book-detail-modal">
         <div className="modal-header">
           <div>
             <h2>Chi tiết bảng giá #{bookDetail.id}</h2>
@@ -303,23 +324,23 @@ export default function PriceMatrix(){
           </div>
           <button className="btn secondary" onClick={()=>{setBookDetail(null);setBookItems([]);setBookAddItems([])}}>Đóng</button>
         </div>
-        <div className="actions">
-          <label className="muted">Tên bảng giá <input className="input" style={{width:260}} value={bookDetail.book_name||''} disabled={!bookDetail.can_edit} onChange={e=>setBookDetail({...bookDetail,book_name:e.target.value})}/></label>
-          <label className="muted">Loại lịch <select className="select" value={bookDetail.effective_calendar_type||effectiveCalendarType} disabled={!bookDetail.can_edit} onChange={e=>setBookDetail({...bookDetail,effective_calendar_type:e.target.value})}><option value="SOLAR">Dương lịch</option><option value="LUNAR">Âm lịch</option></select></label>
+        <div className="book-detail-fields">
+          <label className="field-label"><span>Tên bảng giá</span><input className="input" value={bookDetail.book_name||''} disabled={!bookDetail.can_edit} onChange={e=>setBookDetail({...bookDetail,book_name:e.target.value})}/></label>
+          <label className="field-label"><span>Loại lịch</span><select className="select" value={bookDetail.effective_calendar_type||effectiveCalendarType} disabled={!bookDetail.can_edit} onChange={e=>setBookDetail({...bookDetail,effective_calendar_type:e.target.value})}><option value="SOLAR">Dương lịch</option><option value="LUNAR">Âm lịch</option></select></label>
           {String(bookDetail.effective_calendar_type||effectiveCalendarType)==='LUNAR'
-            ? <label className="muted">Từ ngày âm lịch <input className="input" placeholder="DD/MM/YYYY" value={bookDetail.effective_lunar_date_text||''} disabled={!bookDetail.can_edit} onChange={e=>setBookDetail({...bookDetail,effective_lunar_date_text:e.target.value})}/></label>
-            : <label className="muted">Từ ngày dương lịch <input className="input" type="date" value={String(bookDetail.effective_from||'').slice(0,10)} disabled={!bookDetail.can_edit} onChange={e=>setBookDetail({...bookDetail,effective_from:e.target.value})}/></label>
+            ? <label className="field-label"><span>Từ ngày (ÂL)</span><input className="input" placeholder="DD/MM/YYYY" value={bookDetail.effective_lunar_date_text||''} disabled={!bookDetail.can_edit} onChange={e=>setBookDetail({...bookDetail,effective_lunar_date_text:e.target.value})}/></label>
+            : <label className="field-label"><span>Từ ngày</span><input className="input" type="date" value={String(bookDetail.effective_from||'').slice(0,10)} disabled={!bookDetail.can_edit} onChange={e=>setBookDetail({...bookDetail,effective_from:e.target.value})}/></label>
           }
-          <label className="muted">Trạng thái <select className="select" value={bookDetail.status||'ACTIVE'} disabled={!bookDetail.can_edit} onChange={e=>setBookDetail({...bookDetail,status:e.target.value})}><option value="ACTIVE">ACTIVE</option><option value="CLOSED">CLOSED</option></select></label>
+          <label className="field-label"><span>Trạng thái</span><select className="select" value={bookDetail.status||'ACTIVE'} disabled={!bookDetail.can_edit} onChange={e=>setBookDetail({...bookDetail,status:e.target.value})}><option value="ACTIVE">ACTIVE</option><option value="CLOSED">CLOSED</option></select></label>
         </div>
         {!bookDetail.can_edit&&<p className="notice warn">Bảng giá đã có bill phát sinh thu tiền nên không được sửa/xóa.</p>}
-        <div className="scroll-box">
+        <div className="book-detail-scroll">
           <table className="table"><thead><tr><th>Mặt hàng</th><th>Mã</th><th>Giá</th><th>Ghi chú</th><th></th></tr></thead>
           <tbody>{bookItems.map((it,idx)=><tr key={it.product_id}>
             <td><b>{it.product_name}</b></td><td>{it.product_code}</td>
             <td><MoneyInput value={it.sale_price} disabled={!bookDetail.can_edit} onChange={v=>setBookItem(idx,{sale_price:v})}/></td>
             <td><input className="input" value={it.note||''} disabled={!bookDetail.can_edit} onChange={e=>setBookItem(idx,{note:e.target.value})}/></td>
-            <td>{bookDetail.can_edit&&<button className="btn danger" style={{padding:'2px 8px'}} onClick={()=>setBookItems(bookItems.filter((_,i)=>i!==idx))}>×</button>}</td>
+            <td>{bookDetail.can_edit&&<button title="Xóa dòng" style={{padding:0,width:34,height:34,display:'inline-flex',alignItems:'center',justifyContent:'center',background:'#fee2e2',border:'1px solid #fca5a5',borderRadius:8,cursor:'pointer',color:'#dc2626'}} onClick={()=>setBookItems(bookItems.filter((_,i)=>i!==idx))}><Trash2 size={14}/></button>}</td>
           </tr>)}</tbody></table>
           {bookAddItems.length>0&&bookDetail.can_edit&&<details style={{marginTop:16}}>
             <summary style={{cursor:'pointer',fontWeight:'bold',padding:'8px 0'}}>+ Thêm sản phẩm chưa có trong bảng giá ({bookAddItems.length})</summary>

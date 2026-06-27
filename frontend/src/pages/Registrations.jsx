@@ -1,10 +1,14 @@
 import React,{useEffect,useState}from'react';
+import {CheckCircle2,XCircle}from'lucide-react';
 import api from'../api/api';
 import SafePage from'../components/SafePage';
 import {showSuccess,showError}from'../utils/toast';
 
 export default function Registrations(){
  const[rows,setRows]=useState([]),[loading,setLoading]=useState(true),[error,setError]=useState('');
+ const[search,setSearch]=useState('');
+ const[page,setPage]=useState(1);
+ const[pageSize,setPageSize]=useState(20);
  const load=async()=>{try{const r=await api.get('/registrations');setRows(r.data||[])}catch(e){setError(e.response?.data?.message||e.message)}finally{setLoading(false)}};
  useEffect(()=>{load()},[]);
 
@@ -18,6 +22,12 @@ export default function Registrations(){
   }
  };
 
+ const q=search.toLowerCase().trim();
+ const filtered=q?rows.filter(x=>[x.full_name,x.business_name,x.phone,x.email,x.username,x.status].some(f=>String(f||'').toLowerCase().includes(q))):rows;
+ const totalPages=Math.max(1,Math.ceil(filtered.length/pageSize));
+ const cp=Math.min(page,totalPages);
+ const paginated=filtered.slice((cp-1)*pageSize,cp*pageSize);
+
  return <SafePage loading={loading} error={error}>
   <div className="card portal-hero">
     <h1>Đăng ký tài khoản khách hàng</h1>
@@ -25,6 +35,11 @@ export default function Registrations(){
   </div>
 
   <div className="card">
+    <div style={{marginBottom:12,display:'flex',gap:8,alignItems:'center'}}>
+      <input className="input" placeholder="Tìm theo tên, SĐT, email, tài khoản, trạng thái..." value={search} onChange={e=>{setSearch(e.target.value);setPage(1);}} style={{maxWidth:420}}/>
+      {search&&<button className="btn secondary" onClick={()=>{setSearch('');setPage(1);}}>Xóa lọc</button>}
+      <span className="muted">{filtered.length} đăng ký</span>
+    </div>
     <table className="table">
       <thead>
         <tr>
@@ -37,7 +52,7 @@ export default function Registrations(){
           <th></th>
         </tr>
       </thead>
-      <tbody>{rows.map(x=><tr key={x.id}>
+      <tbody>{paginated.map(x=><tr key={x.id}>
         <td><b>{x.full_name||x.business_name}</b><br/><span className="muted">{x.description||x.owner_name}</span></td>
         <td>{x.phone}<br/><span className="muted">{x.email}</span></td>
         <td><b>{x.username}</b><br/><span className="muted">{x.service_plan} · {x.payment_method}</span></td>
@@ -51,11 +66,23 @@ export default function Registrations(){
         </td>
         <td><b>{x.status}</b>{x.approved_at&&<><br/><span className="muted">Duyệt: {x.approved_at}</span></>}</td>
         <td>
-          <button className="btn secondary" disabled={x.status==='APPROVED'} onClick={()=>status(x.id,'APPROVED')}>Duyệt & tạo user</button>{' '}
-          <button className="btn danger" disabled={x.status==='REJECTED'} onClick={()=>status(x.id,'REJECTED')}>Từ chối</button>
+          <div style={{display:'flex',flexWrap:'nowrap',gap:6,alignItems:'center',justifyContent:'center'}}>
+            <button className="btn" title="Duyệt & tạo user" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} disabled={x.status==='APPROVED'} onClick={()=>status(x.id,'APPROVED')}><CheckCircle2 size={14}/></button>
+            <button className="btn danger" title="Từ chối" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} disabled={x.status==='REJECTED'} onClick={()=>status(x.id,'REJECTED')}><XCircle size={14}/></button>
+          </div>
         </td>
       </tr>)}</tbody>
     </table>
+    <div style={{display:'flex',justifyContent:'flex-end',alignItems:'center',gap:8,marginTop:12,flexWrap:'wrap'}}>
+      <select className="select" value={pageSize} onChange={e=>{setPageSize(Number(e.target.value));setPage(1);}} style={{width:'auto'}}>
+        <option value={10}>10 / trang</option>
+        <option value={20}>20 / trang</option>
+        <option value={50}>50 / trang</option>
+      </select>
+      <span className="muted">Trang {cp} / {totalPages}</span>
+      <button className="btn secondary" onClick={()=>setPage(p=>Math.max(1,p-1))} disabled={cp<=1}>Trước</button>
+      <button className="btn secondary" onClick={()=>setPage(p=>Math.min(totalPages,p+1))} disabled={cp>=totalPages}>Sau</button>
+    </div>
   </div>
  </SafePage>
 }

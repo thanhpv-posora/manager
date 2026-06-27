@@ -1,11 +1,13 @@
 const express=require('express');
 const {auth}=require('../middleware/auth');
+const {assertCustomerScope}=require('../middleware/scope');
 const DebtInstallmentAgent=require('../agents/DebtInstallmentAgent');
 const DebtMonthlyInstallmentAgent=require('../agents/DebtMonthlyInstallmentAgent');
 const router=express.Router();
 
 router.get('/monthly',auth(['ADMIN','STAFF']),async(req,res,next)=>{try{res.json(await DebtMonthlyInstallmentAgent.list(req.query.month,req.query.year,req.query.calendar_type))}catch(e){next(e)}});
 router.get('/monthly/active',auth(['ADMIN','STAFF','CUSTOMER']),async(req,res,next)=>{try{
+  if(req.query.customer_id) await assertCustomerScope(req.user, req.query.customer_id);
   if(req.query.date || req.query.lunar_date_text){
     return res.json(await DebtMonthlyInstallmentAgent.activeByDate(req.query.customer_id,req.query.date,req.query.calendar_type,req.query.lunar_date_text));
   }

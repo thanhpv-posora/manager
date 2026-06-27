@@ -1,17 +1,17 @@
 import React, {useEffect, useState} from 'react';
-import {BarChart3,Beef,ClipboardList,CreditCard,Home,LogOut,Package,ShoppingCart,Truck,Users,Bot,Trash2,TableProperties,Settings,CalendarDays,Megaphone,PanelLeftClose,PanelLeftOpen} from 'lucide-react';
+import {BarChart3,Beef,ClipboardList,CreditCard,Home,KeyRound,LogOut,Package,ShoppingCart,Truck,Users,Bot,Trash2,TableProperties,Settings,CalendarDays,Megaphone,PanelLeftClose,PanelLeftOpen} from 'lucide-react';
+import ChangePasswordModal from'../components/ChangePasswordModal';
 
 const menu=[
   ['dashboard','Dashboard',Home],
   ['create-order','Tạo bill POS',ShoppingCart],
   ['orders','Bill bán hàng',ClipboardList],
   ['payments','Thu tiền',CreditCard],
-  ['installments','Góp nợ theo tháng',CalendarDays],
+  ['installments','Góp bill',CalendarDays],
   ['customers','Đối tác',Users],
   ['products','Mặt hàng',Package],
   ['product-import','Import mặt hàng từ ảnh',Package],
   ['ocr-providers','Cấu hình OCR nâng cao',Bot],
-  ['prices','Giá riêng',Package],
   ['price-matrix','Bảng giá riêng',TableProperties],
   ['lots','Nhập hàng',Truck],
   ['units','Đơn vị tính',TableProperties],
@@ -27,7 +27,7 @@ const menu=[
   ['sponsor-videos','Video nhà tài trợ',Megaphone],
   ['user-permissions','Phân quyền user',Settings],
   ['registrations','Đăng ký khách hàng',Settings],
-  ['user-mapping','Mapping user-KH',Settings],
+  ['user-mapping','Quản lý tài khoản',Settings],
 ];
 
 const pageMeta={
@@ -35,7 +35,7 @@ const pageMeta={
   'create-order':['Tạo bill POS','Tạo bill nhanh, kiểm tồn, công nợ và hỗ trợ nhập bằng AI.'],
   orders:['Bill bán hàng','Theo dõi bill, in phiếu và trạng thái thanh toán.'],
   payments:['Thu tiền','Ghi nhận tiền mặt, chuyển khoản và lịch sử thu.'],
-  installments:['Góp nợ theo tháng','Cấu hình khoản góp theo ngày, tháng và lịch âm/dương.'],
+  installments:['Góp bill','Quản lý góp bill theo khách hàng và lịch âm/dương.'],
   customers:['Đối tác','Quản lý đối tác, khách hàng và nhà cung cấp.'],
   products:['Mặt hàng','Quản lý sản phẩm, tồn kho, giá bán và chế độ kiểm tồn.'],
   'product-import':['Import mặt hàng từ ảnh','Nhập danh mục nhanh từ hình ảnh hoặc file dữ liệu.'],
@@ -56,10 +56,11 @@ const pageMeta={
   'sponsor-videos':['Video nhà tài trợ','Quản lý video và nội dung truyền thông.'],
   'user-permissions':['Phân quyền user','Thiết lập quyền truy cập chức năng theo user.'],
   registrations:['Đăng ký khách hàng','Duyệt tài khoản đăng ký mới.'],
-  'user-mapping':['Mapping user-KH','Gắn user với khách hàng được phép thao tác.']
+  'user-mapping':['Quản lý tài khoản','Tạo user nội bộ, quản lý khách hàng và duyệt đăng ký.']
 };
 
 export default function MainLayout({page,setPage,user,children,onLogout,allowedMenus}){
+  const [showChangePw, setShowChangePw] = useState(false);
   const [collapsed, setCollapsed] = useState(() => {
     if (typeof window !== 'undefined' && window.innerWidth <= 1024) return true;
     return localStorage.getItem('meatbiz_sidebar_collapsed') === '1';
@@ -126,6 +127,10 @@ export default function MainLayout({page,setPage,user,children,onLogout,allowedM
 
         <div className="sidebar-footer">
           <div className="muted">{user?.full_name||user?.username||'ADMIN'}</div>
+          <button type="button" className="menu-item" onClick={()=>setShowChangePw(true)}>
+            <KeyRound size={18}/>
+            <span className="menu-label">Đổi mật khẩu</span>
+          </button>
           <button type="button" className="menu-item logout" onClick={logout}>
             <LogOut size={18}/>
             <span className="menu-label">Đăng xuất</span>
@@ -150,6 +155,8 @@ export default function MainLayout({page,setPage,user,children,onLogout,allowedM
           <span>{window.innerWidth <= 1024 ? (isMobileMenuOpen ? 'Đóng menu' : 'Mở menu') : (collapsed ? 'Mở menu' : 'Thu gọn')}</span>
         </button>
       </aside>
+
+      {showChangePw&&<ChangePasswordModal onClose={()=>setShowChangePw(false)}/>}
 
       <main className="main">
         <div className="page-hero">

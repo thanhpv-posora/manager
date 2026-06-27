@@ -193,7 +193,11 @@ class PriceMatrixAgent {
         const price = await PriceBookService.getEffectivePrice(customerId, r.product_id, new Date().toISOString().slice(0,10), pool, customers[0].billing_calendar_type, '');
         if(price){ r.sale_price=price.sale_price; r.price_type=price.price_type; r.price_book_id=price.price_book_id || null; }
       }
-      return {customer:customers[0], products:catalogRows, source:'CUSTOMER_CATALOG'};
+      const hasPrivate = catalogRows.some(r => r.price_type && r.price_type !== 'COMMON_PRICE');
+      // hasPrivate → show only private-priced products (normal POS flow)
+      // !hasPrivate → show all products; frontend will allow manual price entry
+      const products = hasPrivate ? catalogRows.filter(r=>r.price_type&&r.price_type!=='COMMON_PRICE') : catalogRows;
+      return {customer:customers[0], products, source:'CUSTOMER_CATALOG', no_private_prices:!hasPrivate};
     }
 
     const [fallback] = await pool.query(
@@ -213,7 +217,9 @@ class PriceMatrixAgent {
       const price = await PriceBookService.getEffectivePrice(customerId, r.product_id, new Date().toISOString().slice(0,10), pool, customers[0].billing_calendar_type, '');
       if(price){ r.sale_price=price.sale_price; r.price_type=price.price_type; r.price_book_id=price.price_book_id || null; }
     }
-    return {customer:customers[0], products:fallback, source:'ALL_PRODUCTS_FALLBACK'};
+    const hasPrivate = fallback.some(r => r.price_type && r.price_type !== 'COMMON_PRICE');
+    const products = hasPrivate ? fallback.filter(r=>r.price_type&&r.price_type!=='COMMON_PRICE') : fallback;
+    return {customer:customers[0], products, source:'ALL_PRODUCTS_FALLBACK', no_private_prices:!hasPrivate};
   }
 
   async reorderCatalog(customerId, items) {

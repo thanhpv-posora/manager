@@ -11,7 +11,7 @@ const required=[
   ['lots','Nhập lô/NCC'],
   ['portal','Trang giới thiệu'],
   ['videos','Video nhà tài trợ'],
-  ['user-mapping','Mapping user-KH'],
+  ['user-mapping','Quản lý tài khoản'],
   ['permissions','Phân quyền menu']
 ];
 

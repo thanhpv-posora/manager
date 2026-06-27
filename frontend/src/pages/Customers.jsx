@@ -1,4 +1,5 @@
 import React,{useEffect,useState,useRef}from'react';
+import {Pencil,Trash2}from'lucide-react';
 import api from'../api/api';
 import SafePage from'../components/SafePage';
 import {moneyVnd}from'../utils/money';
@@ -13,6 +14,9 @@ export default function Customers(){
   const[pendingDelete,setPendingDelete]=useState(null);
   const[deleteReason,setDeleteReason]=useState('');
   const[deleting,setDeleting]=useState(false);
+  const[search,setSearch]=useState('');
+  const[page,setPage]=useState(1);
+  const[pageSize,setPageSize]=useState(10);
   const user=JSON.parse(localStorage.getItem('user')||'{}');
   const isCustomer=user.role==='CUSTOMER';
 
@@ -101,6 +105,15 @@ export default function Customers(){
     }
   };
 
+  const q=search.toLowerCase().trim();
+  const filtered=q?rows.filter(x=>{
+    const label=x.partner_type===1?'nhà cung cấp':'khách hàng';
+    return [x.customer_code,x.name,x.phone,x.address].some(f=>String(f||'').toLowerCase().includes(q))||label.includes(q);
+  }):rows;
+  const totalPages=Math.max(1,Math.ceil(filtered.length/pageSize));
+  const cp=Math.min(page,totalPages);
+  const paginated=filtered.slice((cp-1)*pageSize,cp*pageSize);
+
   return <SafePage loading={loading} error={error}>
     <div className="grid cols-2">
       <div className="card">
@@ -149,9 +162,14 @@ export default function Customers(){
 
     <div className="card">
       <h3>Danh sách đối tác</h3>
+      <div style={{marginBottom:12,display:'flex',gap:8,alignItems:'center'}}>
+        <input className="input" placeholder="Tìm theo mã, tên, SĐT, địa chỉ, loại đối tác..." value={search} onChange={e=>{setSearch(e.target.value);setPage(1);}} style={{maxWidth:420}}/>
+        {search&&<button className="btn secondary" onClick={()=>{setSearch('');setPage(1);}}>Xóa lọc</button>}
+        <span className="muted">{filtered.length} đối tác</span>
+      </div>
       <table className="table">
         <thead><tr><th>Mã</th><th>Tên</th><th>Loại đối tác</th><th>Liên hệ</th><th>Lịch tính bill</th><th>Công nợ</th><th>Thuộc khách</th><th></th></tr></thead>
-        <tbody>{rows.map(x=><tr key={x.id}>
+        <tbody>{paginated.map(x=><tr key={x.id}>
           <td>{x.customer_code}</td>
           <td><b>{x.name}</b><br/><span className="muted">{x.price_mode}</span></td>
           <td>{x.partner_type===1?'Nhà cung cấp':'Khách hàng'}</td>
@@ -160,11 +178,22 @@ export default function Customers(){
           <td>{moneyVnd(x.current_debt)}</td>
           <td>{x.parent_customer_name||'Khách chính'}</td>
           <td>
-            <button className="btn secondary" onClick={()=>edit(x)}>Sửa</button>{' '}
-            {(isCustomer?x.parent_customer_id:1)&&<button className="btn danger" onClick={()=>remove(x)}>Xóa</button>}
+            <div style={{display:'flex',flexWrap:'nowrap',gap:6,alignItems:'center',justifyContent:'center'}}>
+              <button className="btn secondary" title="Sửa" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>edit(x)}><Pencil size={14}/></button>
+              {(isCustomer?x.parent_customer_id:1)&&<button className="btn danger" title="Xóa" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>remove(x)}><Trash2 size={14}/></button>}
+            </div>
           </td>
         </tr>)}</tbody>
       </table>
+      <div style={{display:'flex',justifyContent:'flex-end',alignItems:'center',gap:8,marginTop:12,flexWrap:'wrap'}}>
+        <span className="muted">Trang {cp} / {totalPages}</span>
+        <button className="btn secondary" onClick={()=>setPage(p=>Math.max(1,p-1))} disabled={cp<=1}>Trước</button>
+        <button className="btn secondary" onClick={()=>setPage(p=>Math.min(totalPages,p+1))} disabled={cp>=totalPages}>Sau</button>
+        <select className="select" value={pageSize} onChange={e=>{setPageSize(Number(e.target.value));setPage(1);}} style={{width:'auto'}}>
+          <option value={10}>10 / trang</option>
+          <option value={20}>20 / trang</option>
+        </select>
+      </div>
     </div>
 
     {pendingDelete&&<div className="app-dialog-backdrop" role="dialog" aria-modal="true">

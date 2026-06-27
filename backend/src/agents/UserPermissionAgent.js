@@ -1,8 +1,12 @@
 const pool=require('../config/db');
 
 const DEFAULT_MENUS=[
- 'dashboard','create-order','orders','payments','installments','customers','products','product-import','ocr-providers',
- 'prices','price-matrix','lots','revenue','profit','agents','trash','settings','portal','user-permissions','user-mapping','sponsor-videos','production-check'
+ 'dashboard','create-order','orders','payments','installments','customers',
+ 'products','product-import','ocr-providers','price-matrix',
+ 'lots','units','supplier-purchase-options','inventory-purchases',
+ 'revenue','profit','agents','production-check',
+ 'trash','settings','portal','sponsor-videos',
+ 'user-permissions','registrations','user-mapping'
 ];
 
 function defaultsForRole(role){

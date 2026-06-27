@@ -1,8 +1,11 @@
 import React,{useEffect,useRef,useState}from'react';
+import {CheckCircle2,Pencil,Printer}from'lucide-react';
 import api from'../api/api';
 import SafePage from'../components/SafePage';
 import MoneyInput from'../components/MoneyInput';
 import {calcExpression} from'../utils/expr';
+import {showSuccess,showError} from'../utils/toast';
+import EnterpriseAutocomplete from'../components/common/EnterpriseAutocomplete';
 import {formatLunarDate,parseLunarText,lunarToSolarDate} from'../utils/lunarDate';
 
 const money=n=>Number(n||0).toLocaleString('en-US')+'đ';
@@ -51,6 +54,8 @@ export default function Lots(){
   const[editingLotId,setEditingLotId]=useState(null);
   const[priceSource,setPriceSource]=useState(null);
   const[dateDialogOpen,setDateDialogOpen]=useState(false);
+  const[lotPage,setLotPage]=useState(1);
+  const[lotPageSize,setLotPageSize]=useState(20);
   const[dialogType,setDialogType]=useState('SOLAR');
   const[dialogSupplierId,setDialogSupplierId]=useState(null);
   const[dialogSolarDate,setDialogSolarDate]=useState(today);
@@ -414,9 +419,14 @@ export default function Lots(){
   const print=id=>window.open((import.meta.env.VITE_API_URL||(typeof window !== 'undefined' ? `${window.location.origin}/api` : '/api'))+'/lots/public/'+id+'/print','_blank');
   const payLot=async()=>{
     if(!pay.lot_id||!pay.amount)return alert('Chọn lô và nhập số tiền');
-    await api.post('/lots/'+pay.lot_id+'/payments',pay);
-    setPay({...pay,amount:''});
-    load();
+    try{
+      await api.post('/lots/'+pay.lot_id+'/payments',pay);
+      setPay({...pay,amount:''});
+      load();
+      showSuccess('Đã lưu thanh toán NCC');
+    }catch(e){
+      showError(e.response?.data?.message||'Không thể lưu thanh toán. Vui lòng thử lại.');
+    }
   };
   const fillFull=()=>{const lot=rows.find(r=>String(r.id)===String(pay.lot_id));if(lot)setPay({...pay,type:'PAYMENT',amount:lot.remaining_amount})};
   const closeLot=async(id,lot_code)=>{
@@ -501,6 +511,10 @@ export default function Lots(){
     x.cost+=n(r.total_cost);
     return m;
   },{}));
+
+  const lotTotalPages=Math.max(1,Math.ceil(reportRows.length/lotPageSize));
+  const lotCp=Math.min(lotPage,lotTotalPages);
+  const lotPaginated=reportRows.slice((lotCp-1)*lotPageSize,lotCp*lotPageSize);
 
   const reportRangeText=`Theo ngày nhập hàng: từ ${reportFilter.from||'...'} đến ${reportFilter.to||'...'}`;
   const printHtml=(title,tableHtml)=>{
@@ -605,12 +619,12 @@ export default function Lots(){
             <div className="form-grid">
           <div className="lots-header-row" style={{gridColumn:'1/-1'}}>
             <label style={{margin:0}}><span className="muted">Mã nhập hàng</span><input className="input" placeholder="Mã nhập hàng" value={f.lot_name||''} onChange={e=>setField('lot_name',e.target.value)}/></label>
-            <label style={{margin:0}}><span className="muted">Nhà cung cấp</span><select className="select" value={dateDialogOpen&&dialogSupplierId?dialogSupplierId:(f.supplier_id||'')} onChange={e=>onSupplierChange(e.target.value)}><option value="">Chọn nhà cung cấp</option>{s.map(x=><option key={x.id} value={x.id}>{x.name} - {x.billing_calendar_type==='LUNAR'?'Âm lịch':'Dương lịch'}</option>)}</select></label>
+            <label style={{margin:0}}><span className="muted">Nhà cung cấp</span><EnterpriseAutocomplete items={s} value={s.find(x=>String(x.id)===String(dateDialogOpen&&dialogSupplierId?dialogSupplierId:(f.supplier_id||'')))||null} onChange={item=>onSupplierChange(item?String(item.id):'')} placeholder="Tìm NCC..." displayField="name" secondaryFields={['phone']} searchFields={['name','supplier_code','customer_code','phone','address']} emptyText="Không tìm thấy NCC" getItemKey={item=>item.id}/></label>
             <div style={{display:'flex',flexDirection:'column',gap:2}}>
               <span className="muted">Ngày nhập</span>
               {f.supplier_id
-                ?<button type="button" className="btn secondary lots-date-btn" style={{fontWeight:500}} onClick={openDateDialog}>{selectedSupplierCalendar==='LUNAR'?`${f.lunar_date_text||formatLunarDate(f.purchase_date||today)} (âm lịch)`:`${dateText(f.purchase_date)} (dương lịch)`}</button>
-                :<span className="muted" style={{fontSize:12,padding:'6px 0'}}>Chọn NCC để đặt ngày</span>}
+                ?<button type="button" className="btn secondary lots-date-btn" style={{fontWeight:500}} onClick={openDateDialog}>{selectedSupplierCalendar==='LUNAR'?`${f.lunar_date_text||formatLunarDate(f.purchase_date||today)} (AL)`:`${dateText(f.purchase_date)} (DL)`}</button>
+                :<span className="muted" style={{fontSize:12,padding:'6px 0'}}>Chọn ngày</span>}
             </div>
           </div>
 
@@ -683,7 +697,7 @@ export default function Lots(){
         <div className="form-grid supplier-report-filter">
           <label><span className="muted">Từ ngày</span><input className="input" type="date" value={reportFilter.from} onChange={e=>setReportFilter({...reportFilter,from:e.target.value})}/></label>
           <label><span className="muted">Đến ngày</span><input className="input" type="date" value={reportFilter.to} onChange={e=>setReportFilter({...reportFilter,to:e.target.value})}/></label>
-          <label><span className="muted">Nhà cung cấp</span><select className="select" value={reportFilter.supplier_id} onChange={e=>setReportFilter({...reportFilter,supplier_id:e.target.value})}><option value="">Tất cả NCC</option>{s.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
+          <label><span className="muted">Nhà cung cấp</span><EnterpriseAutocomplete items={s} value={s.find(x=>String(x.id)===String(reportFilter.supplier_id))||null} onChange={item=>setReportFilter({...reportFilter,supplier_id:item?String(item.id):''})} placeholder="Tất cả NCC..." displayField="name" secondaryFields={['phone']} searchFields={['name','supplier_code','customer_code','phone','address']} emptyText="Không tìm thấy NCC" getItemKey={item=>item.id}/></label>
           <div className="actions" style={{alignItems:'end'}}>
             {reportTab==='DETAIL'?<button className="btn secondary" disabled={!reportRows.length} onClick={printDetail}>🖨 In chi tiết</button>:<button className="btn secondary" disabled={!summaryRows.length} onClick={printSummary}>🖨 In tổng hợp</button>}
           </div>
@@ -704,7 +718,38 @@ export default function Lots(){
         </div>
 
         <h3>Danh sách phiếu nhập / Thanh toán NCC</h3>
-        <table className="table"><thead><tr><th>Lô</th><th>Kg</th><th>Thành tiền</th><th>Còn trả</th><th></th></tr></thead><tbody>{reportRows.length===0?<tr><td colSpan="5" className="muted" style={{textAlign:'center'}}>Không có dữ liệu trong khoảng ngày đã chọn.</td></tr>:reportRows.map(r=><tr key={r.id}><td>{r.lot_code}<br/>{r.lot_name}<br/><span className="muted">{r.supplier_name}</span></td><td>{r.total_weight}kg<br/><span className="muted">{animal(r.total_animals)} con, cái {animal(r.female_animals)}</span><br/><span className="muted">Vụn {Number(r.fragment_weight||0).toFixed(3)}kg × {money(r.fragment_price||0)}</span></td><td>{money(r.total_cost)}</td><td><b>{money(r.remaining_amount)}</b></td><td><button className="btn secondary" onClick={()=>print(r.id)}>In phiếu nhập</button><button className="btn secondary" style={{marginLeft:4}} disabled={r.status!=='OPEN'} title={r.status!=='OPEN'?'Phiếu đã chốt hoặc đã hủy.':undefined} onClick={()=>loadLotIntoForm(r)}>Sửa</button>{r.status==='OPEN'&&<button className="btn secondary" style={{marginLeft:4}} onClick={()=>closeLot(r.id,r.lot_code)}>Chốt</button>}</td></tr>)}</tbody></table>
+        <table className="table">
+          <thead><tr><th>NCC</th><th>Kg</th><th>Thành tiền</th><th>Còn trả</th><th></th></tr></thead>
+          <tbody>
+            {reportRows.length===0
+              ?<tr><td colSpan="5" className="muted" style={{textAlign:'center'}}>Không có dữ liệu trong khoảng ngày đã chọn.</td></tr>
+              :lotPaginated.map(r=><tr key={r.id}>
+                <td>{r.supplier_name}</td>
+                <td>{r.total_weight}kg</td>
+                <td>{money(r.total_cost)}</td>
+                <td><b>{money(r.remaining_amount)}</b></td>
+                <td>
+                  <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                    <button className="btn secondary" style={{padding:0,width:30,height:30,display:'inline-flex',alignItems:'center',justifyContent:'center'}} title="In" onClick={()=>print(r.id)}><Printer size={14}/></button>
+                    <button className="btn secondary" style={{padding:0,width:30,height:30,display:'inline-flex',alignItems:'center',justifyContent:'center'}} title="Sửa" disabled={r.status!=='OPEN'} onClick={()=>loadLotIntoForm(r)}><Pencil size={14}/></button>
+                    {r.status==='OPEN'&&<button className="btn" style={{padding:0,width:30,height:30,display:'inline-flex',alignItems:'center',justifyContent:'center',background:'#16a34a',borderColor:'#16a34a',color:'#fff'}} title="Chốt" onClick={()=>closeLot(r.id,r.lot_code)}><CheckCircle2 size={14}/></button>}
+                  </div>
+                </td>
+              </tr>)
+            }
+          </tbody>
+        </table>
+        <div style={{display:'flex',justifyContent:'flex-end',alignItems:'center',gap:8,marginTop:12,flexWrap:'wrap'}}>
+          <select className="select" value={lotPageSize} onChange={e=>{setLotPageSize(Number(e.target.value));setLotPage(1);}} style={{width:'auto'}}>
+            <option value={10}>10 / trang</option>
+            <option value={20}>20 / trang</option>
+            <option value={50}>50 / trang</option>
+            <option value={100}>100 / trang</option>
+          </select>
+          <span className="muted">Trang {lotCp} / {lotTotalPages}</span>
+          <button className="btn secondary" onClick={()=>setLotPage(p=>Math.max(1,p-1))} disabled={lotCp<=1}>Trước</button>
+          <button className="btn secondary" onClick={()=>setLotPage(p=>Math.min(lotTotalPages,p+1))} disabled={lotCp>=lotTotalPages}>Sau</button>
+        </div>
         <h3>Ứng / trả tiền nhà cung cấp</h3>
         <div className="form-grid">
           <select className="select" value={pay.lot_id||''} onChange={e=>setPay({...pay,lot_id:e.target.value})}><option value="">Chọn lô</option>{rows.map(r=><option key={r.id} value={r.id}>{r.lot_code} - còn {money(r.remaining_amount)}</option>)}</select>

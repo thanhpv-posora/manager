@@ -2,6 +2,7 @@ const pool=require('../config/db');
 const bcrypt=require('bcryptjs');
 const crypto=require('crypto');
 const notification=require('../services/notification.service');
+const {validatePasswordStrength}=require('../utils/passwordValidator');
 
 function makeCustomerCode(id){
   return 'KH'+String(id).padStart(5,'0');
@@ -117,11 +118,13 @@ class RegistrationAgent{
 
     if(!fullName) throw new Error('Nhập họ tên');
     if(!phone) throw new Error('Nhập số điện thoại liên hệ');
+    if(!/^[0-9]+$/.test(phone)) throw new Error('Số điện thoại chỉ được nhập số');
     if(!email) throw new Error('Vui lòng nhập email để xác minh tài khoản. Đăng ký chỉ bằng số điện thoại đang phát triển.');
     if(!isValidEmail(email)) throw new Error('Email không hợp lệ. Vui lòng nhập email đúng định dạng, ví dụ: ten@posora.vn');
     if(!username) throw new Error('Nhập tài khoản hoặc số điện thoại đăng nhập');
     if(!data.password) throw new Error('Nhập mật khẩu');
-    if(String(data.password).length<6) throw new Error('Mật khẩu nên có ít nhất 6 ký tự');
+    const pwCheck=validatePasswordStrength(data.password);
+    if(!pwCheck.ok) throw new Error(pwCheck.message);
 
     const [u]=await pool.query(`SELECT id FROM users WHERE username=? OR phone=? OR email=? LIMIT 1`,[username,phone,email]);
     if(u.length) throw new Error('Tài khoản, email hoặc số điện thoại đã tồn tại');
@@ -257,11 +260,11 @@ class RegistrationAgent{
 
       const fullName=r.full_name||r.owner_name||r.business_name||r.username;
       if(!r.password_hash) throw new Error('Đăng ký chưa có password_hash, vui lòng yêu cầu khách đăng ký lại');
-      const [user]=await conn.query(
-        `INSERT INTO users(username,full_name,phone,email,password_hash,role,customer_id,is_active) VALUES(?,?,?,?,?,'CUSTOMER',?,1)`,
-        [r.username,fullName,r.phone||'',r.email||'',r.password_hash,customerId]
-      );
-      const userId=user.insertId;
+      const MappingAgent=require('./UserCustomerMappingAgent');
+      const {user_id:userId}=await MappingAgent.createUser({
+        username:r.username,full_name:fullName,phone:r.phone||'',email:r.email||'',
+        password_hash:r.password_hash,role:'CUSTOMER',customer_id:customerId
+      },conn);
       await conn.query(`UPDATE customer_account_registrations SET status='APPROVED',verification_status='VERIFIED',customer_id=?,user_id=?,approved_at=NOW(),approved_by=?,updated_at=NOW() WHERE id=?`,[customerId,userId,adminUserId||null,id]);
       await conn.commit();
 

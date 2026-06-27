@@ -24,7 +24,14 @@ class ReportAgent {
       `SELECT c.name,SUM(o.total_amount) revenue FROM orders o JOIN customers c ON c.id=o.customer_id
        WHERE o.status<>'CANCELLED' GROUP BY c.id ORDER BY revenue DESC LIMIT 10`
     );
-    return {summary:summary[0], daily:daily.reverse(), topProducts, topCustomers};
+    const result = {summary:summary[0], daily:daily.reverse(), topProducts, topCustomers};
+    try {
+      const [[rt]] = await pool.query(`SELECT COALESCE(SUM(amount),0) v FROM retail_daily_summary WHERE business_date=?`, [today]);
+      const [[ra]] = await pool.query(`SELECT COALESCE(SUM(amount),0) v FROM retail_daily_summary`);
+      result.summary.today_revenue = Number(result.summary.today_revenue) + Number(rt.v);
+      result.summary.total_revenue = Number(result.summary.total_revenue) + Number(ra.v);
+    } catch(e) { if (e.code !== 'ER_NO_SUCH_TABLE') throw e; }
+    return result;
   }
 
   async revenue(query, user) {
@@ -34,11 +41,40 @@ class ReportAgent {
     if (from) { where.push('o.order_date>=?'); params.push(from); }
     if (to) { where.push('o.order_date<=?'); params.push(to); }
     const groupExpr=group_by==='month'?`DATE_FORMAT(o.order_date,'%Y-%m')`:`o.order_date`;
-    const [rows]=await pool.query(
+    const [posRows]=await pool.query(
       `SELECT ${groupExpr} period,SUM(o.total_amount) revenue,SUM(o.paid_amount) paid,SUM(o.debt_amount) debt,COUNT(*) orders
        FROM orders o WHERE ${where.join(' AND ')} GROUP BY ${groupExpr} ORDER BY period`, params
     );
-    return rows;
+    try {
+      const retailWhere = [], retailParams = [];
+      if (from) { retailWhere.push('business_date>=?'); retailParams.push(from); }
+      if (to)   { retailWhere.push('business_date<=?'); retailParams.push(to); }
+      const [retailRows] = await pool.query(
+        `SELECT business_date, COALESCE(SUM(amount),0) retail_amount FROM retail_daily_summary
+         ${retailWhere.length ? 'WHERE ' + retailWhere.join(' AND ') : ''} GROUP BY business_date`,
+        retailParams
+      );
+      const retailByPeriod = new Map();
+      for (const r of retailRows) {
+        const d = String(r.business_date).slice(0,10);
+        const p = group_by === 'month' ? d.slice(0,7) : d;
+        retailByPeriod.set(p, (retailByPeriod.get(p) || 0) + Number(r.retail_amount));
+      }
+      const periodSet = new Set(posRows.map(r => String(r.period)));
+      const merged = posRows.map(r => {
+        const period = String(r.period);
+        const retail = retailByPeriod.get(period) || 0;
+        return { ...r, pos_revenue: Number(r.revenue), retail_amount: retail, revenue: Number(r.revenue) + retail };
+      });
+      for (const [period, retail] of retailByPeriod) {
+        if (!periodSet.has(period)) merged.push({ period, pos_revenue: 0, retail_amount: retail, revenue: retail, paid: 0, debt: 0, orders: 0 });
+      }
+      merged.sort((a,b) => String(a.period).localeCompare(String(b.period)));
+      return merged;
+    } catch(e) {
+      if (e.code !== 'ER_NO_SUCH_TABLE') throw e;
+      return posRows;
+    }
   }
 
   async profit(query, user) {
@@ -168,11 +204,33 @@ class ReportAgent {
       });
     }
 
+    try {
+      const retailDateWhere = [], retailDateParams = [];
+      if (from) { retailDateWhere.push('business_date>=?'); retailDateParams.push(String(from).slice(0,10)); }
+      if (to)   { retailDateWhere.push('business_date<=?'); retailDateParams.push(String(to).slice(0,10)); }
+      const [retailProfitRows] = await pool.query(
+        `SELECT business_date, COALESCE(SUM(amount),0) retail_amount FROM retail_daily_summary
+         ${retailDateWhere.length ? 'WHERE ' + retailDateWhere.join(' AND ') : ''} GROUP BY business_date`,
+        retailDateParams
+      );
+      for (const rr of retailProfitRows) {
+        const d = String(rr.business_date).slice(0,10);
+        const period = groupBy === 'year' ? d.slice(0,4) : (groupBy === 'month' ? d.slice(0,7) : d);
+        if (!summary.has(period)) summary.set(period, {period,revenue:0,cost:0,profit:0,orders:new Set(),items:0,waiting_cost_items:0,retail_revenue:0});
+        const s = summary.get(period);
+        const amt = Number(rr.retail_amount || 0);
+        s.revenue += amt;
+        s.profit  += amt;
+        s.retail_revenue = (s.retail_revenue || 0) + amt;
+      }
+    } catch(e) { if (e.code !== 'ER_NO_SUCH_TABLE') throw e; }
+
     const rows = Array.from(summary.values()).sort((a,b)=>String(a.period).localeCompare(String(b.period))).map(r=>{
       const hasWaiting = r.waiting_cost_items > 0;
       return {
         period: r.period,
         revenue: Math.round(r.revenue),
+        retail_revenue: Math.round(r.retail_revenue || 0),
         cost: hasWaiting ? null : Math.round(r.cost),
         profit: hasWaiting ? null : Math.round(r.profit),
         gross_margin: hasWaiting ? null : (r.revenue > 0 ? Number(((r.profit / r.revenue) * 100).toFixed(2)) : 0),

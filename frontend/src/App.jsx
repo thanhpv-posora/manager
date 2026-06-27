@@ -15,6 +15,7 @@ import SupplierPurchaseOptions from'./pages/SupplierPurchaseOptions';
 import InventoryPurchases from'./pages/InventoryPurchases';
 import Revenue from'./pages/Revenue';
 import Profit from'./pages/Profit';
+import RetailDailySummary from'./pages/RetailDailySummary';
 import Agents from'./pages/Agents';
 import Trash from'./pages/Trash';
 import PriceMatrix from'./pages/PriceMatrix';
@@ -104,6 +105,7 @@ export default function App(){
     'inventory-purchases':<InventoryPurchases/>,
     revenue:<Revenue/>,
     profit:<Profit/>,
+    'retail-daily-summary':<RetailDailySummary/>,
     agents:<Agents/>,
     trash:<Trash/>,
     settings:<SettingsPage/>,

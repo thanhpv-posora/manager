@@ -79,6 +79,7 @@ const aiRoutes = require('./routes/ai.routes');
 app.use('/api/ai', aiRateLimit, aiRoutes);
 app.use('/api/logs', require('./routes/logs.routes'));
 app.use('/api/partners', require('./routes/partners.routes'));
+app.use('/api/retail-daily-summary', require('./routes/retailSummary'));
 
 app.use(errorHandler);
 

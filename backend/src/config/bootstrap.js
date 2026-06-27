@@ -617,6 +617,22 @@ CREATE TABLE IF NOT EXISTS supplier_partner_map (
   FOREIGN KEY (supplier_id) REFERENCES suppliers(id),
   FOREIGN KEY (partner_id)  REFERENCES customers(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS retail_daily_summary (
+  id                BIGINT       AUTO_INCREMENT PRIMARY KEY,
+  business_date     DATE         NOT NULL,
+  calendar_type     VARCHAR(10)  NOT NULL DEFAULT 'SOLAR',
+  lunar_date_text   VARCHAR(50)  NULL,
+  amount            DECIMAL(15,2) NOT NULL DEFAULT 0,
+  note              TEXT         NULL,
+  status            VARCHAR(20)  NOT NULL DEFAULT 'OPEN',
+  created_by        BIGINT       NULL,
+  updated_by        BIGINT       NULL,
+  created_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at        DATETIME     NULL ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_retail_date_cal (business_date, calendar_type),
+  INDEX idx_retail_date (business_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
 
     for (const table of ['customers','products','product_categories','suppliers','purchase_lots','orders']) {

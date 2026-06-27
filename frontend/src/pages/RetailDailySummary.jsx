@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState } from 'react';
 import api from '../api/api';
 import SafePage from '../components/SafePage';
 
@@ -16,39 +16,36 @@ function fmtAmount(v) {
   return n > 0 ? n.toLocaleString('en-US') : '';
 }
 
+async function convertDate(params) {
+  try {
+    const r = await api.get('/retail-daily-summary/convert-date', { params });
+    return r.data || null;
+  } catch { return null; }
+}
+
 export default function RetailDailySummary() {
   const [calendarType, setCalendarType] = useState('SOLAR');
   const [businessDate, setBusinessDate] = useState(todayStr());
   const [lunarDateText, setLunarDateText] = useState('');
   const [amountRaw, setAmountRaw] = useState('');
   const [note, setNote] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [existingId, setExistingId] = useState(null);
 
-  const loadRecord = useCallback(async (date, calType, lunarText) => {
-    const isLunar = calType === 'LUNAR';
-    if (isLunar) {
-      if (!lunarText || !isValidLunar(lunarText)) return;
-    } else {
-      if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
-    }
-    setLoading(true);
-    setError('');
-    setSuccess('');
+  // Core load — fills form or clears it; never sets calendarType/dates
+  const loadRecord = async (solar, calType, lunarText) => {
     try {
-      const params = isLunar
-        ? { calendar_type: 'LUNAR', lunar_date_text: lunarText.trim() }
-        : { business_date: date, calendar_type: 'SOLAR' };
+      const params = calType === 'LUNAR' && lunarText
+        ? { calendar_type: 'LUNAR', lunar_date_text: lunarText }
+        : { business_date: solar, calendar_type: 'SOLAR' };
       const r = await api.get('/retail-daily-summary', { params });
       const rec = r.data;
       if (rec) {
         setAmountRaw(String(rec.amount || ''));
         setNote(rec.note || '');
-        if (rec.business_date) setBusinessDate(rec.business_date);
-        if (rec.lunar_date_text) setLunarDateText(rec.lunar_date_text);
         setExistingId(rec.id || null);
       } else {
         setAmountRaw('');
@@ -57,24 +54,109 @@ export default function RetailDailySummary() {
       }
     } catch(e) {
       setError(e.response?.data?.message || e.message);
-    } finally {
-      setLoading(false);
     }
+  };
+
+  // Mount: detect calendar from settings → localStorage → SOLAR; convert today; load
+  useEffect(() => {
+    const init = async () => {
+      setLoading(true);
+      setError('');
+      const today = todayStr();
+
+      // 1. Detect calendar type
+      let detectedCal = 'SOLAR';
+      try {
+        const r = await api.get('/settings');
+        const s = r.data || {};
+        if (s.billing_calendar_type === 'LUNAR' || s.billing_calendar_type === 'SOLAR') {
+          detectedCal = s.billing_calendar_type;
+        } else {
+          const cached = localStorage.getItem('retail_summary_calendar_type');
+          if (cached === 'LUNAR' || cached === 'SOLAR') detectedCal = cached;
+        }
+      } catch {
+        const cached = localStorage.getItem('retail_summary_calendar_type');
+        if (cached === 'LUNAR' || cached === 'SOLAR') detectedCal = cached;
+      }
+
+      // 2. Get today's lunar text (always convert so both dates stay in sync)
+      const converted = await convertDate({ solar_date: today });
+      const lunarToday = converted?.lunar_date_text || '';
+
+      setCalendarType(detectedCal);
+      setBusinessDate(today);
+      setLunarDateText(lunarToday);
+
+      // 3. Load record for today
+      await loadRecord(today, detectedCal, lunarToday);
+      setLoading(false);
+    };
+    init();
   }, []);
 
-  // SOLAR: auto-load when date or calendar type changes
-  useEffect(() => {
-    if (calendarType !== 'SOLAR') return;
-    loadRecord(businessDate, 'SOLAR', null);
-  }, [businessDate, calendarType]);
+  // Calendar type selector — converts date, persists preference, reloads
+  const handleCalendarTypeChange = async (newCal) => {
+    if (newCal === calendarType) return;
+    localStorage.setItem('retail_summary_calendar_type', newCal);
+    setCalendarType(newCal);
+    setAmountRaw('');
+    setNote('');
+    setExistingId(null);
+    setError('');
+    setSuccess('');
+    setLoading(true);
 
-  // LUNAR: auto-load when lunar text is a complete valid date
-  useEffect(() => {
-    if (calendarType !== 'LUNAR') return;
-    if (isValidLunar(lunarDateText)) {
-      loadRecord(null, 'LUNAR', lunarDateText.trim());
+    let solar = businessDate;
+    let lunar = lunarDateText;
+
+    if (newCal === 'LUNAR' && solar && !isValidLunar(lunar)) {
+      const c = await convertDate({ solar_date: solar });
+      lunar = c?.lunar_date_text || '';
+      setLunarDateText(lunar);
+    } else if (newCal === 'SOLAR' && isValidLunar(lunar) && !solar) {
+      const c = await convertDate({ lunar_date_text: lunar });
+      solar = c?.solar_date || '';
+      setBusinessDate(solar);
     }
-  }, [lunarDateText, calendarType]);
+
+    await loadRecord(solar, newCal, lunar);
+    setLoading(false);
+  };
+
+  // SOLAR date picker change
+  const handleBusinessDateChange = async (newDate) => {
+    setBusinessDate(newDate);
+    setAmountRaw('');
+    setNote('');
+    setExistingId(null);
+    setError('');
+    setSuccess('');
+    if (!newDate || !/^\d{4}-\d{2}-\d{2}$/.test(newDate)) return;
+    setLoading(true);
+    const c = await convertDate({ solar_date: newDate });
+    const lunar = c?.lunar_date_text || '';
+    setLunarDateText(lunar);
+    await loadRecord(newDate, calendarType, lunar);
+    setLoading(false);
+  };
+
+  // LUNAR text input change
+  const handleLunarDateChange = async (newLunar) => {
+    setLunarDateText(newLunar);
+    setError('');
+    if (!isValidLunar(newLunar)) return;
+    setAmountRaw('');
+    setNote('');
+    setExistingId(null);
+    setSuccess('');
+    setLoading(true);
+    const c = await convertDate({ lunar_date_text: newLunar });
+    const solar = c?.solar_date || '';
+    if (solar) setBusinessDate(solar);
+    await loadRecord(solar, calendarType, newLunar);
+    setLoading(false);
+  };
 
   const handleSave = async () => {
     setError('');
@@ -126,14 +208,7 @@ export default function RetailDailySummary() {
                 className="select"
                 style={{ width: 160 }}
                 value={calendarType}
-                onChange={e => {
-                  setCalendarType(e.target.value);
-                  setAmountRaw('');
-                  setNote('');
-                  setExistingId(null);
-                  setError('');
-                  setSuccess('');
-                }}
+                onChange={e => handleCalendarTypeChange(e.target.value)}
               >
                 <option value="SOLAR">Dương lịch</option>
                 <option value="LUNAR">Âm lịch</option>
@@ -148,7 +223,7 @@ export default function RetailDailySummary() {
                   type="date"
                   style={{ width: 180 }}
                   value={businessDate}
-                  onChange={e => setBusinessDate(e.target.value)}
+                  onChange={e => handleBusinessDateChange(e.target.value)}
                 />
               </div>
             ) : (
@@ -160,7 +235,7 @@ export default function RetailDailySummary() {
                   style={{ width: 180 }}
                   placeholder="VD: 15/05/2026"
                   value={lunarDateText}
-                  onChange={e => setLunarDateText(e.target.value)}
+                  onChange={e => handleLunarDateChange(e.target.value)}
                 />
               </div>
             )}

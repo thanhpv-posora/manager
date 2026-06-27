@@ -3,7 +3,7 @@ import api from'../api/api';
 import SafePage from'../components/SafePage';
 
 const labels={
- dashboard:'Dashboard','create-order':'Tạo bill POS',orders:'Bill bán hàng',payments:'Thu tiền',
+ dashboard:'Dashboard','create-order':'Tạo bill POS',orders:'Bill bán hàng','retail-daily-summary':'Bán lẻ tổng hợp',payments:'Thu tiền',
  installments:'Góp bill',customers:'Đối tác',products:'Mặt hàng','product-import':'Import mặt hàng từ ảnh',
  'ocr-providers':'Cấu hình OCR nâng cao','price-matrix':'Bảng giá riêng',lots:'Nhập hàng',
  units:'Đơn vị tính','supplier-purchase-options':'Cấu hình quy cách nhập','inventory-purchases':'Nhập hàng tồn kho',
@@ -14,7 +14,7 @@ const labels={
 };
 
 const groups=[
- {label:'Bán hàng',keys:['dashboard','create-order','orders','payments','installments','customers']},
+ {label:'Bán hàng',keys:['dashboard','create-order','orders','retail-daily-summary','payments','installments','customers']},
  {label:'Danh mục',keys:['products','product-import','ocr-providers','price-matrix']},
  {label:'Mua hàng',keys:['lots','units','supplier-purchase-options','inventory-purchases']},
  {label:'Báo cáo',keys:['revenue','profit']},

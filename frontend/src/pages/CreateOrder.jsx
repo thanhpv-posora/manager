@@ -11,7 +11,7 @@ import {createSpeechRecognition,parseVoiceBillCommand,voiceSupported} from'../ut
 import {matchImportedRows,parseOrderText,rematchOne} from'../utils/orderImportParser';
 import {parseHandwritingText} from'../utils/handwritingBillParser';
 import EnterpriseAutocomplete from'../components/common/EnterpriseAutocomplete';
-import {showWarning}from'../utils/toast';
+import {showWarning,showSuccess}from'../utils/toast';
 
 const money=n=>Number(n||0).toLocaleString('en-US')+'đ';
 
@@ -85,6 +85,9 @@ export default function CreateOrder({setPage}){
   const[excelBillIndex,setExcelBillIndex]=useState(-1);
 
   const qtyRefs=useRef({});
+  const priceRefs=useRef({});
+  const customerAutocompleteRef=useRef(null);
+  const[pendingFocusCustomer,setPendingFocusCustomer]=useState(false);
   const importExcelFileRef=useRef(null);
   const importImageFileRef=useRef(null);
   const importReadSeqRef=useRef(0);
@@ -256,6 +259,7 @@ export default function CreateOrder({setPage}){
       };
     });
     setItems(await applyEffectivePrices(mapped));
+    setNoPrivatePrice(!!r.no_private_prices);
   };
 
 
@@ -272,6 +276,7 @@ export default function CreateOrder({setPage}){
       sort_order:p.sort_order||idx+1
     }));
     setItems(await applyEffectivePrices(mapped,{customer_id:id,calendar_type:billCalendarType,order_date:orderDate,lunar_date_text:billCalendarType==='LUNAR'?billLunarDateText:''}));
+    setNoPrivatePrice(!!r.no_private_prices);
     setPendingFocusQty(true);
   };
 
@@ -357,12 +362,7 @@ export default function CreateOrder({setPage}){
     }));
     const catalog=await applyEffectivePrices(mapped,{customer_id:id,calendar_type:pickedCalendarType,order_date:orderDate,lunar_date_text:pickedCalendarType==='LUNAR'?pickedLunarText:''});
     setItems(catalog);
-    if(mapped.length===0){
-      setNoPrivatePrice(true);
-      showWarning('Khách hàng này chưa có bảng giá riêng. Vui lòng vào menu Bảng giá riêng để thiết lập giá trước khi tạo bill.');
-    }else{
-      setNoPrivatePrice(false);
-    }
+    setNoPrivatePrice(!!r.no_private_prices);
     setPendingFocusQty(true);
   };
 
@@ -374,6 +374,11 @@ export default function CreateOrder({setPage}){
   const updateQtyExpr=(idx,expr)=>{
     const qty=calcQtyExpression(expr);
     update(idx,{quantity_expr:expr,quantity:qty,selected:qty>0});
+  };
+
+  const updatePrice=(idx,priceStr)=>{
+    const price=Number(String(priceStr||'').replace(/[^0-9]/g,''))||0;
+    update(idx,{sale_price:price,manual_price:true});
   };
 
   const shown=useMemo(()=>{
@@ -398,6 +403,15 @@ export default function CreateOrder({setPage}){
     },120);
     return()=>clearTimeout(t);
   },[pendingFocusQty,cid,shown.length]);
+
+  useEffect(()=>{
+    if(!pendingFocusCustomer||!customerOpen)return;
+    const t=setTimeout(()=>{
+      customerAutocompleteRef.current?.focus();
+      setPendingFocusCustomer(false);
+    },80);
+    return()=>clearTimeout(t);
+  },[pendingFocusCustomer,customerOpen]);
 
   const selected=items
     .map(i=>({...i,quantity:calcQtyExpression(i.quantity_expr)||Number(i.quantity||0)}))
@@ -461,6 +475,8 @@ export default function CreateOrder({setPage}){
     if(checkedDate.solarDate&&checkedDate.solarDate!==orderDate)setOrderDate(checkedDate.solarDate);
     if(!selected.length)return alert('Nhập số lượng ít nhất 1 mặt hàng');
 
+    const needManualPrice=walkInCustomer||noPrivatePrice;
+    const wasNoPrivatePrice=noPrivatePrice;
     const payloadItems=selected.map(i=>({
       product_id:i.product_id,
       product_name:i.product_name,
@@ -469,7 +485,8 @@ export default function CreateOrder({setPage}){
       sale_price:Number(i.sale_price||0),
       price_type:i.price_type||'MANUAL_PRICE',
       price_book_id:i.price_book_id||null,
-      note:i.quantity_expr&&i.quantity_expr!==String(i.quantity)?`SL nhập: ${i.quantity_expr}`:''
+      note:i.quantity_expr&&i.quantity_expr!==String(i.quantity)?`SL nhập: ${i.quantity_expr}`:'',
+      ...(needManualPrice?{manual_price:true}:{})
     }));
 
     let actualPaid=Number(cashAmount||0)+Number(bankAmount||0);
@@ -516,6 +533,25 @@ export default function CreateOrder({setPage}){
         setImportMsg('');
       }
       focusFirstQtyInput();
+      if(wasNoPrivatePrice&&payloadItems.length){
+        const savedCid=cid;
+        const yes=await window.appConfirm(
+          'Khách hàng này chưa có bảng giá riêng.\nBạn có muốn sử dụng các mức giá vừa nhập để tạo bảng giá riêng cho khách hàng này không?',
+          {title:'Tạo bảng giá riêng',confirmText:'Có, tạo ngay',cancelText:'Không',variant:'info'}
+        );
+        if(yes){
+          try{
+            await api.put('/price-matrix/'+savedCid,{
+              items:payloadItems.map(i=>({product_id:i.product_id,in_catalog:1,sort_order:0,private_price:i.sale_price})),
+              effective_calendar_type:billCalendarType,
+              effective_from:checkedDate.solarDate||orderDate,
+              effective_lunar_date_text:billCalendarType==='LUNAR'?billLunarDateText:''
+            });
+            setNoPrivatePrice(false);
+            showSuccess('Đã tạo bảng giá riêng cho khách hàng.');
+          }catch(_){}
+        }
+      }
     }catch(e){
       const data=e.response?.data||{};
       let message=data.message||e.message||'Không thể lưu bill';
@@ -755,6 +791,7 @@ export default function CreateOrder({setPage}){
     setCashAmount(0);
     setBankAmount(0);
     setCustomerOpen(true);
+    setPendingFocusCustomer(true);
   };
 
   const previewImport=(sourceType='text')=>{
@@ -1161,6 +1198,7 @@ export default function CreateOrder({setPage}){
                 <div className="pos-customer-collapse-body">
 
               <EnterpriseAutocomplete
+                ref={customerAutocompleteRef}
                 items={customers}
                 value={customers.find(c=>String(c.id)===String(cid))||null}
                 onChange={item=>loadCustomerCatalog(item?String(item.id):'')}
@@ -1297,12 +1335,6 @@ export default function CreateOrder({setPage}){
 
             {saveNotice&&<div className="ai-alert success pos-save-session-notice">✔ {saveNotice}</div>}
 
-            {cid&&noPrivatePrice&&<div className="card" style={{textAlign:'center',padding:'32px 24px',marginBottom:12}}>
-              <h3 style={{marginBottom:8}}>Chưa có giá riêng</h3>
-              <p className="muted" style={{marginBottom:16}}>Khách hàng này chưa có sản phẩm nào được thiết lập giá riêng.</p>
-              <button className="btn" onClick={()=>{if(setPage)setPage('price-matrix');else showWarning('Vui lòng vào menu Bảng giá riêng để thiết lập giá trước khi tạo bill.');}}>Mở Bảng giá riêng</button>
-            </div>}
-
             <POSProductTableAgent
               shown={shown}
               items={items}
@@ -1317,10 +1349,13 @@ export default function CreateOrder({setPage}){
               dragId={dragId}
               setDragId={setDragId}
               handleDrop={handleDrop}
+              allowManualPrice={walkInCustomer||noPrivatePrice}
+              updatePrice={updatePrice}
+              priceRefs={priceRefs}
             />
           </main>
 
-          <aside className="card pos-payment-panel">
+          <aside className="card pos-payment-panel pos-agent-payment">
             <h3>Thông tin thanh toán</h3>
             <p className="muted">Từ V65.47, Bill chỉ quản lý hàng và giá. Tiền mặt/chuyển khoản xử lý ở menu <b>Thu tiền</b> để công nợ và phân bổ bill cũ không bị rối.</p>
             <div className="payment-total-box"><div>Tổng bill</div><b>{money(total)}</b><span>Góp/ngày: {money(monthlyInstallment)}</span><span>Thanh toán: vào menu Thu tiền</span></div>

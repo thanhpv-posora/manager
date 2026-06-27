@@ -1,8 +1,14 @@
 import React from 'react';
 import {calcQtyExpression} from '../../utils/qtyExpression';
-import {movePosQtyFocus} from '../../utils/posKeyboard';
+import {movePosGridFocus} from '../../utils/posKeyboard';
 
 const money = n => Number(n || 0).toLocaleString('en-US') + 'đ';
+
+const fmtPrice = v => v > 0 ? Number(v).toLocaleString('en-US') : '';
+const parsePrice = str => {
+  const raw = String(str || '').replace(/[^0-9]/g, '');
+  return raw ? parseInt(raw, 10) : 0;
+};
 
 export default function POSProductTableAgent({
   shown,
@@ -17,7 +23,10 @@ export default function POSProductTableAgent({
   updateQtyExpr,
   dragId,
   setDragId,
-  handleDrop
+  handleDrop,
+  allowManualPrice,
+  updatePrice,
+  priceRefs,
 }){
   return (
     <div className="card pos-agent-products-card">
@@ -56,6 +65,7 @@ export default function POSProductTableAgent({
             {shown.map(i => {
               const rowIndex = items.findIndex(x => x.product_id === i.product_id);
               const qty = Number(calcQtyExpression(i.quantity_expr) || 0);
+              const rowKey = String(i.product_id);
               return (
                 <tr
                   key={i.product_id}
@@ -75,19 +85,34 @@ export default function POSProductTableAgent({
                     <input
                       ref={el => qtyRefs.current[i.product_id] = el}
                       className="input pos-agent-qty-input"
-                      data-pos-qty="1"
+                      data-pos-col="qty"
+                      data-pos-row={rowKey}
                       value={i.quantity_expr || ''}
-                      onKeyDown={e => {
-                        movePosQtyFocus(e);
-                        if(e.key === 'Enter') focusNext(i.product_id);
-                      }}
+                      onKeyDown={e => movePosGridFocus(e)}
                       onChange={e => updateQtyExpr(rowIndex, e.target.value)}
                       placeholder="10+12"
                     />
                   </td>
 
                   <td><b>{qty}</b></td>
-                  <td>{money(i.sale_price)}</td>
+
+                  <td>
+                    {allowManualPrice
+                      ? <input
+                          ref={el => { if(priceRefs) priceRefs.current[i.product_id] = el; }}
+                          className="input pos-agent-qty-input"
+                          inputMode="numeric"
+                          data-pos-col="price"
+                          data-pos-row={rowKey}
+                          value={fmtPrice(i.sale_price)}
+                          placeholder="Giá bán"
+                          onChange={e => updatePrice && updatePrice(rowIndex, e.target.value)}
+                          onKeyDown={e => movePosGridFocus(e)}
+                        />
+                      : money(i.sale_price)
+                    }
+                  </td>
+
                   <td><b>{money(qty * Number(i.sale_price || 0))}</b></td>
                 </tr>
               );

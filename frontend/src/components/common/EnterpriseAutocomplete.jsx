@@ -1,4 +1,4 @@
-import React,{useState,useRef,useEffect,useCallback,useMemo}from'react';
+import React,{useState,useRef,useEffect,useCallback,useMemo,forwardRef,useImperativeHandle}from'react';
 import {createPortal}from'react-dom';
 import {ChevronDown,Loader2}from'lucide-react';
 
@@ -43,7 +43,7 @@ function injectCss(){
   _ci=true;
 }
 
-export default function EnterpriseAutocomplete({
+const EnterpriseAutocomplete=forwardRef(function EnterpriseAutocomplete({
   items=[],
   value=null,
   onChange,
@@ -58,7 +58,7 @@ export default function EnterpriseAutocomplete({
   getItemKey=i=>i.id,
   renderItem,
   renderValue,
-}){
+},ref){
   const[open,setOpen]=useState(false);
   const[query,setQuery]=useState('');
   const[hi,setHi]=useState(0);
@@ -120,6 +120,8 @@ export default function EnterpriseAutocomplete({
     upd();setQuery('');setHi(0);setOpen(true);
     setTimeout(()=>inpRef.current?.focus(),0);
   };
+
+  useImperativeHandle(ref,()=>({focus:()=>openDrop()}),[disabled]);
 
   const close=()=>{setOpen(false);setQuery('');};
 
@@ -226,4 +228,6 @@ export default function EnterpriseAutocomplete({
       {createPortal(drop,document.body)}
     </div>
   );
-}
+});
+
+export default EnterpriseAutocomplete;

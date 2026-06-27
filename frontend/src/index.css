@@ -264,7 +264,7 @@ pre{font-family:inherit}
 @media(max-width:900px){.landing-hero,.landing-grid{grid-template-columns:1fr;padding:28px}.landing-section{margin:20px}.landing-hero h1{font-size:36px}.sponsor-grid{grid-template-columns:1fr}}
 
 /* V6.36.1 POS keyboard focus */
-input[data-pos-qty="1"]:focus{
+input[data-pos-col="qty"]:focus,input[data-pos-col="price"]:focus{
   outline:3px solid rgba(249,115,22,.35);
   border-color:#f97316!important;
   box-shadow:0 0 0 4px rgba(249,115,22,.12);
@@ -272,7 +272,7 @@ input[data-pos-qty="1"]:focus{
 
 /* V6.36.2 lunar + POS */
 .lunar-date-box{margin:12px 0;padding:12px;border:1px dashed #fed7aa;border-radius:16px;background:#fff7ed}
-input[data-pos-qty="1"]:focus{outline:3px solid rgba(249,115,22,.35);border-color:#f97316!important;box-shadow:0 0 0 4px rgba(249,115,22,.12)}
+input[data-pos-col="qty"]:focus,input[data-pos-col="price"]:focus{outline:3px solid rgba(249,115,22,.35);border-color:#f97316!important;box-shadow:0 0 0 4px rgba(249,115,22,.12)}
 
 /* V6.37 UI polish + lunar selector + registration */
 .login-shell{background:linear-gradient(135deg,#fff7ed,#fee2e2)!important;color:#0f172a}

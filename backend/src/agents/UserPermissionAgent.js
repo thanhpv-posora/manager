@@ -45,7 +45,34 @@ class UserPermissionAgent{
     const [rows]=await pool.query(`SELECT menu_key,is_enabled FROM user_menu_permissions WHERE user_id=?`,[userId]);
     const override={}; rows.forEach(r=>override[r.menu_key]=!!r.is_enabled);
     const allMenus=await this.getAllMenus();
-    return {user,effective,override,allMenus};
+    const [prefRows]=await pool.query(
+      `SELECT ump.sort_order,ump.is_pinned,ump.is_hidden,am.menu_key
+       FROM user_menu_preferences ump
+       JOIN app_menus am ON am.id=ump.menu_id
+       WHERE ump.user_id=?`,
+      [userId]
+    );
+    const preferences={};
+    prefRows.forEach(p=>preferences[p.menu_key]={sort_order:p.sort_order,is_pinned:!!p.is_pinned,is_hidden:!!p.is_hidden});
+    return {user,effective,override,allMenus,preferences};
+  }
+
+  async saveUserMenuPreferences(userId,items){
+    const conn=await pool.getConnection();
+    try{
+      await conn.beginTransaction();
+      await conn.query(`DELETE FROM user_menu_preferences WHERE user_id=?`,[userId]);
+      for(const item of items||[]){
+        const [[menu]]=await conn.query(`SELECT id FROM app_menus WHERE menu_key=? AND is_active=1`,[item.menu_key]);
+        if(!menu) continue;
+        await conn.query(
+          `INSERT INTO user_menu_preferences (user_id,menu_id,menu_key,sort_order,is_pinned,is_hidden) VALUES (?,?,?,?,?,?)`,
+          [userId,menu.id,item.menu_key,item.sort_order??99,item.is_pinned?1:0,item.is_hidden?1:0]
+        );
+      }
+      await conn.commit();
+      return {message:'Đã lưu thứ tự menu cho user'};
+    }catch(e){await conn.rollback();throw e;}finally{conn.release();}
   }
 
   async saveUserMenus(userId,menus,updatedBy){

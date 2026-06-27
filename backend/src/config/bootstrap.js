@@ -1095,6 +1095,33 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
       );
     }
 
+    // MENU-PREFERENCES-MIGRATION-FIX-001: migrate existing installs where
+    // user_menu_preferences was created with menu_key (old schema) instead of menu_id.
+    // CREATE TABLE IF NOT EXISTS above is a no-op when table exists — this block repairs it.
+    if (await hasTable(conn, 'user_menu_preferences') && !(await hasColumn(conn, 'user_menu_preferences', 'menu_id'))) {
+      // Step 1: add nullable menu_id
+      await conn.query(`ALTER TABLE user_menu_preferences ADD COLUMN menu_id BIGINT NULL`);
+      // Step 2: backfill from app_menus (must run after app_menus seed above)
+      if (await hasColumn(conn, 'user_menu_preferences', 'menu_key')) {
+        await conn.query(
+          `UPDATE user_menu_preferences ump
+           JOIN app_menus am ON am.menu_key = ump.menu_key
+           SET ump.menu_id = am.id
+           WHERE ump.menu_id IS NULL`
+        );
+        // Step 3: drop orphan rows (menu_key no longer in app_menus)
+        await conn.query(`DELETE FROM user_menu_preferences WHERE menu_id IS NULL`);
+      }
+      // Step 4: make NOT NULL now that orphans are removed
+      await conn.query(`ALTER TABLE user_menu_preferences MODIFY COLUMN menu_id BIGINT NOT NULL`);
+      // Step 5: replace old unique key (user_id, menu_key) with (user_id, menu_id)
+      await safeDropIndex(conn, 'user_menu_preferences', 'uq_ump_user_menu');
+      await safeAddIndex(conn, 'user_menu_preferences', 'uq_ump_user_menu', 'UNIQUE KEY uq_ump_user_menu(user_id, menu_id)');
+      await safeAddIndex(conn, 'user_menu_preferences', 'idx_ump_user', 'INDEX idx_ump_user(user_id)');
+      // Keep menu_key column — do NOT drop during this sprint
+      console.log('[MENU-PREFERENCES-MIGRATION-FIX-001] Migrated user_menu_preferences to menu_id schema.');
+    }
+
     // Validate parent_menu_key references — warn on orphans, do not crash
     const [orphanMenus]=await conn.query(
       `SELECT menu_key,parent_menu_key FROM app_menus

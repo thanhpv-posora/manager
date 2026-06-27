@@ -7,5 +7,6 @@ router.get('/me',auth(['ADMIN','STAFF','CUSTOMER']),async(req,res,next)=>{try{re
 router.get('/users',auth(['ADMIN']),async(req,res,next)=>{try{res.json(await UserPermissionAgent.users())}catch(e){next(e)}});
 router.get('/users/:id/menus',auth(['ADMIN']),async(req,res,next)=>{try{res.json(await UserPermissionAgent.getUserMenus(req.params.id))}catch(e){next(e)}});
 router.put('/users/:id/menus',auth(['ADMIN']),async(req,res,next)=>{try{res.json(await UserPermissionAgent.saveUserMenus(req.params.id,req.body.menus,req.user.id))}catch(e){next(e)}});
+router.put('/users/:id/menu-preferences',auth(['ADMIN']),async(req,res,next)=>{try{res.json(await UserPermissionAgent.saveUserMenuPreferences(Number(req.params.id),req.body.items))}catch(e){next(e)}});
 
 module.exports=router;

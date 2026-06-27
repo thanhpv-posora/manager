@@ -21,6 +21,11 @@ class UserPermissionAgent{
   }
 
   async getEffectiveMenus(user){
+    // ADMIN always gets every active menu — no role gaps, no user-level disable overrides
+    if(user.role==='ADMIN'){
+      const [rows]=await pool.query(`SELECT menu_key FROM app_menus WHERE is_active=1`);
+      return rows.map(r=>r.menu_key);
+    }
     // role_menu_permissions is the ONLY source of role defaults — no JS fallback
     const [roleRows]=await pool.query(
       `SELECT rmp.menu_key FROM role_menu_permissions rmp
@@ -29,7 +34,7 @@ class UserPermissionAgent{
       [user.role]
     );
     const allowed=new Set(roleRows.map(r=>r.menu_key));
-    // user_menu_permissions: per-user grant/revoke on top of role defaults
+    // user_menu_permissions: per-user grant/revoke on top of role defaults (STAFF/CUSTOMER only)
     const [userRows]=await pool.query(`SELECT menu_key,is_enabled FROM user_menu_permissions WHERE user_id=?`,[user.id]);
     for(const r of userRows){
       if(r.is_enabled) allowed.add(r.menu_key); else allowed.delete(r.menu_key);

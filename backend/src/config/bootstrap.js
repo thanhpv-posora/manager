@@ -1144,6 +1144,18 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
       await conn.query(`INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled) VALUES ('CUSTOMER', ?, 1)`, [mk]);
     }
 
+    // ADMIN-MENU-PERMISSION-FIX-001: ADMIN always has all active menus.
+    // Ensure role defaults are complete, then remove any is_enabled=0 overrides on ADMIN users.
+    await conn.query(
+      `INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled)
+       SELECT 'ADMIN', menu_key, 1 FROM app_menus WHERE is_active = 1`
+    );
+    await conn.query(
+      `DELETE ump FROM user_menu_permissions ump
+       JOIN users u ON u.id = ump.user_id
+       WHERE u.role = 'ADMIN' AND ump.is_enabled = 0`
+    );
+
   } finally {
     conn.release();
   }

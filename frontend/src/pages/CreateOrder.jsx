@@ -316,7 +316,13 @@ export default function CreateOrder({setPage}){
     const nextLunarDateText=billCalendarType==='LUNAR'?billLunarDateText:'';
     if(nextOrderDate!==orderDate)setOrderDate(nextOrderDate);
     setShipDateModalOpen(false);
-    setSaveNotice(`Đã chọn ngày xuất hàng ${nextCalendarType==='LUNAR'?`${billLunarDateText} ÂL`:(nextOrderDate||today)}. Bảng giá sẽ lấy theo đúng ngày này.`);
+    const dateLabel=nextCalendarType==='LUNAR'?`${billLunarDateText} ÂL`:(nextOrderDate||today);
+    // Only show price-book lookup notice when customer actually has a price matrix.
+    // Manual-price mode (no price matrix, walk-in) has nothing to look up.
+    setSaveNotice((!noPrivatePrice&&!walkInCustomer)
+      ? `Đã chọn ngày xuất hàng ${dateLabel}. Bảng giá sẽ lấy theo đúng ngày này.`
+      : `Đã chọn ngày xuất hàng ${dateLabel}.`
+    );
     await refreshCurrentItemPrices({calendar_type:nextCalendarType,order_date:nextOrderDate,lunar_date_text:nextLunarDateText});
   };
 

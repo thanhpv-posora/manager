@@ -2580,6 +2580,14 @@ button,.btn,.menu-item,.input,.select,textarea{
   margin-top:12px;
 }
 
+/* POS sticky payment panel fix:
+   .main has overflow:auto but never scrolls (it grows with content, body scrolls instead).
+   This makes .main an intermediate scroll container that breaks position:sticky on the aside.
+   Resetting overflow to visible for the POS page lets the aside stick relative to the body scroll. */
+.main:has(.pos-real-shell){
+  overflow:visible;
+}
+
 /* V65.9 - Sticky customer session after saving POS bill */
 .pos-customer-session-banner{
   position:sticky;

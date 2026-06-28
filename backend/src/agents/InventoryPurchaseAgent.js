@@ -15,8 +15,8 @@ class InventoryPurchaseAgent {
     if (partner_id)       { where.push('po.partner_id = ?');   params.push(partner_id); }
     else if (supplier_id) { where.push('po.supplier_id = ?');  params.push(supplier_id); }
     if (status)    { where.push('po.status = ?');      params.push(status); }
-    if (date_from) { where.push('po.order_date >= ?'); params.push(date_from); }
-    if (date_to)   { where.push('po.order_date <= ?'); params.push(date_to); }
+    if (date_from) { where.push('po.purchase_date >= ?'); params.push(date_from); }
+    if (date_to)   { where.push('po.purchase_date <= ?'); params.push(date_to); }
     const wSql = where.join(' AND ');
     const off = (Math.max(1, Number(page)) - 1) * Number(limit);
     const [[{ total }]] = await pool.query(
@@ -25,7 +25,7 @@ class InventoryPurchaseAgent {
     const [rows] = await pool.query(
       `SELECT po.id, po.order_code, po.partner_id, po.supplier_id,
               COALESCE(p.name, s.name) supplier_name,
-              po.order_date purchase_date, po.status, po.total_amount,
+              po.purchase_date, po.status, po.total_amount,
               po.note, po.reference_no, po.created_at,
               (SELECT COUNT(*) FROM purchase_order_items WHERE purchase_order_id = po.id) item_count
        FROM purchase_orders po
@@ -42,7 +42,7 @@ class InventoryPurchaseAgent {
     const [[order]] = await pool.query(
       `SELECT po.id, po.order_code, po.partner_id, po.supplier_id,
               COALESCE(p.name, s.name) supplier_name,
-              po.order_date purchase_date, po.status, po.total_amount,
+              po.purchase_date, po.status, po.total_amount,
               po.note, po.reference_no, po.created_by, po.created_at, po.updated_at
        FROM purchase_orders po
        LEFT JOIN customers p ON p.id = po.partner_id
@@ -77,12 +77,12 @@ class InventoryPurchaseAgent {
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
-      const code = await nextCode(conn, 'purchase_orders', 'order_code', 'PO');
+      const code = await nextCode(conn, 'purchase_orders', 'purchase_code', 'PO');
       const [r] = await conn.query(
         `INSERT INTO purchase_orders
-           (order_code, supplier_id, partner_id, order_date, status, total_amount, note, reference_no, created_by)
-         VALUES (?, ?, ?, ?, 'DRAFT', 0, ?, ?, ?)`,
-        [code, resolvedSupplierId, resolvedPartnerId, purchase_date, note || null, reference_no || null, userId || null]
+           (purchase_code, order_code, supplier_id, partner_id, purchase_date, status, total_amount, note, reference_no, created_by)
+         VALUES (?, ?, ?, ?, ?, 'DRAFT', 0, ?, ?, ?)`,
+        [code, code, resolvedSupplierId, resolvedPartnerId, purchase_date, note || null, reference_no || null, userId || null]
       );
       await conn.commit();
       return { id: r.insertId, order_code: code };
@@ -101,7 +101,7 @@ class InventoryPurchaseAgent {
 
     await pool.query(
       `UPDATE purchase_orders
-       SET supplier_id=?, partner_id=?, order_date=?, note=?, reference_no=?
+       SET supplier_id=?, partner_id=?, purchase_date=?, note=?, reference_no=?
        WHERE id=?`,
       [resolvedSupplierId, resolvedPartnerId, purchase_date, note || null, reference_no || null, id]
     );

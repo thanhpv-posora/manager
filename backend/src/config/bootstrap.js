@@ -692,6 +692,51 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
     await safeAddColumn(conn, 'purchase_orders', 'source', "source VARCHAR(50) NOT NULL DEFAULT 'MANUAL'");
     await safeAddColumn(conn, 'purchase_orders', 'del_flg', 'del_flg TINYINT(1) NOT NULL DEFAULT 0');
     await safeAddColumn(conn, 'purchase_orders', 'reference_no', 'reference_no VARCHAR(100) NULL');
+
+    // STAB-001A: Purchase domain column naming — schema-aware migration.
+    // Databases may have order_code/order_date (old), purchase_code/purchase_date (new), both, or neither.
+    // No SQL may reference a column that has not been verified to exist first.
+    {
+      const hasOrderCode    = await hasColumn(conn, 'purchase_orders', 'order_code');
+      const hasPurchaseCode = await hasColumn(conn, 'purchase_orders', 'purchase_code');
+      if (hasOrderCode) {
+        // Case A (old DB) or Case C (partially migrated): src exists — ensure dst and backfill.
+        await safeAddColumn(conn, 'purchase_orders', 'purchase_code',
+          'purchase_code VARCHAR(50) NULL');
+        await conn.query(
+          `UPDATE purchase_orders SET purchase_code = order_code WHERE purchase_code IS NULL AND order_code IS NOT NULL`
+        );
+      } else if (!hasPurchaseCode) {
+        // Case D: neither column exists — log and continue; do not crash startup.
+        console.warn('[STAB-001A] purchase_orders: neither order_code nor purchase_code found — skipping purchase_code migration');
+      }
+      // Case B (purchase_code exists, order_code missing): already correct, nothing to do.
+      if (hasOrderCode || hasPurchaseCode) {
+        await safeAddIndex(conn, 'purchase_orders', 'uq_purchase_orders_purchase_code',
+          'UNIQUE INDEX uq_purchase_orders_purchase_code (purchase_code)');
+      }
+    }
+    {
+      const hasOrderDate    = await hasColumn(conn, 'purchase_orders', 'order_date');
+      const hasPurchaseDate = await hasColumn(conn, 'purchase_orders', 'purchase_date');
+      if (hasOrderDate) {
+        // Case A or C: src exists — ensure dst and backfill.
+        await safeAddColumn(conn, 'purchase_orders', 'purchase_date',
+          'purchase_date DATE NULL');
+        await conn.query(
+          `UPDATE purchase_orders SET purchase_date = order_date WHERE purchase_date IS NULL AND order_date IS NOT NULL`
+        );
+      } else if (!hasPurchaseDate) {
+        // Case D: neither column exists.
+        console.warn('[STAB-001A] purchase_orders: neither order_date nor purchase_date found — skipping purchase_date migration');
+      }
+      // Case B: purchase_date exists, order_date missing — already correct.
+      if (hasOrderDate || hasPurchaseDate) {
+        await safeAddIndex(conn, 'purchase_orders', 'idx_purchase_orders_purchase_date',
+          'INDEX idx_purchase_orders_purchase_date (purchase_date)');
+      }
+    }
+
     await safeAddColumn(conn, 'purchase_order_items', 'received_quantity', 'received_quantity DECIMAL(15,3) NOT NULL DEFAULT 0');
 
     // S4-002B: Domain B — Inventory Purchase workflow (purchase_orders + purchase_order_items).

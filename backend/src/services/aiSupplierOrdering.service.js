@@ -208,7 +208,6 @@ async function confirmSupplierOrderDraft(draft, user = {}) {
   try {
     await conn.beginTransaction();
 
-    const poColumns = await getTableColumns(conn, 'purchase_orders');
     const poiColumns = await getTableColumns(conn, 'purchase_order_items');
     const auditColumns = await getTableColumns(conn, 'audit_logs').catch(() => new Set());
 
@@ -227,25 +226,20 @@ async function confirmSupplierOrderDraft(draft, user = {}) {
       const note = `AI tạo từ dự báo tồn kho: ${draft.params.lookback_days} ngày bán, ${draft.params.forecast_days} ngày tới + ${draft.params.safety_days} ngày an toàn`;
       const userId = user.id || draft.created_by || null;
 
-      const poPayload = {};
-      addValueIfColumn(poPayload, poColumns, 'order_code', orderCode);
-      addValueIfColumn(poPayload, poColumns, 'purchase_order_code', orderCode);
-      addValueIfColumn(poPayload, poColumns, 'code', orderCode);
-      addValueIfColumn(poPayload, poColumns, 'po_code', orderCode);
-      addValueIfColumn(poPayload, poColumns, 'supplier_id', Number(supplierId));
-      addValueIfColumn(poPayload, poColumns, 'order_date', new Date());
-      addValueIfColumn(poPayload, poColumns, 'purchase_date', new Date());
-      addValueIfColumn(poPayload, poColumns, 'expected_date', new Date(Date.now() + leadDays * 86400000));
-      addValueIfColumn(poPayload, poColumns, 'status', 'DRAFT');
-      addValueIfColumn(poPayload, poColumns, 'source', 'AI_SUPPLIER_ORDER');
-      addValueIfColumn(poPayload, poColumns, 'total_amount', Number(totalAmount.toFixed(2)));
-      addValueIfColumn(poPayload, poColumns, 'note', note);
-      addValueIfColumn(poPayload, poColumns, 'created_by', userId);
-      addValueIfColumn(poPayload, poColumns, 'del_flg', 0);
-
-      if (!poColumns.has('supplier_id')) {
-        throw new Error('Bảng purchase_orders thiếu cột supplier_id nên chưa thể tạo phiếu mua hàng thật');
-      }
+      const poPayload = {
+        order_code: orderCode,
+        purchase_code: orderCode,
+        supplier_id: Number(supplierId),
+        order_date: new Date(),
+        purchase_date: new Date(),
+        expected_date: new Date(Date.now() + leadDays * 86400000),
+        status: 'DRAFT',
+        source: 'AI_SUPPLIER_ORDER',
+        total_amount: Number(totalAmount.toFixed(2)),
+        note: note,
+        created_by: userId,
+        del_flg: 0
+      };
 
       const [poResult] = await insertDynamic(conn, 'purchase_orders', poPayload);
       const poId = poResult.insertId;

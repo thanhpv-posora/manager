@@ -1,5 +1,10 @@
 import React,{useEffect,useMemo,useRef,useState}from'react';import {Trash2} from'lucide-react';import api from'../api/api';import SafePage from'../components/SafePage';import MoneyInput from'../components/MoneyInput';import {moneyVnd} from'../utils/money';import {handlePosInputKeyNavigation} from'../utils/focusNavigation';import EnterpriseAutocomplete from'../components/common/EnterpriseAutocomplete';
 
+function isBusinessPartner(item){
+  const t=Number(item.partner_type||0);
+  return (t&1)===1||(t&2)===2;
+}
+
 export default function PriceMatrix(){
   const[customers,setCustomers]=useState([]);
   const[cid,setCid]=useState('');
@@ -88,7 +93,7 @@ export default function PriceMatrix(){
     setNewBookMode(false);await loadMatrix(cid)
   };
   const copy=async()=>{
-    if(!copyTo)return alert('Chọn khách nhận copy');
+    if(!copyTo)return alert('Chọn bạn hàng nhận copy');
     if(effectiveCalendarType==='LUNAR'&&!/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(effectiveLunarDateText))return alert('Chọn ngày hiệu lực âm lịch dạng DD/MM/YYYY');
     if(effectiveCalendarType==='SOLAR'&&!effectiveFrom)return alert('Chọn ngày hiệu lực cho bảng giá copy');
     await api.post('/price-matrix/copy',{from_customer_id:cid,to_customer_id:copyTo,...effectivePayload()});
@@ -145,7 +150,7 @@ export default function PriceMatrix(){
   const isPriceHeader=(v)=>['đơn giá','don gia','giá','gia','giá riêng','gia rieng'].includes(normalizeExcelText(v));
 
   const readPriceExcel=async(file)=>{
-    if(!cid)return alert('Chọn khách trước khi import bảng giá');
+    if(!cid)return alert('Chọn bạn hàng trước khi import bảng giá');
     if(!file)return;
     const readSeq=priceImportReadSeqRef.current+1;
     priceImportReadSeqRef.current=readSeq;
@@ -270,19 +275,19 @@ export default function PriceMatrix(){
               items={customers}
               value={customers.find(c=>String(c.id)===String(cid))||null}
               onChange={item=>changeCustomer(item?String(item.id):'')}
-              placeholder="Tìm khách hàng..."
+              placeholder="Tìm bạn hàng..."
               displayField="name"
               secondaryFields={['customer_code','phone']}
               searchFields={['customer_code','name','phone','address']}
-              filter={item=>(Number(item.partner_type??2)&2)===2}
+              filter={isBusinessPartner}
               disabled={customerLoading}
               loading={customerLoading}
-              emptyText="Không tìm thấy khách hàng"
+              emptyText="Không tìm thấy bạn hàng"
               getItemKey={item=>item.id}
             />
           </div>
           <select className="select" style={{width:260}} value={copyTo} onChange={e=>setCopyTo(e.target.value)}>
-            <option value="">Copy bảng này sang khách...</option>
+            <option value="">Copy bảng này sang bạn hàng...</option>
             {customers.filter(c=>String(c.id)!==String(cid)).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
           <button className="btn secondary" onClick={copy}>Copy</button>
@@ -295,7 +300,7 @@ export default function PriceMatrix(){
         {data&&<p className="muted">Kéo biểu tượng ☰ để đổi thứ tự danh mục khách. Tick “Dùng trong bill” để mặt hàng xuất hiện trong tạo bill. Giá riêng sẽ áp dụng từ ngày hiệu lực đã chọn. Nếu sửa bảng giá đã dùng cho bill chưa thu tiền, hệ thống tự cập nhật lại bill chưa thu; bill đã thu tiền sẽ khóa không cho sửa.</p>}
       </div>
 
-      {newBookMode&&cid&&<p className="notice" style={{marginBottom:8}}>Đang tạo bảng giá mới cho khách <b>{selectedCustomer.name||''}</b> từ ngày <b>{effectiveLabel}</b></p>}
+      {newBookMode&&cid&&<p className="notice" style={{marginBottom:8}}>Đang tạo bảng giá mới cho bạn hàng <b>{selectedCustomer.name||''}</b> từ ngày <b>{effectiveLabel}</b></p>}
       <div className="card">
         <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:10}}><input className="input" style={{maxWidth:320}} placeholder="Tìm sản phẩm..." value={rowSearch} onChange={e=>{setRowSearch(e.target.value);setRowPage(1);}}/>{rowSearch&&<button className="btn secondary" onClick={()=>{setRowSearch('');setRowPage(1);}}>Xóa lọc</button>}<span className="muted">{filteredRows.length}/{rows.length} sản phẩm</span></div>
         <table className="table">

@@ -11,6 +11,7 @@ import {createSpeechRecognition,parseVoiceBillCommand,voiceSupported} from'../ut
 import {matchImportedRows,parseOrderText,rematchOne} from'../utils/orderImportParser';
 import {parseHandwritingText} from'../utils/handwritingBillParser';
 import EnterpriseAutocomplete from'../components/common/EnterpriseAutocomplete';
+import CalendarDialog from'../components/common/CalendarDialog';
 import {showWarning,showSuccess}from'../utils/toast';
 
 const money=n=>Number(n||0).toLocaleString('en-US')+'đ';
@@ -1118,50 +1119,22 @@ export default function CreateOrder({setPage}){
   return (
     <SafePage loading={loading} error={error}>
       <div className="pos-agent-shell pos-real-shell">
-        {shipDateModalOpen&&currentCustomer&&(
-          <div className="modal-backdrop pos-ship-date-backdrop">
-            <div className="modal-card pos-ship-date-modal">
-              <div className="modal-header">
-                <div>
-                  <h2>Chọn ngày xuất hàng</h2>
-                  <p className="muted">Khách <b>{currentCustomer.name}</b> tính bill theo <b>{billCalendarType==='LUNAR'?'Âm lịch':'Dương lịch'}</b>. Bảng giá riêng sẽ lấy theo ngày xuất hàng này.</p>
-                </div>
-                <button type="button" className="btn secondary" onClick={()=>setShipDateModalOpen(false)}>Đóng</button>
-              </div>
-
-              {billCalendarType==='LUNAR'?(
-                <div className="form-grid">
-                  <label className="field-label">
-                    <span>Ngày xuất hàng âm lịch</span>
-                    <input className="input" value={billLunarDateText||''} onChange={e=>changeBillLunarDateText(e.target.value)} placeholder="VD: 08/01/2026" autoFocus/>
-                  </label>
-                  <label className="field-label">
-                    <span>Ngày dương quy đổi</span>
-                    <input className="input" type="date" max={today} value={orderDate||today} onChange={e=>changeOrderDate(e.target.value)}/>
-                  </label>
-                  <div className="ai-alert" style={{gridColumn:'1 / -1'}}>
-                    POS sẽ lấy bảng giá âm lịch gần nhất trước hoặc bằng <b>{billLunarDateText||'ngày âm đã chọn'}</b>.
-                  </div>
-                </div>
-              ):(
-                <div className="form-grid">
-                  <label className="field-label">
-                    <span>Ngày xuất hàng dương lịch</span>
-                    <input className="input" type="date" max={today} value={orderDate||today} onChange={e=>changeOrderDate(e.target.value)} autoFocus/>
-                  </label>
-                  <div className="ai-alert" style={{gridColumn:'1 / -1'}}>
-                    POS sẽ lấy bảng giá dương lịch gần nhất trước hoặc bằng <b>{orderDate||today}</b>.
-                  </div>
-                </div>
-              )}
-
-              <div className="modal-footer">
-                <button type="button" className="btn secondary" onClick={()=>setShipDateModalOpen(false)}>Chọn sau</button>
-                <button type="button" className="btn" onClick={applyShipDateModal}>Áp dụng ngày xuất hàng</button>
-              </div>
-            </div>
-          </div>
-        )}
+        <CalendarDialog
+          open={shipDateModalOpen&&!!currentCustomer}
+          calendarType={billCalendarType}
+          title="Chọn ngày xuất hàng"
+          subtitle={currentCustomer&&<>Khách <b>{currentCustomer.name}</b> tính bill theo <b>{billCalendarType==='LUNAR'?'Âm lịch':'Dương lịch'}</b>. Bảng giá riêng sẽ lấy theo ngày xuất hàng này.</>}
+          inputLabel="Ngày xuất hàng"
+          solarDate={orderDate||today}
+          lunarDateText={billLunarDateText||''}
+          onSolarDateChange={changeOrderDate}
+          onLunarDateTextChange={changeBillLunarDateText}
+          maxSolarDate={today}
+          onConfirm={applyShipDateModal}
+          onCancel={()=>setShipDateModalOpen(false)}
+          confirmLabel="Áp dụng ngày xuất hàng"
+          cancelLabel="Chọn sau"
+        />
 
         <div className="pos-agent-layout pos-real-layout">
           <main className="pos-agent-main pos-real-main">

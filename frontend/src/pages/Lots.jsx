@@ -7,6 +7,7 @@ import {calcExpression} from'../utils/expr';
 import {showSuccess,showError} from'../utils/toast';
 import EnterpriseAutocomplete from'../components/common/EnterpriseAutocomplete';
 import {formatLunarDate,parseLunarText,lunarToSolarDate} from'../utils/lunarDate';
+import CalendarDialog from'../components/common/CalendarDialog';
 
 const money=n=>Number(n||0).toLocaleString('en-US')+'đ';
 const n=v=>Number(v||0);
@@ -539,19 +540,18 @@ export default function Lots(){
   };
 
   return <SafePage loading={loading} error={error}>
-    {dateDialogOpen&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.45)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={cancelDateDialog}>
-      <div style={{background:'#fff',borderRadius:12,padding:'24px 28px',minWidth:300,maxWidth:420,width:'90%',boxShadow:'0 8px 32px rgba(0,0,0,0.22)'}} onClick={e=>e.stopPropagation()}>
-        <h3 style={{marginTop:0,marginBottom:16}}>{dialogType==='SOLAR'?'Chọn ngày nhập dương lịch':'Chọn ngày nhập âm lịch'}</h3>
-        {dialogType==='SOLAR'
-          ?<label style={{display:'block'}}><span className="muted">Ngày dương lịch</span><input className="input" type="date" value={dialogSolarDate} onChange={e=>setDialogSolarDate(e.target.value)} autoFocus/></label>
-          :<label style={{display:'block'}}><span className="muted">Ngày âm lịch (VD: 28/03/2026)</span><input className="input" value={dialogLunarText} onChange={e=>setDialogLunarText(e.target.value)} placeholder="VD: 28/03/2026" autoFocus/>{(()=>{const sol=lunarToSolarDate(parseLunarText(dialogLunarText));return dialogLunarText?<small className="muted" style={{display:'block',marginTop:4}}>{sol?`→ Dương lịch: ${dateText(sol)}`:'⚠ Ngày âm không hợp lệ'}</small>:null;})()}</label>
-        }
-        <div className="actions" style={{marginTop:18,justifyContent:'flex-end'}}>
-          <button className="btn secondary" onClick={cancelDateDialog}>Hủy</button>
-          <button className="btn" onClick={confirmDateDialog}>Xác nhận</button>
-        </div>
-      </div>
-    </div>}
+    <CalendarDialog
+      open={dateDialogOpen}
+      calendarType={dialogType}
+      title="Chọn ngày nhập hàng"
+      inputLabel="Ngày nhập hàng"
+      solarDate={dialogSolarDate}
+      lunarDateText={dialogLunarText}
+      onSolarDateChange={v=>setDialogSolarDate(v)}
+      onLunarDateTextChange={v=>setDialogLunarText(v)}
+      onConfirm={confirmDateDialog}
+      onCancel={cancelDateDialog}
+    />
     <div className="grid cols-2 lots-agent-page">
       <div ref={formRef} className="card lots-entry-card">
         <div className="section-toggle-header">

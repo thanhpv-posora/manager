@@ -94,6 +94,43 @@ class UserPermissionAgent{
     }catch(e){await conn.rollback();throw e;}finally{conn.release();}
   }
 
+  async myMenuPreferences(user){
+    const effectiveKeys=await this.getEffectiveMenus(user);
+    const effectiveSet=new Set(effectiveKeys);
+    const allMenus=await this.getAllMenus();
+    const allowed=allMenus.filter(m=>effectiveSet.has(m.menu_key));
+    const [prefRows]=await pool.query(
+      `SELECT ump.sort_order,ump.is_pinned,ump.is_hidden,am.menu_key
+       FROM user_menu_preferences ump
+       JOIN app_menus am ON am.id=ump.menu_id
+       WHERE ump.user_id=?`,
+      [user.id]
+    );
+    const prefMap={};
+    for(const p of prefRows) prefMap[p.menu_key]=p;
+    const menus=allowed
+      .sort((a,b)=>{
+        const pa=prefMap[a.menu_key],pb=prefMap[b.menu_key];
+        const pinnedDiff=(pa?.is_pinned?0:1)-(pb?.is_pinned?0:1);
+        if(pinnedDiff!==0) return pinnedDiff;
+        const orderA=pa?.sort_order??a.sort_order;
+        const orderB=pb?.sort_order??b.sort_order;
+        if(orderA!==orderB) return orderA-orderB;
+        return (a.title||'').localeCompare(b.title||'','vi');
+      })
+      .map(m=>({...m,is_pinned:!!prefMap[m.menu_key]?.is_pinned,is_hidden:!!prefMap[m.menu_key]?.is_hidden}));
+    return {menus};
+  }
+
+  async saveMyMenuPreferences(user,items){
+    return this.saveUserMenuPreferences(user.id,items);
+  }
+
+  async resetMyMenuPreferences(user){
+    await pool.query(`DELETE FROM user_menu_preferences WHERE user_id=?`,[user.id]);
+    return {message:'Đã khôi phục menu mặc định'};
+  }
+
   async me(user){
     const allowedMenus=await this.getEffectiveMenus(user);
     const allowedSet=new Set(allowedMenus);

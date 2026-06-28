@@ -1,17 +1,15 @@
-import React,{useEffect,useRef,useState}from'react';
+import React,{useEffect,useState}from'react';
 import api from'../api/api';
 import SafePage from'../components/SafePage';
+import {showSuccess,showError}from'../utils/toast';
 
 export default function UserPermissions({onSaved}){
   const[users,setUsers]=useState([]);
   const[selected,setSelected]=useState('');
   const[detail,setDetail]=useState(null);
-  const[menuOrder,setMenuOrder]=useState([]);
   const[loading,setLoading]=useState(true);
   const[error,setError]=useState('');
-  const[dragging,setDragging]=useState(null);
-  const[dragOver,setDragOver]=useState(null);
-  const dragFrom=useRef(null);
+  const[saving,setSaving]=useState(false);
 
   const load=async()=>{
     try{const r=await api.get('/permissions/users');setUsers(r.data||[]);}
@@ -23,16 +21,7 @@ export default function UserPermissions({onSaved}){
   const open=async(id)=>{
     setSelected(id);
     const r=await api.get('/permissions/users/'+id+'/menus');
-    const data=r.data;
-    setDetail(data);
-    const allMenus=data.allMenus||[];
-    const prefs=data.preferences||{};
-    const sorted=[...allMenus].sort((a,b)=>{
-      const oa=prefs[a.menu_key]?.sort_order??a.sort_order;
-      const ob=prefs[b.menu_key]?.sort_order??b.sort_order;
-      return oa-ob;
-    });
-    setMenuOrder(sorted.map(m=>m.menu_key));
+    setDetail(r.data);
   };
 
   const toggle=(key)=>{
@@ -40,40 +29,18 @@ export default function UserPermissions({onSaved}){
     setDetail({...detail,override:{...(detail.override||{}),[key]:!cur}});
   };
 
-  const onDragStart=(idx)=>{dragFrom.current=idx;setDragging(idx);};
-  const onDragOver=(e,idx)=>{e.preventDefault();setDragOver(idx);};
-  const onDrop=(e,toIdx)=>{
-    e.preventDefault();
-    const from=dragFrom.current;
-    if(from===null||from===toIdx){setDragging(null);setDragOver(null);return;}
-    setMenuOrder(prev=>{
-      const next=[...prev];
-      const[removed]=next.splice(from,1);
-      const insertAt=from<toIdx?toIdx-1:toIdx;
-      next.splice(insertAt,0,removed);
-      return next;
-    });
-    dragFrom.current=null;
-    setDragging(null);
-    setDragOver(null);
-  };
-  const onDragEnd=()=>{dragFrom.current=null;setDragging(null);setDragOver(null);};
-
   const save=async()=>{
-    const isAdmin=detail.user.role==='ADMIN';
-    if(!isAdmin){
+    try{
+      setSaving(true);
       const menus=(detail.allMenus||[]).map(m=>({menu_key:m.menu_key,is_enabled:!!detail.override[m.menu_key]}));
       await api.put('/permissions/users/'+selected+'/menus',{menus});
-    }
-    const items=menuOrder.map((menu_key,idx)=>({menu_key,sort_order:idx+1,is_pinned:0,is_hidden:0}));
-    await api.put('/permissions/users/'+selected+'/menu-preferences',{items});
-    alert(isAdmin?'Đã lưu thứ tự menu cho ADMIN':'Đã lưu phân quyền và thứ tự menu');
-    await open(selected);
-    onSaved&&onSaved();
+      showSuccess('Đã lưu phân quyền menu');
+      await open(selected);
+      onSaved&&onSaved();
+    }catch(e){showError(e.response?.data?.message||e.message||'Lưu thất bại');}
+    finally{setSaving(false);}
   };
 
-  const menuMap={};
-  (detail?.allMenus||[]).forEach(m=>menuMap[m.menu_key]=m);
   const isAdmin=detail?.user?.role==='ADMIN';
 
   return(
@@ -92,43 +59,27 @@ export default function UserPermissions({onSaved}){
         </div>
 
         <div className="card">
-          <h3>Menu được phép hiển thị</h3>
+          <h3>Quyền truy cập menu</h3>
           {!detail&&<p className="muted">Chọn user bên trái.</p>}
           {detail&&<>
             <p><b>{detail.user.username}</b> · {detail.user.role}</p>
             {isAdmin
-              ? <p className="muted">ADMIN luôn có toàn quyền menu. Màn hình này chỉ dùng để sắp xếp thứ tự menu.</p>
-              : <p className="muted">Tick để cấp quyền. Kéo để sắp xếp thứ tự sidebar.</p>
-            }
-            <div style={{marginTop:8}}>
-              {menuOrder.map((key,idx)=>{
-                const m=menuMap[key];
-                if(!m)return null;
-                return(
-                  <div
-                    key={key}
-                    draggable
-                    onDragStart={()=>onDragStart(idx)}
-                    onDragOver={e=>onDragOver(e,idx)}
-                    onDrop={e=>onDrop(e,idx)}
-                    onDragEnd={onDragEnd}
-                    style={{
-                      display:'flex',alignItems:'center',gap:8,padding:'6px 4px',
-                      borderTop:dragOver===idx?'2px solid #3b82f6':'2px solid transparent',
-                      opacity:dragging===idx?0.35:1,
-                      userSelect:'none',
-                    }}
-                  >
-                    <span style={{color:'#94a3b8',cursor:'grab',fontSize:15,letterSpacing:'0.02em',lineHeight:1}}>⠿</span>
-                    {!isAdmin&&<input type="checkbox" checked={!!detail.override[key]} onChange={()=>toggle(key)}/>}
-                    <span style={{flex:1,fontSize:14}}>{m.title}</span>
+              ? <p className="muted">ADMIN luôn có toàn quyền truy cập menu. Không thể giới hạn quyền ADMIN.</p>
+              : <>
+                  <p className="muted">Tick để cấp quyền truy cập menu cho user này.</p>
+                  <div style={{marginTop:8}}>
+                    {(detail.allMenus||[]).map(m=>(
+                      <div key={m.menu_key} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 4px',borderBottom:'1px solid #f1f5f9'}}>
+                        <input type="checkbox" checked={!!detail.override[m.menu_key]} onChange={()=>toggle(m.menu_key)}/>
+                        <span style={{flex:1,fontSize:14}}>{m.title}</span>
+                      </div>
+                    ))}
                   </div>
-                );
-              })}
-            </div>
-            <button className="btn" style={{marginTop:12}} onClick={save}>
-              {isAdmin?'Lưu thứ tự menu':'Lưu phân quyền'}
-            </button>
+                  <button className="btn" style={{marginTop:12}} onClick={save} disabled={saving}>
+                    {saving?'Đang lưu...':'Lưu phân quyền'}
+                  </button>
+                </>
+            }
           </>}
         </div>
       </div>

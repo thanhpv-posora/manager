@@ -1081,6 +1081,7 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
       ['user-permissions','Phân quyền user','Thiết lập quyền truy cập chức năng theo user.','user-permissions','Settings','system',3,1,1,'UserPermissions'],
       ['registrations','Đăng ký khách hàng','Duyệt tài khoản đăng ký mới.','registrations','Settings','system',4,0,1,'Registrations'],
       ['user-mapping','Quản lý tài khoản','Tạo user nội bộ, quản lý khách hàng và duyệt đăng ký.','user-mapping','Settings','system',5,1,1,'UserCustomerMapping'],
+      ['my-menu','Menu của tôi','Tuỳ chỉnh thứ tự và hiển thị menu cá nhân trên sidebar.','my-menu','Settings','system',99,0,1,'MyMenuPreferences'],
     ];
     for (const [menu_key,title,subtitle,route,icon_key,group_key,sort_order,is_system,visible_in_sidebar,page_component] of appMenusSeed) {
       await conn.query(
@@ -1094,6 +1095,17 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
         [page_component, menu_key]
       );
     }
+
+    // MENU-MY-PREFERENCES-FINAL-FIX: place my-menu at the end of the system group — idempotent.
+    // Fixes installs with group_key='personal' (002) and removes the hardcoded sort_order=6 (FINAL-FIX).
+    // SELECT first to avoid MySQL's same-table subquery restriction in UPDATE.
+    const [[myMenuPos]]=await conn.query(
+      `SELECT COALESCE(MAX(sort_order),0)+1 AS next_order FROM app_menus WHERE group_key='system' AND menu_key<>'my-menu'`
+    );
+    await conn.query(
+      `UPDATE app_menus SET group_key='system', sort_order=? WHERE menu_key='my-menu'`,
+      [myMenuPos.next_order]
+    );
 
     // MENU-PREFERENCES-MIGRATION-FIX-001: migrate existing installs where
     // user_menu_preferences was created with menu_key (old schema) instead of menu_id.
@@ -1137,10 +1149,10 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
       `INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled)
        SELECT 'ADMIN', menu_key, 1 FROM app_menus WHERE is_active = 1`
     );
-    for (const mk of ['create-order','orders','retail-daily-summary','payments','customers','products','product-import','ocr-providers','price-matrix','lots','revenue','profit','portal']) {
+    for (const mk of ['create-order','orders','retail-daily-summary','payments','customers','products','product-import','ocr-providers','price-matrix','lots','revenue','profit','portal','my-menu']) {
       await conn.query(`INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled) VALUES ('STAFF', ?, 1)`, [mk]);
     }
-    for (const mk of ['orders','payments','portal','customers']) {
+    for (const mk of ['orders','payments','portal','customers','my-menu']) {
       await conn.query(`INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled) VALUES ('CUSTOMER', ?, 1)`, [mk]);
     }
 

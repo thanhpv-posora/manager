@@ -23,6 +23,7 @@ import SettingsPage from'./pages/Settings';
 import Installments from'./pages/Installments';
 import BusinessPortal from'./pages/BusinessPortal';import SponsorVideos from'./pages/SponsorVideos';import ProductionCheck from'./pages/ProductionCheck';
 import UserPermissions from'./pages/UserPermissions';
+import MyMenuPreferences from'./pages/MyMenuPreferences';
 import Registrations from'./pages/Registrations';import UserCustomerMapping from'./pages/UserCustomerMapping';
 import LandingPage from'./pages/LandingPage';
 import MainLayout from'./layouts/MainLayout';
@@ -119,6 +120,7 @@ export default function App(){
     'sponsor-videos':<SponsorVideos/>,
     'production-check':<ProductionCheck/>,
     'user-permissions':<UserPermissions onSaved={refreshPermissions}/>,
+    'my-menu':<MyMenuPreferences onSaved={refreshPermissions}/>,
     'registrations':<Registrations/>,
     'user-mapping':<UserCustomerMapping setPage={setPage}/>
   };

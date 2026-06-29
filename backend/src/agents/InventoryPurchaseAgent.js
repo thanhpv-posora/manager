@@ -1,6 +1,7 @@
 'use strict';
 const pool = require('../config/db');
 const { nextCode } = require('../utils/code');
+const { normalizeInventoryMode } = require('../utils/inventoryMode');
 
 class InventoryPurchaseAgent {
   constructor() {
@@ -116,14 +117,71 @@ class InventoryPurchaseAgent {
       `INSERT INTO purchase_order_items
          (purchase_order_id, product_id, product_name, unit, quantity, purchase_price, total_price,
           supplier_purchase_option_id, expected_conversion_qty, requires_actual_weight,
-          inventory_status, note)
-       VALUES (?,?,?,?,?,?,?,?,?,?,'PENDING',?)`,
+          expected_stock_qty, inventory_status, note)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,'PENDING',?)`,
       [orderId, snap.product_id, snap.product_name, snap.unit, snap.qty, snap.price,
        snap.total_price, snap.spo_id, snap.expected_conversion_qty,
-       snap.requires_actual_weight, note || null]
+       snap.requires_actual_weight, snap.expected_stock_qty, note || null]
     );
     await this._recalcTotal(orderId);
     return { id: r.insertId, message: 'Đã thêm dòng hàng' };
+  }
+
+  async syncItems(orderId, rows, userId) {
+    await this._requireDraft(orderId);
+    rows = Array.isArray(rows) ? rows : [];
+
+    const [existing] = await pool.query(
+      `SELECT id FROM purchase_order_items WHERE purchase_order_id = ?`, [orderId]
+    );
+    const existingIds = new Set(existing.map(r => r.id));
+    const keptIds = new Set();
+    let saved = 0;
+
+    for (const row of rows) {
+      const qty = Number(row.quantity || 0);
+      if (!row.product_id || !(qty > 0)) continue;
+      const snap = await this._buildItemSnapshot({
+        product_id:                  row.product_id,
+        supplier_purchase_option_id: row.supplier_purchase_option_id || null,
+        quantity:                    qty,
+        purchase_price:              Number(row.purchase_price || 0),
+      });
+      if (row.item_id && existingIds.has(Number(row.item_id))) {
+        await pool.query(
+          `UPDATE purchase_order_items
+           SET product_id=?, product_name=?, unit=?, quantity=?, purchase_price=?, total_price=?,
+               supplier_purchase_option_id=?, expected_conversion_qty=?, requires_actual_weight=?,
+               expected_stock_qty=?, inventory_status='PENDING', note=?
+           WHERE id=?`,
+          [snap.product_id, snap.product_name, snap.unit, snap.qty, snap.price, snap.total_price,
+           snap.spo_id, snap.expected_conversion_qty, snap.requires_actual_weight,
+           snap.expected_stock_qty, row.note || null, row.item_id]
+        );
+        keptIds.add(Number(row.item_id));
+      } else {
+        await pool.query(
+          `INSERT INTO purchase_order_items
+             (purchase_order_id, product_id, product_name, unit, quantity, purchase_price, total_price,
+              supplier_purchase_option_id, expected_conversion_qty, requires_actual_weight,
+              expected_stock_qty, inventory_status, note)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,'PENDING',?)`,
+          [orderId, snap.product_id, snap.product_name, snap.unit, snap.qty, snap.price, snap.total_price,
+           snap.spo_id, snap.expected_conversion_qty, snap.requires_actual_weight,
+           snap.expected_stock_qty, row.note || null]
+        );
+      }
+      saved++;
+    }
+
+    for (const ex of existing) {
+      if (!keptIds.has(ex.id)) {
+        await pool.query(`DELETE FROM purchase_order_items WHERE id=?`, [ex.id]);
+      }
+    }
+
+    await this._recalcTotal(orderId);
+    return { saved, message: `Đã lưu ${saved} dòng hàng` };
   }
 
   async updateItem(orderId, itemId, body, userId) {
@@ -138,10 +196,11 @@ class InventoryPurchaseAgent {
       `UPDATE purchase_order_items
        SET product_id=?, product_name=?, unit=?, quantity=?, purchase_price=?, total_price=?,
            supplier_purchase_option_id=?, expected_conversion_qty=?, requires_actual_weight=?,
-           inventory_status='PENDING', note=?
+           expected_stock_qty=?, inventory_status='PENDING', note=?
        WHERE id=?`,
       [snap.product_id, snap.product_name, snap.unit, snap.qty, snap.price, snap.total_price,
-       snap.spo_id, snap.expected_conversion_qty, snap.requires_actual_weight, note || null, itemId]
+       snap.spo_id, snap.expected_conversion_qty, snap.requires_actual_weight,
+       snap.expected_stock_qty, note || null, itemId]
     );
     await this._recalcTotal(orderId);
     return { message: 'Đã cập nhật dòng hàng' };
@@ -245,30 +304,35 @@ class InventoryPurchaseAgent {
       `SELECT id, name, inventory_mode FROM products WHERE id=? AND del_flg=0`, [product_id]
     );
     if (!prod) throw Object.assign(new Error('Không tìm thấy sản phẩm'), { status: 404 });
-    if (prod.inventory_mode !== 'TRACK_STOCK' && prod.inventory_mode !== 'STOCK')
-      throw Object.assign(new Error('Sản phẩm không có kiểm tồn kho (TRACK_STOCK)'), { status: 400 });
+    // inventory_mode is not a gate for PO creation; stock movement is recorded at receive confirmation.
+    // Store normalised mode on snapshot so receive agent can decide whether to update stock_quantity.
+    prod.inventory_mode = normalizeInventoryMode(prod.inventory_mode);
 
     let unit = 'kg', expected_conversion_qty = 1, requires_actual_weight = 0;
     const spo_id = supplier_purchase_option_id || null;
 
     if (spo_id) {
       const [[opt]] = await pool.query(
-        `SELECT spo.default_conversion_qty, spo.requires_actual_weight, u.code unit_code
+        `SELECT spo.default_conversion_qty, spo.requires_actual_weight,
+                u.code unit_code, u.name unit_name
          FROM supplier_purchase_options spo
          JOIN units u ON u.id = spo.unit_id
          WHERE spo.id=? AND spo.is_active=1`,
         [spo_id]
       );
       if (!opt) throw Object.assign(new Error('Quy cách nhập không tồn tại hoặc đã bị tắt'), { status: 404 });
-      unit                    = opt.unit_code;
+      unit                    = opt.unit_name;
       expected_conversion_qty = Number(opt.default_conversion_qty);
       requires_actual_weight  = opt.requires_actual_weight;
     }
 
+    const expected_stock_qty = qty * expected_conversion_qty;
+
     return {
       product_id, product_name: prod.name, unit, qty, price,
-      total_price: qty * price, spo_id,
+      total_price: expected_stock_qty * price, spo_id,
       expected_conversion_qty, requires_actual_weight,
+      expected_stock_qty,
     };
   }
 }

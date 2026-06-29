@@ -34,7 +34,17 @@ async function hasIndex(conn, table, indexName) {
 }
 
 async function safeDropIndex(conn, table, indexName) {
-  if (await hasIndex(conn, table, indexName)) await conn.query(`ALTER TABLE ${table} DROP INDEX ${indexName}`);
+  if (!(await hasIndex(conn, table, indexName))) return;
+  try {
+    await conn.query(`ALTER TABLE ${table} DROP INDEX ${indexName}`);
+  } catch (e) {
+    // 1091 = ER_CANT_DROP_FIELD_OR_KEY: information_schema.STATISTICS can be stale
+    // within the same session when many DDL statements fire in rapid succession.
+    // If the index is genuinely gone by the time we reach the DROP, treat it as success.
+    // All other errors (syntax, privilege, FK-protected index, etc.) are re-thrown.
+    if (e.errno === 1091 || e.code === 'ER_CANT_DROP_FIELD_OR_KEY') return;
+    throw e;
+  }
 }
 
 async function safeAddIndex(conn, table, indexName, ddl) {

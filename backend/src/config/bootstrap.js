@@ -277,7 +277,7 @@ CREATE TABLE IF NOT EXISTS stock_transactions (
   transaction_date DATE NOT NULL,
   type ENUM('IN','OUT','ADJUSTMENT_INCREASE','ADJUSTMENT_DECREASE') NOT NULL,
   quantity DECIMAL(15,3) NOT NULL,
-  reference_type ENUM('LOT','SALE','MANUAL') NOT NULL,
+  reference_type ENUM('LOT','SALE','MANUAL','RECEIVE_VOUCHER') NOT NULL,
   reference_id BIGINT NULL,
   note TEXT,
   target_debt_amount DECIMAL(15,2) NOT NULL DEFAULT 0,
@@ -568,6 +568,7 @@ CREATE TABLE IF NOT EXISTS inventory_receives (
   purchase_order_id BIGINT NOT NULL,
   receive_date DATE NOT NULL,
   supplier_id BIGINT NOT NULL,
+  status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
   note TEXT NULL,
   created_by BIGINT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -877,6 +878,22 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
 
     await safeAddColumn(conn, 'order_items', 'inventory_mode', "inventory_mode VARCHAR(50) NULL");
     await safeAddColumn(conn, 'order_items', 'stock_checked', 'stock_checked TINYINT(1) NOT NULL DEFAULT 1');
+
+    // INV-002: inventory_receives.status was missing from initial CREATE TABLE (INV-001)
+    await safeAddColumn(conn, 'inventory_receives', 'status', "status VARCHAR(30) NOT NULL DEFAULT 'PENDING'");
+
+    // INV-002: add RECEIVE_VOUCHER to stock_transactions.reference_type ENUM
+    {
+      const [[rtInfo]] = await conn.query(
+        `SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'stock_transactions' AND COLUMN_NAME = 'reference_type'`
+      );
+      if (rtInfo && !String(rtInfo.COLUMN_TYPE).includes('RECEIVE_VOUCHER')) {
+        await conn.query(
+          `ALTER TABLE stock_transactions MODIFY reference_type ENUM('LOT','SALE','MANUAL','RECEIVE_VOUCHER') NOT NULL`
+        );
+      }
+    }
 
     const [catCount] = await conn.query(`SELECT COUNT(*) cnt FROM product_categories`);
     if (Number(catCount[0].cnt) === 0) {

@@ -1187,7 +1187,8 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
       ['lots','Nhập hàng / Nhà cung cấp','Quản lý nhập lô, trọng lượng, thanh toán và nhà cung cấp.','lots','Truck','purchase',1,0,1,'Lots'],
       ['units','Đơn vị tính','Quản lý đơn vị quy đổi dùng cho nhập hàng và tồn kho.','units','TableProperties','purchase',2,0,1,'Units'],
       ['supplier-purchase-options','Cấu hình quy cách nhập','Cấu hình đơn vị và quy đổi kg theo từng nhà cung cấp và sản phẩm.','supplier-purchase-options','Truck','purchase',3,0,1,'SupplierPurchaseOptions'],
-      ['inventory-purchases','Nhập hàng tồn kho','Nhập hàng có kiểm tồn kho, theo đối tác và quy cách nhập hàng.','inventory-purchases','Package','purchase',4,0,1,'InventoryPurchases'],
+      ['inventory-purchases','Phiếu mua hàng NCC','Lập phiếu mua hàng theo nhà cung cấp, quy cách và tồn kho.','inventory-purchases','Package','purchase',4,0,1,'InventoryPurchases'],
+      ['inventory-receives','Nhận hàng vào kho','Tạo và xác nhận phiếu nhận hàng từ phiếu mua hàng đã xác nhận.','inventory-receives','PackageCheck','purchase',5,0,1,'InventoryReceives'],
       ['revenue','Doanh thu','Xem doanh thu, đã thu và công nợ theo thời gian.','revenue','BarChart3','report',1,0,1,'Revenue'],
       ['profit','Lợi nhuận','Thống kê lợi nhuận theo ngày/tháng/năm, giá vốn FIFO và ngày nhập NCC.','profit','BarChart3','report',2,0,1,'Profit'],
       ['agents','Agent AI','Các kỹ năng AI phục vụ vận hành bán sỉ.','agents','Bot','ai',1,0,1,'Agents'],
@@ -1213,6 +1214,17 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
         [page_component, menu_key]
       );
     }
+
+    // INV-004 REVIEW: rename purchase/receive menu labels — idempotent UPDATE for existing installs.
+    // INSERT IGNORE above skips existing rows; these UPDATEs patch already-seeded titles.
+    await conn.query(
+      `UPDATE app_menus SET title='Phiếu mua hàng NCC', subtitle='Lập phiếu mua hàng theo nhà cung cấp, quy cách và tồn kho.'
+       WHERE menu_key='inventory-purchases'`
+    );
+    await conn.query(
+      `UPDATE app_menus SET title='Nhận hàng vào kho', subtitle='Tạo và xác nhận phiếu nhận hàng từ phiếu mua hàng đã xác nhận.'
+       WHERE menu_key='inventory-receives'`
+    );
 
     // MENU-MY-PREFERENCES-FINAL-FIX: place my-menu at the end of the system group — idempotent.
     // Fixes installs with group_key='personal' (002) and removes the hardcoded sort_order=6 (FINAL-FIX).
@@ -1267,7 +1279,7 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
       `INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled)
        SELECT 'ADMIN', menu_key, 1 FROM app_menus WHERE is_active = 1`
     );
-    for (const mk of ['create-order','orders','retail-daily-summary','payments','customers','products','product-import','ocr-providers','price-matrix','lots','revenue','profit','portal','my-menu']) {
+    for (const mk of ['create-order','orders','retail-daily-summary','payments','customers','products','product-import','ocr-providers','price-matrix','lots','revenue','profit','portal','my-menu','inventory-purchases','inventory-receives']) {
       await conn.query(`INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled) VALUES ('STAFF', ?, 1)`, [mk]);
     }
     for (const mk of ['orders','payments','portal','customers','my-menu']) {

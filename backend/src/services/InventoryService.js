@@ -1,4 +1,17 @@
 'use strict';
+const InventoryMovementService = require('./InventoryMovementService');
+
+// InventoryService — INV-004
+//
+// Thin wrapper over InventoryMovementService.
+// Preserves the existing call surface so all callers need no changes.
+//
+// Call graph after INV-004:
+//   InventoryService.in()             → InventoryMovementService.postIn()
+//   InventoryService.out()            → InventoryMovementService.postOut()
+//   InventoryService.adjustOrderItem()→ InventoryMovementService.postAdjustmentIncrease/Decrease()
+//   InventoryService.applyOrderInventory() — kept here; NON_STOCK skip behavior
+//                                           differs from postOut(); refactor in future ticket.
 
 function normalizeInventoryMode(value) {
   const mode = String(value || 'NON_STOCK').toUpperCase();
@@ -8,84 +21,59 @@ function normalizeInventoryMode(value) {
 }
 
 function normalizeNumber(value) {
-  const n = Number(value || 0);
-  return Number.isFinite(n) ? n : 0;
+  const v = Number(value || 0);
+  return Number.isFinite(v) ? v : 0;
 }
 
 class InventoryService {
-  async out(conn, productId, quantity, date, refType, refId, note, userId) {
-    const [rows] = await conn.query(
-      `SELECT id,name,inventory_mode,stock_quantity,allow_negative_stock
-       FROM products
-       WHERE id=? AND del_flg=0`,
-      [productId]
-    );
-    if(!rows.length) throw new Error('Không tìm thấy mặt hàng');
 
-    const p = rows[0];
-    const mode = p.inventory_mode || 'STOCK';
-    const qty = Number(quantity || 0);
-
-    // STOCK/TRACK_STOCK : frozen/real goods → enforce balance.
-    // NON_STOCK         : bò xô/whole carcass → skip balance, log movement.
-    // CARCASS_PART      : deboned parts → skip balance, log movement.
-    // allow_negative_stock=1 → always skip balance check.
-    const skipStockCheck = mode === 'NON_STOCK' || mode === 'CARCASS_PART' || Number(p.allow_negative_stock) === 1;
-
-    if(skipStockCheck) {
-      await conn.query(
-        `INSERT INTO stock_transactions(product_id,transaction_date,type,quantity,reference_type,reference_id,note,created_by)
-         VALUES(?,?,'OUT',?,?,?,?,?)`,
-        [productId,date,qty,refType,refId,`${note} / SKIP_STOCK_CHECK / ${mode}`,userId]
-      );
-      return {stock_checked:false, inventory_mode:mode};
-    }
-
-    if(Number(p.stock_quantity) < qty) {
-      throw new Error(`Không đủ tồn kho cho "${p.name}". Tồn hiện tại: ${p.stock_quantity}, cần xuất: ${qty}. Nếu đây là hàng bò xô/pha lóc, vào Mặt hàng / sửa giá đổi mode sang CARCASS_PART hoặc bật Cho phép không kiểm tồn.`);
-    }
-
-    await conn.query(`UPDATE products SET stock_quantity=stock_quantity-? WHERE id=?`, [qty, productId]);
-    await conn.query(
-      `INSERT INTO stock_transactions(product_id,transaction_date,type,quantity,reference_type,reference_id,note,created_by)
-       VALUES(?,?,'OUT',?,?,?,?,?)`,
-      [productId,date,qty,refType,refId,note,userId]
-    );
-    return {stock_checked:true, inventory_mode:mode};
-  }
+  // ── Delegating wrappers ───────────────────────────────────────────────────────
 
   async in(conn, productId, quantity, date, refType, refId, note, userId) {
+    return InventoryMovementService.postIn(conn, productId, quantity, date, refType, refId, note, userId);
+  }
+
+  async out(conn, productId, quantity, date, refType, refId, note, userId) {
+    return InventoryMovementService.postOut(conn, productId, quantity, date, refType, refId, note, userId);
+  }
+
+  /**
+   * Adjust stock when an order item's quantity changes.
+   *
+   * Before INV-004: silently modified stock_quantity with no stock_transactions entry.
+   * After  INV-004: emits ADJUSTMENT_INCREASE or ADJUSTMENT_DECREASE — audit trail restored.
+   *
+   * Only applies to TRACK_STOCK products.
+   * NON_STOCK / CARCASS_PART / allow_negative_stock → no-op (unchanged).
+   */
+  async adjustOrderItem(conn, productId, oldQty, newQty) {
     const [rows] = await conn.query(
-      `SELECT id, name, inventory_mode FROM products WHERE id = ? AND del_flg = 0`,
+      `SELECT inventory_mode, allow_negative_stock FROM products WHERE id = ?`,
       [productId]
     );
-    if (!rows.length) throw new Error('Không tìm thấy mặt hàng');
-    const p = rows[0];
-    const mode = normalizeInventoryMode(p.inventory_mode);
-    const qty = Number(quantity || 0);
-    if (qty <= 0) return { stock_added: false, inventory_mode: mode, qty_added: 0 };
-    const skipBalance = mode === 'NON_STOCK' || mode === 'CARCASS_PART';
-    if (!skipBalance) {
-      await conn.query(`UPDATE products SET stock_quantity = stock_quantity + ? WHERE id = ?`, [qty, productId]);
+    const mode = normalizeInventoryMode(rows[0]?.inventory_mode);
+    if (mode === 'NON_STOCK' || mode === 'CARCASS_PART' || Number(rows[0]?.allow_negative_stock) === 1) return;
+
+    const delta = normalizeNumber(Math.abs(newQty - oldQty));
+    if (delta < 0.001) return; // no meaningful change
+
+    const note = `Điều chỉnh dòng đơn hàng (trước: ${oldQty}, sau: ${newQty})`;
+
+    if (newQty > oldQty) {
+      // More quantity sold → more stock consumed → balance decreases
+      await InventoryMovementService.postAdjustmentDecrease(conn, productId, delta, new Date(), 'MANUAL', null, note, null);
+    } else {
+      // Less quantity sold → stock returned → balance increases
+      await InventoryMovementService.postAdjustmentIncrease(conn, productId, delta, new Date(), 'MANUAL', null, note, null);
     }
-    await conn.query(
-      `INSERT INTO stock_transactions(product_id,transaction_date,type,quantity,reference_type,reference_id,note,created_by)
-       VALUES(?,?,'IN',?,?,?,?,?)`,
-      [productId, date || new Date(), qty, refType || 'MANUAL', refId || null, note || null, userId || null]
-    );
-    return { stock_added: !skipBalance, inventory_mode: mode, qty_added: qty };
   }
 
-  async adjustOrderItem(conn, productId, oldQty, newQty) {
-    const [rows] = await conn.query(`SELECT inventory_mode,allow_negative_stock FROM products WHERE id=?`, [productId]);
-    const mode = rows[0]?.inventory_mode || 'STOCK';
-    if(mode === 'NON_STOCK' || mode === 'CARCASS_PART' || Number(rows[0]?.allow_negative_stock) === 1) return;
-    await conn.query(`UPDATE products SET stock_quantity = stock_quantity + ? - ? WHERE id=?`, [oldQty, newQty, productId]);
-  }
+  // ── applyOrderInventory — kept here; not delegated to postOut() yet ───────────
+  //
+  // Reason: NON_STOCK items are skipped entirely in this method (no log), whereas
+  // postOut() logs them with SKIP_STOCK_CHECK. Delegating would silently change
+  // behavior for NON_STOCK items. Deferred to a dedicated ticket.
 
-  // Single authoritative writer for AI/order-service sale paths.
-  // Replaces the direct-write logic that previously lived in inventory.service.js.
-  // Uses delta UPDATE (atomic) instead of the old absolute-value assignment (race condition).
   async applyOrderInventory(conn, orderId, items = [], options = {}) {
     const userId = options.user_id || null;
     const orderDate = options.order_date || null;
@@ -113,8 +101,9 @@ class InventoryService {
       // CARCASS_PART or allow_negative_stock: log movement, skip balance update.
       if (mode === 'CARCASS_PART' || allowNeg === 1) {
         await conn.query(
-          `INSERT INTO stock_transactions(product_id,transaction_date,type,quantity,reference_type,reference_id,note,created_by)
-           VALUES(?,?,'OUT',?,'SALE',?,?,?)`,
+          `INSERT INTO stock_transactions
+             (product_id, transaction_date, type, quantity, reference_type, reference_id, note, created_by)
+           VALUES (?, ?, 'OUT', ?, 'SALE', ?, ?, ?)`,
           [p.id, orderDate || new Date(), qty, orderId,
            mode === 'CARCASS_PART' ? 'AI sale from carcass part' : 'AI sale stock deduct',
            userId]
@@ -137,8 +126,9 @@ class InventoryService {
         [qty, p.id]
       );
       await conn.query(
-        `INSERT INTO stock_transactions(product_id,transaction_date,type,quantity,reference_type,reference_id,note,created_by)
-         VALUES(?,?,'OUT',?,'SALE',?,?,?)`,
+        `INSERT INTO stock_transactions
+           (product_id, transaction_date, type, quantity, reference_type, reference_id, note, created_by)
+         VALUES (?, ?, 'OUT', ?, 'SALE', ?, ?, ?)`,
         [p.id, orderDate || new Date(), qty, orderId, 'AI sale stock deduct', userId]
       );
 

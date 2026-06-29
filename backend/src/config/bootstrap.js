@@ -277,7 +277,7 @@ CREATE TABLE IF NOT EXISTS stock_transactions (
   transaction_date DATE NOT NULL,
   type ENUM('IN','OUT','ADJUSTMENT_INCREASE','ADJUSTMENT_DECREASE') NOT NULL,
   quantity DECIMAL(15,3) NOT NULL,
-  reference_type ENUM('LOT','SALE','MANUAL','RECEIVE_VOUCHER') NOT NULL,
+  reference_type ENUM('LOT','SALE','MANUAL','RECEIVE_VOUCHER','OPENING_BALANCE') NOT NULL,
   reference_id BIGINT NULL,
   note TEXT,
   target_debt_amount DECIMAL(15,2) NOT NULL DEFAULT 0,
@@ -891,6 +891,19 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
       if (rtInfo && !String(rtInfo.COLUMN_TYPE).includes('RECEIVE_VOUCHER')) {
         await conn.query(
           `ALTER TABLE stock_transactions MODIFY reference_type ENUM('LOT','SALE','MANUAL','RECEIVE_VOUCHER') NOT NULL`
+        );
+      }
+    }
+
+    // INV-005: add OPENING_BALANCE to stock_transactions.reference_type ENUM
+    {
+      const [[rtInfo]] = await conn.query(
+        `SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'stock_transactions' AND COLUMN_NAME = 'reference_type'`
+      );
+      if (rtInfo && !String(rtInfo.COLUMN_TYPE).includes('OPENING_BALANCE')) {
+        await conn.query(
+          `ALTER TABLE stock_transactions MODIFY reference_type ENUM('LOT','SALE','MANUAL','RECEIVE_VOUCHER','OPENING_BALANCE') NOT NULL`
         );
       }
     }

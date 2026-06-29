@@ -37,6 +37,10 @@ class InventoryService {
     return InventoryMovementService.postOut(conn, productId, quantity, date, refType, refId, note, userId);
   }
 
+  async opening(conn, productId, quantity, date, note, userId) {
+    return InventoryMovementService.postOpening(conn, productId, quantity, date, note, userId);
+  }
+
   /**
    * Adjust stock when an order item's quantity changes.
    *

@@ -209,10 +209,18 @@ class InventoryMovementService {
   }
 
   async postOpening(conn, productId, qty, date, note, userId) {
-    // TODO INV-OPENING: first-ever balance entry for a product.
-    //   Should use refType='OPENING' (add to reference_type ENUM in bootstrap.js).
-    //   Currently ProductAgent.addProduct() uses MANUAL — indistinguishable from corrections.
-    throw new Error('postOpening not implemented — pending INV-OPENING ticket');
+    const q = normalizeNumber(qty);
+    if (q <= 0) throw new Error('Số lượng tồn ban đầu phải lớn hơn 0');
+    await conn.query(
+      `UPDATE products SET stock_quantity = stock_quantity + ? WHERE id = ?`,
+      [q, productId]
+    );
+    await conn.query(
+      `INSERT INTO stock_transactions
+         (product_id, transaction_date, type, quantity, reference_type, reference_id, note, created_by)
+       VALUES (?, ?, 'IN', ?, 'OPENING_BALANCE', NULL, ?, ?)`,
+      [productId, date || new Date(), q, note || 'Tồn kho ban đầu', userId || null]
+    );
   }
 
   async postReversal(conn, receiveVoucherId, userId) {

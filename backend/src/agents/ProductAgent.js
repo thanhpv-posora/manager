@@ -1,6 +1,7 @@
 const pool = require('../config/db');
 const SoftDeleteAgent = require('./SoftDeleteAgent');
 const PriceBookService = require('../services/PriceBookService');
+const InventoryService = require('../services/InventoryService');
 
 class ProductAgent {
   async nextProductCode(categoryId) {
@@ -86,20 +87,29 @@ class ProductAgent {
     if(!data.name) throw new Error('Thiếu tên hàng');
     await this.assertUniqueProductName(data.name);
     if(!data.product_code) data.product_code = await this.nextProductCode(data.category_id);
-    await pool.query(
-      `INSERT INTO products(category_id,product_code,name,unit,default_sale_price,default_purchase_price,stock_quantity,low_stock_threshold,note,is_active,del_flg,inventory_mode,parent_product_id,carcass_group,allow_negative_stock)
-       VALUES(?,?,?,?,?,?,?,?,?,1,0,?,?,?,?)`,
-      [data.category_id||null,data.product_code,data.name,data.unit||'kg',data.default_sale_price||0,data.default_purchase_price||0,data.stock_quantity||0,data.low_stock_threshold||5,data.note||'',data.inventory_mode||'STOCK',data.parent_product_id||null,data.carcass_group||null,data.allow_negative_stock?1:0]
-    );
-    return {message:'Đã thêm mặt hàng'};
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [r] = await conn.query(
+        `INSERT INTO products(category_id,product_code,name,unit,default_sale_price,default_purchase_price,low_stock_threshold,note,is_active,del_flg,inventory_mode,parent_product_id,carcass_group,allow_negative_stock)
+         VALUES(?,?,?,?,?,?,?,?,1,0,?,?,?,?)`,
+        [data.category_id||null,data.product_code,data.name,data.unit||'kg',data.default_sale_price||0,data.default_purchase_price||0,data.low_stock_threshold||5,data.note||'',data.inventory_mode||'STOCK',data.parent_product_id||null,data.carcass_group||null,data.allow_negative_stock?1:0]
+      );
+      const initialQty = Number(data.stock_quantity || 0);
+      if (initialQty > 0) {
+        await InventoryService.in(conn, r.insertId, initialQty, new Date(), 'MANUAL', null, 'Tồn kho ban đầu khi tạo mặt hàng', null);
+      }
+      await conn.commit();
+      return {message:'Đã thêm mặt hàng'};
+    } catch(e) { await conn.rollback(); throw e; } finally { conn.release(); }
   }
 
   async updateProduct(id,data) {
     if(!data.name) throw new Error('Thiếu tên hàng');
     await this.assertUniqueProductName(data.name,id);
     await pool.query(
-      `UPDATE products SET category_id=?,name=?,unit=?,default_sale_price=?,default_purchase_price=?,stock_quantity=?,low_stock_threshold=?,note=?,is_active=?,inventory_mode=?,parent_product_id=?,carcass_group=?,allow_negative_stock=? WHERE id=? AND del_flg=0`,
-      [data.category_id||null,data.name,data.unit||'kg',data.default_sale_price||0,data.default_purchase_price||0,data.stock_quantity||0,data.low_stock_threshold||5,data.note||'',data.is_active?1:0,data.inventory_mode||'STOCK',data.parent_product_id||null,data.carcass_group||null,data.allow_negative_stock?1:0,id]
+      `UPDATE products SET category_id=?,name=?,unit=?,default_sale_price=?,default_purchase_price=?,low_stock_threshold=?,note=?,is_active=?,inventory_mode=?,parent_product_id=?,carcass_group=?,allow_negative_stock=? WHERE id=? AND del_flg=0`,
+      [data.category_id||null,data.name,data.unit||'kg',data.default_sale_price||0,data.default_purchase_price||0,data.low_stock_threshold||5,data.note||'',data.is_active?1:0,data.inventory_mode||'STOCK',data.parent_product_id||null,data.carcass_group||null,data.allow_negative_stock?1:0,id]
     );
     return {message:'Đã sửa mặt hàng'};
   }

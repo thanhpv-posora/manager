@@ -75,6 +75,33 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS user_login_otps (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  phone VARCHAR(50) NOT NULL,
+  code_hash VARCHAR(255) NOT NULL,
+  status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+  expires_at DATETIME NOT NULL,
+  used_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_phone_status(phone,status),
+  KEY idx_user_status(user_id,status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS password_reset_requests (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  identifier VARCHAR(255) NOT NULL,
+  channel VARCHAR(30) NOT NULL,
+  code_hash VARCHAR(255) NOT NULL,
+  status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+  expires_at DATETIME NOT NULL,
+  used_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_identifier_status(identifier,status),
+  KEY idx_user_status(user_id,status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS product_categories (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   name VARCHAR(255) NOT NULL,
@@ -535,6 +562,29 @@ CREATE TABLE IF NOT EXISTS purchase_order_items (
   INDEX idx_purchase_order_items_product(product_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS inventory_receives (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  receive_code VARCHAR(50) NOT NULL UNIQUE,
+  purchase_order_id BIGINT NOT NULL,
+  receive_date DATE NOT NULL,
+  supplier_id BIGINT NOT NULL,
+  note TEXT NULL,
+  created_by BIGINT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_inventory_receives_po(purchase_order_id),
+  INDEX idx_inventory_receives_supplier_date(supplier_id, receive_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS inventory_receive_items (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  receive_id BIGINT NOT NULL,
+  product_id BIGINT NOT NULL,
+  received_quantity DECIMAL(15,3) NOT NULL DEFAULT 0,
+  purchase_price DECIMAL(15,2) NOT NULL DEFAULT 0,
+  INDEX idx_inventory_receive_items_receive(receive_id),
+  INDEX idx_inventory_receive_items_product(product_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS business_settings (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   setting_key VARCHAR(100) NOT NULL UNIQUE,
@@ -678,6 +728,12 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
         await safeAddColumn(conn, table, 'deleted_by', 'deleted_by BIGINT NULL');
       }
     }
+
+    // STAB-009: Auth schema columns moved from auth.js ensureAuthSchema to bootstrap.
+    // Previously created per-request via INFORMATION_SCHEMA checks on every login/OTP call.
+    await safeAddColumn(conn, 'users', 'failed_login_count', 'failed_login_count INT NOT NULL DEFAULT 0');
+    await safeAddColumn(conn, 'users', 'locked_until', 'locked_until DATETIME NULL');
+    await safeAddColumn(conn, 'users', 'last_failed_login', 'last_failed_login DATETIME NULL');
 
     await safeAddColumn(conn, 'products', 'inventory_mode', "inventory_mode ENUM('NON_STOCK','TRACK_STOCK','CARCASS_PART') NOT NULL DEFAULT 'NON_STOCK'");
     await safeAddColumn(conn, 'products', 'parent_product_id', 'parent_product_id BIGINT NULL');

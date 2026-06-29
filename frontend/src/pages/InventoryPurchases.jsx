@@ -33,7 +33,11 @@ function ProductSearch({ products, categoryId, value, search, onSearchChange, on
       ? products.filter(p => String(p.category_id) === String(categoryId))
       : products;
     if (!search) return base.slice(0, 15);
-    return base.filter(p => p.name.toLowerCase().includes(search.toLowerCase())).slice(0, 15);
+    const q = search.toLowerCase();
+    return base.filter(p =>
+      p.name.toLowerCase().includes(q) ||
+      (p.product_code && p.product_code.toLowerCase().includes(q))
+    ).slice(0, 15);
   }, [products, categoryId, search]);
 
   const selected = value ? products.find(p => String(p.id) === String(value)) : null;
@@ -170,7 +174,7 @@ export default function InventoryPurchases() {
       api.get('/products/categories'),
     ]).then(([s, p, c]) => {
       setPartners(s.data || []);
-      setAllProducts((p.data || []).filter(x => x.inventory_mode === 'TRACK_STOCK' && !x.del_flg));
+      setAllProducts((p.data || []).filter(x => (x.inventory_mode === 'TRACK_STOCK' || x.inventory_mode === 'STOCK') && !x.del_flg));
       setCategories(c.data || []);
     }).catch(e => setMasterError(e.response?.data?.message || e.message))
       .finally(() => setMasterLoading(false));

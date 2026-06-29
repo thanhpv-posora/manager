@@ -53,7 +53,7 @@ class InventoryPurchaseAgent {
     if (!order) return null;
     const [items] = await pool.query(
       `SELECT poi.id, poi.product_id, poi.product_name, poi.unit,
-              poi.quantity, poi.purchase_price, poi.total_price,
+              poi.quantity, poi.received_quantity, poi.purchase_price, poi.total_price,
               poi.supplier_purchase_option_id,
               poi.expected_conversion_qty, poi.requires_actual_weight,
               poi.expected_stock_qty, poi.inventory_status, poi.note
@@ -245,7 +245,7 @@ class InventoryPurchaseAgent {
       `SELECT id, name, inventory_mode FROM products WHERE id=? AND del_flg=0`, [product_id]
     );
     if (!prod) throw Object.assign(new Error('Không tìm thấy sản phẩm'), { status: 404 });
-    if (prod.inventory_mode !== 'TRACK_STOCK')
+    if (prod.inventory_mode !== 'TRACK_STOCK' && prod.inventory_mode !== 'STOCK')
       throw Object.assign(new Error('Sản phẩm không có kiểm tồn kho (TRACK_STOCK)'), { status: 400 });
 
     let unit = 'kg', expected_conversion_qty = 1, requires_actual_weight = 0;

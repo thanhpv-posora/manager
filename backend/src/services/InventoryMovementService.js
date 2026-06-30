@@ -1,4 +1,5 @@
 'use strict';
+const { normalizeInventoryMode } = require('../utils/inventoryMode');
 
 // InventoryMovementService — INV-004
 //
@@ -13,13 +14,6 @@
 //
 // Future movements (stubs below — implement in dedicated tickets):
 //   postTransfer()  postReturn()  postOpening()  postReversal()
-
-function normalizeInventoryMode(value) {
-  const mode = String(value || 'NON_STOCK').toUpperCase();
-  if (mode === 'TRACK_STOCK' || mode === 'STOCK') return 'TRACK_STOCK';
-  if (mode === 'CARCASS_PART') return 'CARCASS_PART';
-  return 'NON_STOCK';
-}
 
 function normalizeNumber(value) {
   const v = Number(value || 0);

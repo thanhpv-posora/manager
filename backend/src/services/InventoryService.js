@@ -1,5 +1,6 @@
 'use strict';
 const InventoryMovementService = require('./InventoryMovementService');
+const { normalizeInventoryMode } = require('../utils/inventoryMode');
 
 // InventoryService — INV-004
 //
@@ -12,13 +13,6 @@ const InventoryMovementService = require('./InventoryMovementService');
 //   InventoryService.adjustOrderItem()→ InventoryMovementService.postAdjustmentIncrease/Decrease()
 //   InventoryService.applyOrderInventory() — kept here; NON_STOCK skip behavior
 //                                           differs from postOut(); refactor in future ticket.
-
-function normalizeInventoryMode(value) {
-  const mode = String(value || 'NON_STOCK').toUpperCase();
-  if (mode === 'TRACK_STOCK' || mode === 'STOCK') return 'TRACK_STOCK';
-  if (mode === 'CARCASS_PART') return 'CARCASS_PART';
-  return 'NON_STOCK';
-}
 
 function normalizeNumber(value) {
   const v = Number(value || 0);

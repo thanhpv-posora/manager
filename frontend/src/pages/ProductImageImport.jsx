@@ -111,14 +111,13 @@ Sườn bò kg 180,000`);
   {rows.length>0&&<div className="card">
    <h3>2. Preview danh mục</h3>
    <table className="table">
-    <thead><tr><th>Chọn</th><th>Raw OCR</th><th>Tên mặt hàng</th><th>ĐVT</th><th>Giá bán</th><th>Mode tồn</th><th>Trạng thái</th></tr></thead>
+    <thead><tr><th>Chọn</th><th>Raw OCR</th><th>Tên mặt hàng</th><th>ĐVT</th><th>Giá bán</th><th>Trạng thái</th></tr></thead>
     <tbody>{rows.map((r,i)=><tr key={i} style={{background:r.status==='ERROR'?'#fee2e2':(r.status==='WARN'?'#fef3c7':'#dcfce7')}}>
      <td><input type="checkbox" checked={!!r.selected} disabled={r.status==='ERROR'} onChange={e=>updateRow(i,{selected:e.target.checked})}/></td>
      <td>{r.raw}<br/><span className="muted">OCR: {r.ocr_confidence||100}%</span></td>
      <td><input className="input" value={r.name||''} onChange={e=>updateRow(i,{name:e.target.value,status:e.target.value?'OK':'ERROR'})}/></td>
      <td><input className="input" style={{width:80}} value={r.unit||'kg'} onChange={e=>updateRow(i,{unit:e.target.value})}/></td>
      <td><MoneyInput value={r.sale_price||0} onChange={v=>updateRow(i,{sale_price:v})}/></td>
-     <td><select className="select" value={r.inventory_mode||'STOCK'} onChange={e=>updateRow(i,{inventory_mode:e.target.value,allow_negative_stock:e.target.value==='STOCK'?0:1})}><option value="STOCK">Kiểm tồn</option><option value="CARCASS_PART">Bò xô/pha lóc</option><option value="NON_STOCK">Không kiểm tồn</option></select></td>
      <td>{r.status==='OK'?'🟢 OK':(r.status==='WARN'?'🟡 '+(r.warnings||[]).join(', '):'🔴 '+(r.errors||[]).join(', '))}{r.duplicate&&<><br/><span className="muted">Trùng: {r.duplicate.product_code} - {r.duplicate.name}</span></>}</td>
     </tr>)}</tbody>
    </table>

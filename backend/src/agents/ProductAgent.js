@@ -2,6 +2,7 @@ const pool = require('../config/db');
 const SoftDeleteAgent = require('./SoftDeleteAgent');
 const PriceBookService = require('../services/PriceBookService');
 const InventoryService = require('../services/InventoryService');
+const { normalizeInventoryMode } = require('../utils/inventoryMode');
 
 class ProductAgent {
   async nextProductCode(categoryId) {
@@ -93,7 +94,7 @@ class ProductAgent {
       const [r] = await conn.query(
         `INSERT INTO products(category_id,product_code,name,unit,default_sale_price,default_purchase_price,low_stock_threshold,note,is_active,del_flg,inventory_mode,parent_product_id,carcass_group,allow_negative_stock)
          VALUES(?,?,?,?,?,?,?,?,1,0,?,?,?,?)`,
-        [data.category_id||null,data.product_code,data.name,data.unit||'kg',data.default_sale_price||0,data.default_purchase_price||0,data.low_stock_threshold||5,data.note||'',data.inventory_mode||'STOCK',data.parent_product_id||null,data.carcass_group||null,data.allow_negative_stock?1:0]
+        [data.category_id||null,data.product_code,data.name,data.unit||'kg',data.default_sale_price||0,data.default_purchase_price||0,data.low_stock_threshold||5,data.note||'',normalizeInventoryMode(data.inventory_mode||'TRACK_STOCK'),data.parent_product_id||null,data.carcass_group||null,data.allow_negative_stock?1:0]
       );
       const initialQty = Number(data.stock_quantity || 0);
       if (initialQty > 0) {
@@ -109,7 +110,7 @@ class ProductAgent {
     await this.assertUniqueProductName(data.name,id);
     await pool.query(
       `UPDATE products SET category_id=?,name=?,unit=?,default_sale_price=?,default_purchase_price=?,low_stock_threshold=?,note=?,is_active=?,inventory_mode=?,parent_product_id=?,carcass_group=?,allow_negative_stock=? WHERE id=? AND del_flg=0`,
-      [data.category_id||null,data.name,data.unit||'kg',data.default_sale_price||0,data.default_purchase_price||0,data.low_stock_threshold||5,data.note||'',data.is_active?1:0,data.inventory_mode||'STOCK',data.parent_product_id||null,data.carcass_group||null,data.allow_negative_stock?1:0,id]
+      [data.category_id||null,data.name,data.unit||'kg',data.default_sale_price||0,data.default_purchase_price||0,data.low_stock_threshold||5,data.note||'',data.is_active?1:0,normalizeInventoryMode(data.inventory_mode),data.parent_product_id||null,data.carcass_group||null,data.allow_negative_stock?1:0,id]
     );
     return {message:'Đã sửa mặt hàng'};
   }
@@ -189,7 +190,7 @@ class ProductAgent {
       const [r] = await conn.query(
         `INSERT INTO products(category_id,product_code,name,unit,default_sale_price,default_purchase_price,low_stock_threshold,inventory_mode,allow_negative_stock,del_flg)
          VALUES(?,?,?,?,?,?,?,?,?,0)`,
-        [data.category_id||null,code,data.name,data.unit||'kg',data.sale_price||0,0,5,data.inventory_mode||'STOCK',data.allow_negative_stock?1:0]
+        [data.category_id||null,code,data.name,data.unit||'kg',data.sale_price||0,0,5,normalizeInventoryMode(data.inventory_mode||'TRACK_STOCK'),data.allow_negative_stock?1:0]
       );
       if (data.customer_id) {
         await conn.query(

@@ -24,7 +24,6 @@ function buildEmptyForm(d={}){
     cost_price:0,
     stock_quantity:0,
     low_stock_threshold:5,
-    inventory_mode:d.inventory_mode||'STOCK',
     allow_negative_stock:d.allow_negative_stock?1:0,
     is_active:1
   };
@@ -34,7 +33,6 @@ function pickDefaults(form){
   return {
     category_id:form.category_id||'',
     unit:form.unit||'kg',
-    inventory_mode:form.inventory_mode||'STOCK',
     allow_negative_stock:form.allow_negative_stock?1:0
   };
 }
@@ -204,7 +202,7 @@ export default function Products(){
     <div className="grid cols-2">
       <div className="card">
         <h3>{editing?'Sửa mặt hàng':'Thêm mặt hàng'}</h3>
-        <p className="muted">Hệ thống nhớ mặc định theo user: nhóm hàng, đơn vị, kiểu tồn kho, âm kho.</p>
+        <p className="muted">Hệ thống nhớ mặc định theo user: nhóm hàng, đơn vị, âm kho.</p>
         <div className="form-grid">
           <label className="field-label"><span>Mã hàng</span><input className="input" placeholder="Ví dụ: BO0001" value={form.product_code||''} onChange={e=>updateForm({product_code:e.target.value})}/></label>
           <label className="field-label"><span>Tên mặt hàng</span><input className="input" placeholder="Ví dụ: Búp bò, Sườn bò, Vụn..." value={form.name||''} onChange={e=>updateForm({name:e.target.value})}/></label>
@@ -222,12 +220,6 @@ export default function Products(){
           <label className="field-label"><span>Tồn kho ban đầu</span><input className="input" placeholder="Ví dụ: 0" value={form.stock_quantity??''} onChange={e=>updateForm({stock_quantity:e.target.value})} inputMode="decimal" data-pos-nav="true" onKeyDown={handlePosInputKeyNavigation}/></label>
           <label className="field-label"><span>Ngưỡng cảnh báo tồn thấp</span><input className="input" placeholder="Ví dụ: 5" value={form.low_stock_threshold??''} onChange={e=>updateForm({low_stock_threshold:e.target.value})} inputMode="decimal" data-pos-nav="true" onKeyDown={handlePosInputKeyNavigation}/></label>
 
-          <label className="field-label"><span>Kiểu quản tồn kho</span><select className="select" value={form.inventory_mode||'STOCK'} onChange={e=>updateForm({inventory_mode:e.target.value},true)}>
-            <option value="STOCK">Quản tồn kho chuẩn: gà/vịt/thịt đông lạnh</option>
-            <option value="NON_STOCK">Không quản tồn từng mã: bò xô/nguyên con</option>
-            <option value="CARCASS_PART">Phần pha lóc từ bò xô: đùi/búp/nạm...</option>
-          </select></label>
-
           <label className="field-label"><span>Quy tắc âm kho / kiểm tồn</span><select className="select" value={Number(form.allow_negative_stock||0)} onChange={e=>updateForm({allow_negative_stock:Number(e.target.value)},true)}>
             <option value={0}>Không cho âm kho</option>
             <option value={1}>Cho phép không kiểm tồn</option>
@@ -238,7 +230,7 @@ export default function Products(){
           <button className="btn secondary" onClick={reset}>Làm mới</button>
         </div>
         <p className="muted" style={{marginTop:12}}>
-          Mặc định hiện tại: nhóm={defaults.category_id||'chưa chọn'}, đơn vị={defaults.unit||'kg'}, mode={defaults.inventory_mode||'STOCK'}, âm kho={defaults.allow_negative_stock? 'có':'không'}
+          Mặc định hiện tại: nhóm={defaults.category_id||'chưa chọn'}, đơn vị={defaults.unit||'kg'}, âm kho={defaults.allow_negative_stock? 'có':'không'}
         </p>
       </div>
 
@@ -256,7 +248,7 @@ export default function Products(){
         <span className="muted">{filteredRows.length} mặt hàng</span>
       </div>
       <table className="table product-inline-table">
-        <thead><tr><th>Mã</th><th>Tên</th><th>Nhóm</th><th>ĐVT</th><th>Giá bán</th><th>Mode</th><th></th></tr></thead>
+        <thead><tr><th>Mã</th><th>Tên</th><th>Nhóm</th><th>ĐVT</th><th>Giá bán</th><th></th></tr></thead>
         <tbody>{paginated.map(x=><tr key={x.id}>
           <td>{x.product_code}</td>
           <td><input className="input" value={rowValue(x,'name')} onChange={e=>updateGrid(x.id,{name:e.target.value})}/></td>
@@ -269,20 +261,13 @@ export default function Products(){
           <td><input className="input" value={rowValue(x,'unit')} onChange={e=>updateGrid(x.id,{unit:e.target.value})}/></td>
           <td><MoneyInput value={rowValue(x,'sale_price')} onChange={v=>updateGrid(x.id,{sale_price:v})} data-pos-nav="true" onKeyDown={handlePosInputKeyNavigation}/></td>
           <td>
-            <select className="select" value={rowValue(x,'inventory_mode')} onChange={e=>updateGrid(x.id,{inventory_mode:e.target.value,allow_negative_stock:e.target.value==='STOCK'?0:1})}>
-              <option value="STOCK">STOCK</option>
-              <option value="NON_STOCK">NON_STOCK</option>
-              <option value="CARCASS_PART">CARCASS_PART</option>
-            </select>
-          </td>
-          <td>
             <div style={{display:'flex',flexWrap:'nowrap',gap:6,alignItems:'center',justifyContent:'center'}}>
               <button className="btn secondary" title="Lưu" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>saveGridRow(x)} disabled={!gridEdits[x.id]}><Save size={14}/></button>
               <button className="btn danger" title="Xóa" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>remove(x)}><Trash2 size={14}/></button>
             </div>
           </td>
         </tr>)}
-        {!filteredRows.length&&<tr><td colSpan="7" className="muted">Không tìm thấy mặt hàng phù hợp.</td></tr>}
+        {!filteredRows.length&&<tr><td colSpan="6" className="muted">Không tìm thấy mặt hàng phù hợp.</td></tr>}
         </tbody>
       </table>
       <div style={{display:'flex',justifyContent:'flex-end',alignItems:'center',gap:8,marginTop:12,flexWrap:'wrap'}}>

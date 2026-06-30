@@ -1,5 +1,6 @@
 const db = require('../config/db');
 const { findBestMatch } = require('../utils/textNormalizer');
+const InventoryService = require('./InventoryService');
 
 function normalizeInventoryMode(value) {
   const mode = String(value || 'NON_STOCK').toUpperCase();
@@ -86,74 +87,8 @@ async function validateOrderInventory(conn, items = []) {
 }
 
 async function applyOrderInventory(conn, orderId, items = [], options = {}) {
-  const userId = options.user_id || null;
-  const orderDate = options.order_date || null;
-  const results = [];
-
-  for (const item of items) {
-    const product = await getProductForInventory(conn, item.product_id);
-    const qty = normalizeNumber(item.quantity);
-
-    if (product.inventory_mode === 'NON_STOCK') {
-      results.push({
-        product_id: product.id,
-        product_name: product.name,
-        inventory_mode: product.inventory_mode,
-        action: 'NO_STOCK_SKIP'
-      });
-      continue;
-    }
-
-    const beforeQty = product.stock_quantity;
-    const afterQty = beforeQty - qty;
-
-    await conn.query(`
-      UPDATE products
-      SET
-        stock_quantity = ?,
-        updated_at = NOW()
-      WHERE id = ?
-    `, [
-      afterQty,
-      product.id
-    ]);
-
-    await conn.query(`
-      INSERT INTO stock_transactions (
-        product_id,
-        transaction_date,
-        type,
-        quantity,
-        reference_type,
-        reference_id,
-        note,
-        created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      product.id,
-      orderDate || new Date(),
-      'OUT',
-      qty,
-      'SALE',
-      orderId,
-      product.inventory_mode === 'CARCASS_PART'
-        ? 'AI sale from carcass part'
-        : 'AI sale stock deduct',
-      userId
-    ]);
-
-    results.push({
-      product_id: product.id,
-      product_name: product.name,
-      inventory_mode: product.inventory_mode,
-      action: 'OUT',
-      qty_before: beforeQty,
-      qty_change: qty,
-      qty_after: afterQty
-    });
-  }
-
-  return results;
+  // All write logic lives in InventoryService (single writer rule — STAB-004).
+  return InventoryService.applyOrderInventory(conn, orderId, items, options);
 }
 
 async function getInventorySummary(productName = '') {

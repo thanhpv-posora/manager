@@ -38,48 +38,6 @@ function randomCode(){
   return String(Math.floor(100000+Math.random()*900000));
 }
 
-async function ensureColumn(table,column,definition){
-  const [rows]=await pool.query(`SELECT COUNT(*) cnt FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME=?`,[table,column]);
-  if(Number(rows[0].cnt)===0){
-    await pool.query(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
-  }
-}
-
-async function ensureAuthSchema(){
-  await ensureColumn('users','phone',`VARCHAR(50) NULL`);
-  await ensureColumn('users','email',`VARCHAR(255) NULL`);
-  await ensureColumn('users','failed_login_count',`INT NOT NULL DEFAULT 0`);
-  await ensureColumn('users','locked_until',`DATETIME NULL`);
-  await ensureColumn('users','last_failed_login',`DATETIME NULL`);
-
-  await pool.query(`CREATE TABLE IF NOT EXISTS user_login_otps (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    user_id BIGINT NOT NULL,
-    phone VARCHAR(50) NOT NULL,
-    code_hash VARCHAR(255) NOT NULL,
-    status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
-    expires_at DATETIME NOT NULL,
-    used_at DATETIME NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    KEY idx_phone_status(phone,status),
-    KEY idx_user_status(user_id,status)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
-
-  await pool.query(`CREATE TABLE IF NOT EXISTS password_reset_requests (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    user_id BIGINT NOT NULL,
-    identifier VARCHAR(255) NOT NULL,
-    channel VARCHAR(30) NOT NULL,
-    code_hash VARCHAR(255) NOT NULL,
-    status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
-    expires_at DATETIME NOT NULL,
-    used_at DATETIME NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    KEY idx_identifier_status(identifier,status),
-    KEY idx_user_status(user_id,status)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
-}
-
 async function findUserByLogin(username){
   const value=String(username||'').trim();
   const [rows]=await pool.query(`SELECT id,username,full_name,password_hash,role,customer_id,is_active,phone,email,failed_login_count,locked_until,last_failed_login FROM users WHERE username=? OR phone=? OR email=? LIMIT 1`, [value,value,value]);
@@ -88,7 +46,6 @@ async function findUserByLogin(username){
 
 router.post('/login', loginLimiter, async (req,res,next)=>{
   try {
-    await ensureAuthSchema();
     const {username,password}=req.body;
     const u=await findUserByLogin(username);
     if (!u || !u.is_active) return res.status(401).json({message:'Sai user hoặc mật khẩu'});
@@ -136,14 +93,12 @@ router.post('/login', loginLimiter, async (req,res,next)=>{
 
 router.post('/request-otp', authLimiter, async(req,res,next)=>{
   try{
-    await ensureAuthSchema();
     res.status(501).json({message:'Đăng nhập bằng OTP điện thoại đang phát triển. Vui lòng đăng nhập bằng mật khẩu hoặc dùng quên mật khẩu qua email.', developing:true});
   }catch(e){next(e)}
 });
 
 router.post('/verify-otp', authLimiter, async(req,res,next)=>{
   try{
-    await ensureAuthSchema();
     const phone=String(req.body.phone||'').trim();
     const otp=String(req.body.otp||'').trim();
     if(!phone) return res.status(400).json({message:'Nhập số điện thoại'});
@@ -161,7 +116,6 @@ router.post('/verify-otp', authLimiter, async(req,res,next)=>{
 
 router.post('/forgot-password', authLimiter, async(req,res,next)=>{
   try{
-    await ensureAuthSchema();
     const identifier=String(req.body.identifier||req.body.username||req.body.phone||req.body.email||'').trim();
     if(!identifier) return res.status(400).json({message:'Nhập email, số điện thoại hoặc tên đăng nhập'});
     const u=await findUserByLogin(identifier);
@@ -186,7 +140,6 @@ router.post('/forgot-password', authLimiter, async(req,res,next)=>{
 
 router.post('/reset-password', authLimiter, async(req,res,next)=>{
   try{
-    await ensureAuthSchema();
     const identifier=String(req.body.identifier||req.body.username||req.body.phone||req.body.email||'').trim();
     const code=String(req.body.code||req.body.otp||'').trim();
     const password=String(req.body.password||'');

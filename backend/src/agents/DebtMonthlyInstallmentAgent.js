@@ -1,10 +1,5 @@
 const pool=require('../config/db');
-
-function parseLunarText(text){
-  const m=String(text||'').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-  if(!m)return null;
-  return {day:Number(m[1]),month:Number(m[2]),year:Number(m[3])};
-}
+const { parseLunarText } = require('../utils/lunarDate');
 function solarDateParts(dateText){
   const m=String(dateText||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if(m)return {day:Number(m[3]),month:Number(m[2]),year:Number(m[1])};

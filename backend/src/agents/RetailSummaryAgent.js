@@ -45,11 +45,17 @@ class RetailSummaryAgent {
     return { business_date: solarDate, calendar_type: calType, lunar_date_text: lunarText, amount: Number(amount) };
   }
 
-  async getByDate(businessDate, calendarType) {
+  async getByDate(businessDate, calendarType, lunarDateText) {
     const calType = String(calendarType || 'SOLAR').toUpperCase() === 'LUNAR' ? 'LUNAR' : 'SOLAR';
+    let solarDate = businessDate;
+    if (calType === 'LUNAR' && lunarDateText) {
+      const parsed = parseLunarText(String(lunarDateText));
+      if (parsed) solarDate = lunarToSolarDate(parsed);
+    }
+    if (!solarDate || !/^\d{4}-\d{2}-\d{2}$/.test(String(solarDate))) return null;
     const [rows] = await pool.query(
       `SELECT * FROM retail_daily_summary WHERE business_date=? AND calendar_type=? LIMIT 1`,
-      [businessDate, calType]
+      [solarDate, calType]
     );
     return rows[0] || null;
   }

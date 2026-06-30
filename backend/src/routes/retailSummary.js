@@ -29,14 +29,7 @@ router.get('/convert-date', auth(['ADMIN','STAFF']), async (req, res, next) => {
 router.get('/', auth(['ADMIN','STAFF']), async (req, res, next) => {
   try {
     const { business_date, calendar_type, lunar_date_text } = req.query;
-    const calType = String(calendar_type || 'SOLAR').toUpperCase() === 'LUNAR' ? 'LUNAR' : 'SOLAR';
-    let solarDate = business_date;
-    if (calType === 'LUNAR' && lunar_date_text) {
-      const parsed = parseLunarText(String(lunar_date_text));
-      if (parsed) solarDate = lunarToSolarDate(parsed);
-    }
-    if (!solarDate || !/^\d{4}-\d{2}-\d{2}$/.test(String(solarDate))) return res.json(null);
-    res.json(await RetailSummaryAgent.getByDate(solarDate, calType));
+    res.json(await RetailSummaryAgent.getByDate(business_date, calendar_type, lunar_date_text));
   } catch(e) { next(e); }
 });
 

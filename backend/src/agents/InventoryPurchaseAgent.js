@@ -220,16 +220,48 @@ class InventoryPurchaseAgent {
   async updateStatus(id, status, userId) {
     if (!['CONFIRMED', 'CANCELLED'].includes(status))
       throw Object.assign(new Error('Trạng thái không hợp lệ. Chỉ CONFIRMED hoặc CANCELLED'), { status: 400 });
-    await this._requireDraft(id);
-    if (status === 'CONFIRMED') {
-      const [[{ cnt }]] = await pool.query(
-        `SELECT COUNT(*) cnt FROM purchase_order_items WHERE purchase_order_id=?`, [id]
+
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [[row]] = await conn.query(
+        `SELECT id, status FROM purchase_orders WHERE id=? AND del_flg=0 FOR UPDATE`, [id]
       );
-      if (!Number(cnt))
-        throw Object.assign(new Error('Phiếu chưa có dòng hàng, không thể xác nhận'), { status: 400 });
-    }
-    await pool.query(`UPDATE purchase_orders SET status=? WHERE id=?`, [status, id]);
-    return { message: status === 'CONFIRMED' ? 'Đã xác nhận phiếu nhập' : 'Đã hủy phiếu nhập' };
+      if (!row) throw Object.assign(new Error('Không tìm thấy phiếu nhập'), { status: 404 });
+
+      if (status === 'CONFIRMED') {
+        if (row.status !== 'DRAFT')
+          throw Object.assign(new Error('Chỉ có thể xác nhận phiếu nhập ở trạng thái DRAFT'), { status: 400 });
+        const [[{ cnt }]] = await conn.query(
+          `SELECT COUNT(*) cnt FROM purchase_order_items WHERE purchase_order_id=?`, [id]
+        );
+        if (!Number(cnt))
+          throw Object.assign(new Error('Phiếu chưa có dòng hàng, không thể xác nhận'), { status: 400 });
+      }
+
+      if (status === 'CANCELLED') {
+        if (!['DRAFT', 'CONFIRMED'].includes(row.status))
+          throw Object.assign(new Error('Không thể hủy phiếu ở trạng thái hiện tại'), { status: 400 });
+        if (row.status === 'CONFIRMED') {
+          const [[{ r_count }]] = await conn.query(
+            `SELECT COUNT(*) r_count FROM inventory_receives
+             WHERE purchase_order_id=? AND status='RECEIVED'`, [id]
+          );
+          if (Number(r_count) > 0)
+            throw Object.assign(new Error('Phiếu đã có hàng nhập kho, không thể hủy'), { status: 400 });
+          const [[{ rx_count }]] = await conn.query(
+            `SELECT COUNT(*) rx_count FROM purchase_order_items
+             WHERE purchase_order_id=? AND received_quantity > 0`, [id]
+          );
+          if (Number(rx_count) > 0)
+            throw Object.assign(new Error('Phiếu đã có dòng hàng được nhận, không thể hủy'), { status: 400 });
+        }
+      }
+
+      await conn.query(`UPDATE purchase_orders SET status=? WHERE id=?`, [status, id]);
+      await conn.commit();
+      return { message: status === 'CONFIRMED' ? 'Đã xác nhận phiếu nhập' : 'Đã hủy phiếu nhập' };
+    } catch (e) { await conn.rollback(); throw e; } finally { conn.release(); }
   }
 
   // ── Private ──────────────────────────────────────────────────────────────

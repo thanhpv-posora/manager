@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { Trash2 } from 'lucide-react';
 import api from '../api/api';
 import SafePage from '../components/SafePage';
 import { showSuccess, showError, showWarning } from '../utils/toast';
@@ -7,7 +8,7 @@ import MoneyInput from '../components/MoneyInput';
 
 const STATUS_LABEL = { DRAFT: 'Nháp', CONFIRMED: 'Đã xác nhận', CANCELLED: 'Đã hủy' };
 const STATUS_STYLE = {
-  DRAFT:     { background: '#fef9c3', color: '#854d0e' },
+  DRAFT:     { background: '#f3f4f6', color: '#374151' },
   CONFIRMED: { background: '#dcfce7', color: '#166534' },
   CANCELLED: { background: '#fee2e2', color: '#991b1b' },
 };
@@ -115,6 +116,7 @@ export default function InventoryPurchases() {
   const [addDlgOpts, setAddDlgOpts]               = useState([]);
   const [addDlgOptsLoading, setAddDlgOptsLoading] = useState(false);
   const [addDlgSaving, setAddDlgSaving]           = useState(false);
+  const [statusSaving, setStatusSaving]           = useState(false);
   const addDlgProductRef                          = useRef();
 
   // ── Master data ────────────────────────────────────────────────────────────
@@ -183,6 +185,14 @@ export default function InventoryPurchases() {
       .catch(() => setAddDlgOpts([]))
       .finally(() => setAddDlgOptsLoading(false));
   }, [addDlg?.product_id, order?.partner_id]);
+
+  // ── Esc closes Add Product dialog ─────────────────────────────────────────
+  useEffect(() => {
+    if (!addDlg) return;
+    const handler = e => { if (e.key === 'Escape') { setAddDlg(null); setAddDlgOpts([]); } };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [addDlg]);
 
   // ── Navigation ─────────────────────────────────────────────────────────────
   const openNew = () => {
@@ -256,19 +266,29 @@ export default function InventoryPurchases() {
 
   // ── Status change ──────────────────────────────────────────────────────────
   const changeStatus = async status => {
-    const label = status === 'CONFIRMED' ? 'Xác nhận' : 'Hủy';
+    if (statusSaving) return;
+    const isCancelling = status === 'CANCELLED';
     const ok = window.appConfirm
-      ? await window.appConfirm(`${label} phiếu ${order.order_code}?`, {
-          title: `${label} phiếu nhập`, confirmText: label,
-          variant: status === 'CANCELLED' ? 'danger' : 'primary',
-        })
-      : window.confirm(`${label} phiếu ${order.order_code}?`);
+      ? await window.appConfirm(
+          isCancelling
+            ? `Bạn có chắc chắn muốn hủy phiếu nhập ${order.order_code}?\n\nThao tác này không thể hoàn tác.`
+            : `Xác nhận phiếu ${order.order_code}?`,
+          {
+            title: isCancelling ? 'Hủy phiếu nhập' : 'Xác nhận phiếu nhập',
+            confirmText: isCancelling ? 'Hủy phiếu' : 'Xác nhận',
+            cancelText: 'Đóng',
+            variant: isCancelling ? 'danger' : 'primary',
+          }
+        )
+      : window.confirm(isCancelling ? `Hủy phiếu ${order.order_code}?` : `Xác nhận phiếu ${order.order_code}?`);
     if (!ok) return;
+    setStatusSaving(true);
     try {
       const r = await api.patch(`/inventory-purchases/${order.id}/status`, { status });
       showSuccess(r.data.message || 'Thành công');
       await loadOrder(order.id);
     } catch (e) { showError(e.response?.data?.message || e.message || 'Lỗi'); }
+    finally { setStatusSaving(false); }
   };
 
   // ── Add-dialog: open / save ────────────────────────────────────────────────
@@ -441,7 +461,7 @@ export default function InventoryPurchases() {
                   <button className="btn" onClick={saveHeader} disabled={hdrSaving}>
                     {hdrSaving ? 'Đang lưu...' : (order ? 'Lưu thay đổi' : 'Tạo phiếu nhập')}
                   </button>
-                  {order && <button className="btn secondary" onClick={() => setHdrEditing(false)}>Hủy</button>}
+                  {order && <button className="btn secondary" onClick={() => setHdrEditing(false)}>Đóng</button>}
                 </div>
               </>
             ) : order && (
@@ -459,7 +479,7 @@ export default function InventoryPurchases() {
             <div className="card" style={{ padding: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 20px', borderBottom: '1px solid #e5e7eb', flexWrap: 'wrap' }}>
                 <div style={{ flex: 1 }}>
-                  <b style={{ fontSize: 15 }}>Chi tiết phiếu nhập</b>
+                  <b style={{ fontSize: 16 }}>Chi tiết phiếu nhập</b>
                   {catalogLoading && <span style={{ marginLeft: 8, color: '#6b7280', fontSize: 12 }}>Đang tải danh mục...</span>}
                   {!catalogLoading && catalog.length > 0 && (
                     <span style={{ marginLeft: 8, color: '#6b7280', fontSize: 12 }}>{catalog.length} sản phẩm từ danh mục NCC</span>
@@ -528,8 +548,8 @@ export default function InventoryPurchases() {
                         <tr key={`${row.product_id}-${row.item_id ?? 'new'}`}
                           style={{ background: qty > 0 ? '#f0fdf4' : undefined }}>
                           <td>
-                            <b style={{ fontSize: 13 }}>{row.product_name}</b>
-                            {row.product_code && <div style={{ fontSize: 11, color: '#6b7280' }}>{row.product_code}</div>}
+                            <b style={{ fontSize: 13, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 200 }} title={row.product_name}>{row.product_name}</b>
+                            {row.product_code && <div style={{ fontSize: 12, color: '#6b7280' }}>{row.product_code}</div>}
                           </td>
                           <td>
                             {isDraft && row.spos && row.spos.length > 1 ? (
@@ -565,14 +585,14 @@ export default function InventoryPurchases() {
                                   }}
                                 />
                             ) : (
-                              <span style={{ fontWeight: 600 }}>
+                              <span style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
                                 {fmtQty(row.quantity)}
                               </span>
                             )}
                           </td>
                           <td style={{ textAlign: 'right', color: '#374151' }}>
                             {qty > 0 ? (
-                              <span style={{ fontWeight: 600 }}>
+                              <span style={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
                                 {fmtQty(convertedQty)}
                               </span>
                             ) : <span style={{ color: '#9ca3af' }}>—</span>}
@@ -592,10 +612,10 @@ export default function InventoryPurchases() {
                                   }
                                 }} />
                             ) : (
-                              <span style={{ fontWeight: 600, fontSize: 13 }}>{fmt(row.purchase_price)}</span>
+                              <span style={{ fontWeight: 600, fontSize: 13, fontVariantNumeric: 'tabular-nums' }}>{fmt(row.purchase_price)}</span>
                             )}
                           </td>
-                          <td style={{ textAlign: 'right', fontWeight: 600, color: lineTotal > 0 ? '#059669' : '#9ca3af' }}>
+                          <td style={{ textAlign: 'right', fontWeight: 600, color: lineTotal > 0 ? 'inherit' : '#9ca3af', fontVariantNumeric: 'tabular-nums' }}>
                             {lineTotal > 0 ? fmt(lineTotal) : '—'}
                           </td>
                           <td>
@@ -610,8 +630,8 @@ export default function InventoryPurchases() {
                           {isDraft && (
                             <td>
                               <button className="btn danger" title="Xóa hàng" onClick={() => removePoRow(idx)}
-                                style={{ padding: 0, width: 28, height: 28, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, lineHeight: 1 }}>
-                                ×
+                                style={{ padding: 0, width: 28, height: 28, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                                <Trash2 size={14} />
                               </button>
                             </td>
                           )}
@@ -623,12 +643,12 @@ export default function InventoryPurchases() {
                     <tfoot>
                       <tr style={{ background: '#f9fafb', fontWeight: 700 }}>
                         <td colSpan={2} style={{ textAlign: 'right', paddingRight: 12, color: '#374151', fontSize: 13 }}>Tổng cộng:</td>
-                        <td style={{ fontWeight: 700 }}>
+                        <td style={{ fontWeight: 700, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
                           {fmtQty(poRows.reduce((a, r) => a + Number(r.quantity || 0), 0))}
                         </td>
                         <td></td>
                         <td></td>
-                        <td style={{ textAlign: 'right', fontSize: 15, color: '#059669' }}>
+                        <td style={{ textAlign: 'right', fontSize: 15, fontVariantNumeric: 'tabular-nums' }}>
                           {fmt(poRows.reduce((a, r) => {
                             const q = Number(r.quantity || 0);
                             if (q <= 0) return a;
@@ -648,15 +668,15 @@ export default function InventoryPurchases() {
             </div>
           )}
 
-          {/* Confirm / Cancel */}
+          {/* Confirm / Cancel — DRAFT */}
           {order && isDraft && <div className="card">
             <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
               <button className="btn" onClick={() => changeStatus('CONFIRMED')}
-                disabled={!(order?.items?.length > 0)}>
-                ✓ Xác nhận phiếu nhập
+                disabled={!(order?.items?.length > 0) || statusSaving}>
+                Xác nhận phiếu nhập
               </button>
-              <button className="btn danger" onClick={() => changeStatus('CANCELLED')}>
-                ✕ Hủy phiếu
+              <button className="btn danger" onClick={() => changeStatus('CANCELLED')} disabled={statusSaving}>
+                Hủy phiếu
               </button>
             </div>
             {!(order?.items?.length > 0) && (
@@ -664,6 +684,15 @@ export default function InventoryPurchases() {
                 Lưu ít nhất 1 dòng hàng trước khi xác nhận.
               </p>
             )}
+          </div>}
+
+          {/* Cancel — CONFIRMED (no received inventory) */}
+          {order && order.status === 'CONFIRMED' && <div className="card">
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+              <button className="btn danger" onClick={() => changeStatus('CANCELLED')} disabled={statusSaving}>
+                Hủy phiếu
+              </button>
+            </div>
           </div>}
 
         </>}
@@ -708,7 +737,8 @@ export default function InventoryPurchases() {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
               <div>
                 <label style={LBL}>Số lượng{REQ}</label>
-                <input className="input" type="number" placeholder="0" min={0.001} step={0.001}
+                <input className="input" type="text" inputMode="decimal" placeholder="0"
+                  style={{ textAlign: 'right' }}
                   value={addDlg.qty}
                   onChange={e => setAddDlg(d => ({ ...d, qty: e.target.value }))} />
               </div>
@@ -739,7 +769,7 @@ export default function InventoryPurchases() {
                 {addDlgSaving ? 'Đang lưu...' : '+ Thêm'}
               </button>
               <button className="btn secondary" onClick={() => { setAddDlg(null); setAddDlgOpts([]); }}>
-                Hủy
+                Đóng
               </button>
             </div>
           </div>

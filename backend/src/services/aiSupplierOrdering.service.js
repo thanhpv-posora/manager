@@ -1,5 +1,6 @@
 const db = require('../config/db');
 const aiInventoryPredictionService = require('./aiInventoryPrediction.service');
+const PurchasePriceResolver = require('./PurchasePriceResolver');
 
 function n(value) {
   const number = Number(value || 0);
@@ -22,51 +23,6 @@ function formatMoney(value) {
   return n(value).toLocaleString('vi-VN', { maximumFractionDigits: 0 });
 }
 
-async function getSupplierRule(productId) {
-  const [rows] = await db.query(`
-    SELECT
-      p.id product_id,
-      p.default_purchase_price,
-      p.default_supplier_id,
-      ps.supplier_id linked_supplier_id,
-      ps.purchase_price linked_purchase_price,
-      ps.min_order_qty,
-      ps.order_multiple_qty,
-      ps.lead_time_days,
-      s1.name linked_supplier_name,
-      s2.name default_supplier_name
-    FROM products p
-    LEFT JOIN product_supplier_links ps
-      ON ps.product_id = p.id
-     AND ps.is_active = 1
-     AND ps.is_default = 1
-    LEFT JOIN suppliers s1
-      ON s1.id = ps.supplier_id
-     AND s1.del_flg = 0
-     AND s1.is_active = 1
-    LEFT JOIN suppliers s2
-      ON s2.id = p.default_supplier_id
-     AND s2.del_flg = 0
-     AND s2.is_active = 1
-    WHERE p.id = ?
-    LIMIT 1
-  `, [productId]);
-
-  const row = rows[0] || {};
-  const supplierId = row.linked_supplier_id || row.default_supplier_id || null;
-  const supplierName = row.linked_supplier_name || row.default_supplier_name || null;
-  const purchasePrice = n(row.linked_purchase_price || row.default_purchase_price);
-
-  return {
-    supplier_id: supplierId,
-    supplier_name: supplierName,
-    purchase_price: purchasePrice,
-    min_order_qty: n(row.min_order_qty),
-    order_multiple_qty: n(row.order_multiple_qty),
-    lead_time_days: n(row.lead_time_days)
-  };
-}
-
 async function buildSupplierOrderDraft(options = {}) {
   const lookbackDays = Number(options.lookback_days || 14);
   const forecastDays = Number(options.forecast_days || 7);
@@ -81,7 +37,7 @@ async function buildSupplierOrderDraft(options = {}) {
 
   const items = [];
   for (const row of suggestion.data || []) {
-    const rule = await getSupplierRule(row.product_id);
+    const rule = await PurchasePriceResolver.resolveDefaultSupplierRule(row.product_id);
     const rawQty = n(row.suggested_order_qty);
     const minQty = rule.min_order_qty > 0 ? rule.min_order_qty : 0;
     const qty = roundQty(Math.max(rawQty, minQty), rule.order_multiple_qty);

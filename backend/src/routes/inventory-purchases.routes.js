@@ -23,6 +23,10 @@ router.put('/:id', auth(['ADMIN', 'STAFF']), async (req, res, next) => {
   try { res.json(await InventoryPurchaseAgent.update(req.params.id, req.body, req.user.id)); } catch (e) { next(e); }
 });
 
+router.post('/:id/sync', auth(['ADMIN', 'STAFF']), async (req, res, next) => {
+  try { res.json(await InventoryPurchaseAgent.syncItems(req.params.id, req.body.rows || [], req.user.id)); } catch (e) { next(e); }
+});
+
 router.post('/:id/items', auth(['ADMIN', 'STAFF']), async (req, res, next) => {
   try { res.json(await InventoryPurchaseAgent.addItem(req.params.id, req.body, req.user.id)); } catch (e) { next(e); }
 });

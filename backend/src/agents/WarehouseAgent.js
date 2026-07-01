@@ -4,7 +4,7 @@ const pool = require('../config/db');
 class WarehouseAgent {
   async list() {
     const [rows] = await pool.query(
-      `SELECT id, code, name, is_default, is_active
+      `SELECT id, code, name, type, is_default, is_active
        FROM warehouses
        WHERE is_active = 1
        ORDER BY is_default DESC, name ASC`

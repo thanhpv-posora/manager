@@ -907,16 +907,25 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
     // S4.1-A: Receive Header — supplier document reference, warehouse selection,
     // and received_by/received_at distinct from created_by/created_at (who posted
     // the voucher to stock vs who drafted it — see docs/00-project sprint S4.1 report).
-    await safeAddColumn(conn, 'inventory_receives', 'supplier_document_no', 'supplier_document_no VARCHAR(100) NULL');
+    await safeAddColumn(conn, 'inventory_receives', 'supplier_document_no', 'supplier_document_no VARCHAR(255) NULL');
     await safeAddColumn(conn, 'inventory_receives', 'warehouse_id', 'warehouse_id BIGINT NULL');
     await safeAddColumn(conn, 'inventory_receives', 'received_by', 'received_by BIGINT NULL');
     await safeAddColumn(conn, 'inventory_receives', 'received_at', 'received_at DATETIME NULL');
     await safeAddIndex(conn, 'inventory_receives', 'idx_inventory_receives_warehouse', 'INDEX idx_inventory_receives_warehouse(warehouse_id)');
+    // S4.1-A CEO review: widen supplier_document_no from VARCHAR(100) → VARCHAR(255).
+    // safeAddColumn only fires on first creation, so DBs that already have the
+    // VARCHAR(100) column need an explicit widen (same pattern as purchase_lots below).
+    try { await conn.query(`ALTER TABLE inventory_receives MODIFY supplier_document_no VARCHAR(255) NULL`); } catch (e) {}
+
+    // S4.1-A CEO review: future-proof warehouse type. Valid values: NORMAL, FREEZER,
+    // TRANSIT. VARCHAR (not ENUM) to match the rest of this file's status-column
+    // convention — no UI/CRUD to set it yet, lookup-only this sprint.
+    await safeAddColumn(conn, 'warehouses', 'type', "type VARCHAR(20) NOT NULL DEFAULT 'NORMAL'");
 
     // S4.1-A: seed one default warehouse so existing/new receive vouchers always
     // have a warehouse to fall back to until multi-warehouse UI exists.
     await conn.query(
-      `INSERT IGNORE INTO warehouses (code, name, is_default, is_active) VALUES ('MAIN', 'Kho chính', 1, 1)`
+      `INSERT IGNORE INTO warehouses (code, name, type, is_default, is_active) VALUES ('MAIN', 'Kho chính', 'NORMAL', 1, 1)`
     );
 
     // INV-002: add RECEIVE_VOUCHER to stock_transactions.reference_type ENUM

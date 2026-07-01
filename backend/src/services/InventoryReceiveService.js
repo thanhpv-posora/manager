@@ -83,7 +83,8 @@ class InventoryReceiveService {
         }
       }
 
-      const receiveCode = await nextCode(conn, 'inventory_receives', 'receive_code', 'RCV');
+      // S4.1-A CEO review: RV prefix, matching Purchase Order's PO convention (was RCV).
+      const receiveCode = await nextCode(conn, 'inventory_receives', 'receive_code', 'RV');
       const [rHeader] = await conn.query(
         `INSERT INTO inventory_receives
            (receive_code, purchase_order_id, receive_date, supplier_id, status, note,

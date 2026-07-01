@@ -81,6 +81,7 @@ app.use('/api/logs', require('./routes/logs.routes'));
 app.use('/api/partners', require('./routes/partners.routes'));
 app.use('/api/retail-daily-summary', require('./routes/retailSummary'));
 app.use('/api/inventory-receives', require('./routes/inventory-receives.routes'));
+app.use('/api/warehouses', require('./routes/warehouses.routes'));
 app.use('/api/supplier-purchase-price', require('./routes/supplier-purchase-price.routes'));
 app.use('/api/supplier-catalog', require('./routes/supplier-catalog.routes'));
 

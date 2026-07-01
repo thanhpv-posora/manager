@@ -13,6 +13,7 @@ import Lots from'./pages/Lots';
 import Units from'./pages/Units';
 import SupplierPurchaseOptions from'./pages/SupplierPurchaseOptions';
 import InventoryPurchases from'./pages/InventoryPurchases';
+import InventoryReceives from'./pages/InventoryReceives';
 import Revenue from'./pages/Revenue';
 import Profit from'./pages/Profit';
 import RetailDailySummary from'./pages/RetailDailySummary';
@@ -110,6 +111,7 @@ export default function App(){
     units:<Units/>,
     'supplier-purchase-options':<SupplierPurchaseOptions/>,
     'inventory-purchases':<InventoryPurchases/>,
+    'inventory-receives':<InventoryReceives/>,
     revenue:<Revenue/>,
     profit:<Profit/>,
     'retail-daily-summary':<RetailDailySummary/>,

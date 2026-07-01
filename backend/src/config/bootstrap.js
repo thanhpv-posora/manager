@@ -596,6 +596,18 @@ CREATE TABLE IF NOT EXISTS inventory_receive_items (
   INDEX idx_inventory_receive_items_product(product_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- S4.1-A: Warehouse — minimal, future-proof master data. Single default row today;
+-- full warehouse CRUD/multi-location support is out of S4.1 scope.
+CREATE TABLE IF NOT EXISTS warehouses (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  code VARCHAR(50) NOT NULL UNIQUE,
+  name VARCHAR(255) NOT NULL,
+  is_default TINYINT(1) NOT NULL DEFAULT 0,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS business_settings (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   setting_key VARCHAR(100) NOT NULL UNIQUE,
@@ -891,6 +903,21 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
 
     // INV-002: inventory_receives.status was missing from initial CREATE TABLE (INV-001)
     await safeAddColumn(conn, 'inventory_receives', 'status', "status VARCHAR(30) NOT NULL DEFAULT 'PENDING'");
+
+    // S4.1-A: Receive Header — supplier document reference, warehouse selection,
+    // and received_by/received_at distinct from created_by/created_at (who posted
+    // the voucher to stock vs who drafted it — see docs/00-project sprint S4.1 report).
+    await safeAddColumn(conn, 'inventory_receives', 'supplier_document_no', 'supplier_document_no VARCHAR(100) NULL');
+    await safeAddColumn(conn, 'inventory_receives', 'warehouse_id', 'warehouse_id BIGINT NULL');
+    await safeAddColumn(conn, 'inventory_receives', 'received_by', 'received_by BIGINT NULL');
+    await safeAddColumn(conn, 'inventory_receives', 'received_at', 'received_at DATETIME NULL');
+    await safeAddIndex(conn, 'inventory_receives', 'idx_inventory_receives_warehouse', 'INDEX idx_inventory_receives_warehouse(warehouse_id)');
+
+    // S4.1-A: seed one default warehouse so existing/new receive vouchers always
+    // have a warehouse to fall back to until multi-warehouse UI exists.
+    await conn.query(
+      `INSERT IGNORE INTO warehouses (code, name, is_default, is_active) VALUES ('MAIN', 'Kho chính', 1, 1)`
+    );
 
     // INV-002: add RECEIVE_VOUCHER to stock_transactions.reference_type ENUM
     {

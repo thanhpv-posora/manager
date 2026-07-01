@@ -3,14 +3,19 @@
 const pool = require('../config/db');
 const { nextCode } = require('../utils/code');
 const InventoryService = require('./InventoryService');
+const WarehouseAgent = require('../agents/WarehouseAgent');
 
 class InventoryReceiveService {
 
   async get(id) {
     const [[header]] = await pool.query(
-      `SELECT ir.*, s.name supplier_name
+      `SELECT ir.*, s.name supplier_name, w.name warehouse_name,
+              u1.full_name created_by_name, u2.full_name received_by_name
        FROM inventory_receives ir
        LEFT JOIN suppliers s ON s.id = ir.supplier_id
+       LEFT JOIN warehouses w ON w.id = ir.warehouse_id
+       LEFT JOIN users u1 ON u1.id = ir.created_by
+       LEFT JOIN users u2 ON u2.id = ir.received_by
        WHERE ir.id = ?`,
       [id]
     );
@@ -27,7 +32,7 @@ class InventoryReceiveService {
   }
 
   async create(body, userId) {
-    const { purchase_order_id, receive_date, note, items = [] } = body;
+    const { purchase_order_id, receive_date, note, supplier_document_no, warehouse_id, items = [] } = body;
     if (!purchase_order_id) throw Object.assign(new Error('Thiếu mã phiếu mua hàng'), { status: 400 });
     if (!receive_date) throw Object.assign(new Error('Thiếu ngày nhận hàng'), { status: 400 });
     if (!items.length) throw Object.assign(new Error('Cần ít nhất một dòng hàng'), { status: 400 });
@@ -36,14 +41,19 @@ class InventoryReceiveService {
     try {
       await conn.beginTransaction();
 
+      let resolvedWarehouseId = warehouse_id || null;
+      if (!resolvedWarehouseId) {
+        resolvedWarehouseId = await WarehouseAgent.getDefaultId(conn);
+      }
+
       const [[po]] = await conn.query(
         `SELECT id, supplier_id, status FROM purchase_orders WHERE id = ? AND del_flg = 0`,
         [purchase_order_id]
       );
       if (!po) throw Object.assign(new Error('Không tìm thấy phiếu mua hàng'), { status: 404 });
-      if (!['APPROVED', 'PARTIAL_RECEIVED'].includes(po.status)) {
+      if (!['CONFIRMED', 'PARTIAL_RECEIVED'].includes(po.status)) {
         throw Object.assign(
-          new Error(`Phiếu mua hàng trạng thái "${po.status}" không thể tạo phiếu nhận. Cần APPROVED hoặc PARTIAL_RECEIVED`),
+          new Error(`Phiếu mua hàng trạng thái "${po.status}" không thể tạo phiếu nhận. Cần CONFIRMED hoặc PARTIAL_RECEIVED`),
           { status: 400 }
         );
       }
@@ -75,9 +85,12 @@ class InventoryReceiveService {
 
       const receiveCode = await nextCode(conn, 'inventory_receives', 'receive_code', 'RCV');
       const [rHeader] = await conn.query(
-        `INSERT INTO inventory_receives (receive_code, purchase_order_id, receive_date, supplier_id, status, note, created_by)
-         VALUES (?, ?, ?, ?, 'PENDING', ?, ?)`,
-        [receiveCode, purchase_order_id, receive_date, po.supplier_id, note || null, userId || null]
+        `INSERT INTO inventory_receives
+           (receive_code, purchase_order_id, receive_date, supplier_id, status, note,
+            supplier_document_no, warehouse_id, created_by)
+         VALUES (?, ?, ?, ?, 'PENDING', ?, ?, ?, ?)`,
+        [receiveCode, purchase_order_id, receive_date, po.supplier_id, note || null,
+         supplier_document_no || null, resolvedWarehouseId, userId || null]
       );
       const receiveId = rHeader.insertId;
 
@@ -120,7 +133,7 @@ class InventoryReceiveService {
         `SELECT id, status FROM purchase_orders WHERE id = ?`,
         [header.purchase_order_id]
       );
-      if (!['APPROVED', 'PARTIAL_RECEIVED'].includes(po.status)) {
+      if (!['CONFIRMED', 'PARTIAL_RECEIVED'].includes(po.status)) {
         throw Object.assign(
           new Error(`Phiếu mua hàng trạng thái "${po.status}" không thể nhận hàng`),
           { status: 400 }
@@ -179,8 +192,8 @@ class InventoryReceiveService {
       }
 
       await conn.query(
-        `UPDATE inventory_receives SET status = 'RECEIVED' WHERE id = ?`,
-        [receiveId]
+        `UPDATE inventory_receives SET status = 'RECEIVED', received_by = ?, received_at = NOW() WHERE id = ?`,
+        [userId || null, receiveId]
       );
 
       const [[{ pending }]] = await conn.query(
@@ -208,6 +221,26 @@ class InventoryReceiveService {
     } finally {
       conn.release();
     }
+  }
+
+  async list(params = {}) {
+    const { purchase_order_id, status, limit = 100 } = params;
+    const where = [];
+    const args = [];
+    if (purchase_order_id) { where.push('ir.purchase_order_id = ?'); args.push(purchase_order_id); }
+    if (status) { where.push('ir.status = ?'); args.push(status); }
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const [rows] = await pool.query(
+      `SELECT ir.*, s.name supplier_name, po.order_code purchase_order_code, w.name warehouse_name
+       FROM inventory_receives ir
+       LEFT JOIN suppliers s ON s.id = ir.supplier_id
+       LEFT JOIN purchase_orders po ON po.id = ir.purchase_order_id
+       LEFT JOIN warehouses w ON w.id = ir.warehouse_id
+       ${whereSql}
+       ORDER BY ir.id DESC LIMIT ?`,
+      [...args, Number(limit)]
+    );
+    return rows;
   }
 
   async cancel(receiveId, userId) {

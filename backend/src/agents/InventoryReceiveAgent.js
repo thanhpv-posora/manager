@@ -8,6 +8,10 @@ class InventoryReceiveAgent {
     this.responsibility = 'Inventory Receive Voucher — creates stock IN transactions from approved purchase orders (INV-001)';
   }
 
+  async list(params) {
+    return InventoryReceiveService.list(params);
+  }
+
   async get(id) {
     return InventoryReceiveService.get(id);
   }

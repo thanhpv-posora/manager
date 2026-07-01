@@ -5,6 +5,11 @@ const { auth } = require('../middleware/auth');
 const InventoryReceiveAgent = require('../agents/InventoryReceiveAgent');
 const router = express.Router();
 
+// GET /api/inventory-receives
+router.get('/', auth(['ADMIN', 'STAFF']), async (req, res, next) => {
+  try { res.json(await InventoryReceiveAgent.list(req.query)); } catch (e) { next(e); }
+});
+
 // GET /api/inventory-receives/:id
 router.get('/:id', auth(['ADMIN', 'STAFF']), async (req, res, next) => {
   try {

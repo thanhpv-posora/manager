@@ -10,6 +10,17 @@ router.get('/', auth(['ADMIN', 'STAFF']), async (req, res, next) => {
   try { res.json(await InventoryReceiveAgent.list(req.query)); } catch (e) { next(e); }
 });
 
+// GET /api/inventory-receives/received-summary?purchase_order_id=X
+// S4.1-B: derived received-so-far per PO line (kg), read-only. Must be declared
+// before /:id or Express would match "received-summary" as an :id.
+router.get('/received-summary', auth(['ADMIN', 'STAFF']), async (req, res, next) => {
+  try {
+    const purchaseOrderId = req.query.purchase_order_id;
+    if (!purchaseOrderId) return res.status(400).json({ message: 'Thiếu purchase_order_id' });
+    res.json(await InventoryReceiveAgent.getReceivedSummary(purchaseOrderId));
+  } catch (e) { next(e); }
+});
+
 // GET /api/inventory-receives/:id
 router.get('/:id', auth(['ADMIN', 'STAFF']), async (req, res, next) => {
   try {

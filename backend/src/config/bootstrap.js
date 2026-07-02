@@ -928,6 +928,41 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
       `INSERT IGNORE INTO warehouses (code, name, type, is_default, is_active) VALUES ('MAIN', 'Kho chính', 'NORMAL', 1, 1)`
     );
 
+    // S4.1-B: Receive Detail — replace the ambiguous inventory_receive_items.received_quantity
+    // with an explicit Ordered / Expected / Actual quantity model (see sprint S4.1 report):
+    //   ordered_qty         — snapshot of purchase_order_items.quantity (supplier purchase unit, e.g. crate)
+    //   expected_stock_qty  — snapshot of purchase_order_items.expected_stock_qty (ordered × conversion, stock unit/kg)
+    //   actual_stock_qty    — physically weighed/counted amount entered at receive time (stock unit/kg);
+    //                         this is what gets posted to inventory (wired in S4.1-C), never expected_stock_qty.
+    // purchase_order_item_id gives a direct FK to the specific PO line, resolving the
+    // ambiguity of the old product_id-only join when a product appears on multiple PO lines.
+    await safeAddColumn(conn, 'inventory_receive_items', 'purchase_order_item_id', 'purchase_order_item_id BIGINT NULL');
+    await safeAddColumn(conn, 'inventory_receive_items', 'ordered_qty', 'ordered_qty DECIMAL(15,3) NOT NULL DEFAULT 0');
+    await safeAddColumn(conn, 'inventory_receive_items', 'expected_stock_qty', 'expected_stock_qty DECIMAL(15,3) NOT NULL DEFAULT 0');
+    await safeAddColumn(conn, 'inventory_receive_items', 'actual_stock_qty', 'actual_stock_qty DECIMAL(15,3) NOT NULL DEFAULT 0');
+    await safeAddIndex(conn, 'inventory_receive_items', 'idx_iri_poi', 'INDEX idx_iri_poi(purchase_order_item_id)');
+
+    // S4.1-B: migrate off received_quantity — feasible, no production data yet.
+    // Legacy rows predate the ordered/expected snapshot linkage, so only actual_stock_qty
+    // can be backfilled (it inherits whatever was actually posted to stock under the old
+    // model); ordered_qty/expected_stock_qty stay 0 for those pre-existing rows.
+    if (await hasColumn(conn, 'inventory_receive_items', 'received_quantity')) {
+      await conn.query(
+        `UPDATE inventory_receive_items SET actual_stock_qty = received_quantity WHERE actual_stock_qty = 0`
+      );
+      await conn.query(`ALTER TABLE inventory_receive_items DROP COLUMN received_quantity`);
+    }
+
+    // S4.1-B CEO review: purchase_order_items.received_quantity is purchase-unit
+    // basis (paired with `quantity`) and must never be reused to accumulate a
+    // stock-unit (kg) total — that was the unit-mixing bug flagged in review.
+    // received_stock_qty is the explicit, kg-basis home for that concept.
+    // Column only: Sprint S4.1-B does not write to it (no PO aggregate writes this
+    // sprint — see InventoryReceiveService for the derived-read alternative used
+    // instead). Sprint S4.1-D owns turning this into a maintained accumulator
+    // alongside the purchase_orders.status transition logic.
+    await safeAddColumn(conn, 'purchase_order_items', 'received_stock_qty', 'received_stock_qty DECIMAL(15,3) NOT NULL DEFAULT 0');
+
     // INV-002: add RECEIVE_VOUCHER to stock_transactions.reference_type ENUM
     {
       const [[rtInfo]] = await conn.query(

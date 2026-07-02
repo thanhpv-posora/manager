@@ -7,6 +7,38 @@ const WarehouseAgent = require('../agents/WarehouseAgent');
 
 class InventoryReceiveService {
 
+  // S4.1-B CEO review: "received so far" per PO line must NOT be read from or
+  // written to purchase_order_items this sprint (that accumulator + the
+  // purchase_orders.status transition are Sprint S4.1-D's job). Instead it is
+  // derived live from the receive ledger itself — every non-cancelled voucher's
+  // actual_stock_qty for that PO line, summed on read. Pure read, no PO-side writes.
+  //
+  // excludeReceiveId: when re-validating inside receive(), the voucher being
+  // posted already has its own (still-PENDING) lines sitting in the ledger —
+  // without excluding it, it would count its own actual_stock_qty against its
+  // own remaining and always self-block. create() has no such row yet, so it
+  // never needs this.
+  async _getReceivedSoFarMap(runner, purchaseOrderId, excludeReceiveId = null) {
+    const params = [purchaseOrderId];
+    let excludeSql = '';
+    if (excludeReceiveId) { excludeSql = 'AND ir.id <> ?'; params.push(excludeReceiveId); }
+    const [rows] = await runner.query(
+      `SELECT iri.purchase_order_item_id poi_id, COALESCE(SUM(iri.actual_stock_qty),0) received
+       FROM inventory_receive_items iri
+       JOIN inventory_receives ir ON ir.id = iri.receive_id
+       WHERE ir.purchase_order_id = ? AND ir.status <> 'CANCELLED' ${excludeSql}
+       GROUP BY iri.purchase_order_item_id`,
+      params
+    );
+    return new Map(rows.map(r => [Number(r.poi_id), Number(r.received)]));
+  }
+
+  // Read-only summary for the frontend — same derivation, exposed per PO item id.
+  async getReceivedSummary(purchaseOrderId) {
+    const map = await this._getReceivedSoFarMap(pool, purchaseOrderId);
+    return Object.fromEntries(map);
+  }
+
   async get(id) {
     const [[header]] = await pool.query(
       `SELECT ir.*, s.name supplier_name, w.name warehouse_name,
@@ -21,9 +53,10 @@ class InventoryReceiveService {
     );
     if (!header) return null;
     const [items] = await pool.query(
-      `SELECT iri.*, p.name product_name, p.unit
+      `SELECT iri.*, p.name product_name, p.unit, poi.unit ordered_unit
        FROM inventory_receive_items iri
        LEFT JOIN products p ON p.id = iri.product_id
+       LEFT JOIN purchase_order_items poi ON poi.id = iri.purchase_order_item_id
        WHERE iri.receive_id = ?
        ORDER BY iri.id ASC`,
       [id]
@@ -58,29 +91,53 @@ class InventoryReceiveService {
         );
       }
 
+      // S4.1-B: purchase_order_item_id resolves the PO line exactly (a product can
+      // appear on more than one line under different supplier_purchase_option_id).
+      // expected_stock_qty is the S4.0 snapshot (ordered_qty × conversion) — the
+      // remaining-quantity basis is this, never purchase_order_items.quantity.
+      // received-so-far is derived from the receive ledger (see _getReceivedSoFarMap)
+      // — purchase_order_items.received_quantity is purchase-unit basis and is
+      // never read here to avoid re-introducing the unit-mixing bug.
       const [poItems] = await conn.query(
-        `SELECT id, product_id, quantity, received_quantity FROM purchase_order_items WHERE purchase_order_id = ?`,
+        `SELECT id, product_id, quantity, expected_stock_qty
+         FROM purchase_order_items WHERE purchase_order_id = ?`,
         [purchase_order_id]
       );
-      const poItemMap = new Map(poItems.map(i => [Number(i.product_id), i]));
+      const poItemMap = new Map(poItems.map(i => [Number(i.id), i]));
+      const receivedSoFarMap = await this._getReceivedSoFarMap(conn, purchase_order_id);
 
+      const lines = [];
       for (const item of items) {
-        const qty = Number(item.received_quantity || 0);
-        if (!(qty > 0)) throw Object.assign(new Error('Số lượng nhận phải lớn hơn 0'), { status: 400 });
-        const poItem = poItemMap.get(Number(item.product_id));
+        const poItem = poItemMap.get(Number(item.purchase_order_item_id));
         if (!poItem) {
           throw Object.assign(
-            new Error(`Sản phẩm ID=${item.product_id} không có trong phiếu mua hàng`),
+            new Error(`Dòng hàng phiếu mua hàng ID=${item.purchase_order_item_id} không có trong phiếu mua hàng này`),
             { status: 400 }
           );
         }
-        const remaining = Number(poItem.quantity) - Number(poItem.received_quantity);
-        if (qty > remaining + 0.001) {
+        const actualStockQty = Number(item.actual_stock_qty || 0);
+        if (!(actualStockQty > 0)) {
+          throw Object.assign(new Error('Số lượng thực nhận (kg) phải lớn hơn 0'), { status: 400 });
+        }
+        const expectedStockQty = Number(poItem.expected_stock_qty);
+        const remaining = expectedStockQty - (receivedSoFarMap.get(poItem.id) || 0);
+        if (actualStockQty > remaining + 0.001) {
           throw Object.assign(
-            new Error(`Số lượng nhận (${qty}) vượt quá số lượng còn lại (${remaining.toFixed(3)}) cho sản phẩm ID=${item.product_id}`),
+            new Error(
+              `Số lượng thực nhận (${actualStockQty} kg) vượt quá số lượng tồn kho dự kiến còn lại ` +
+              `(${remaining.toFixed(3)} kg) cho sản phẩm ID=${poItem.product_id}`
+            ),
             { status: 400 }
           );
         }
+        lines.push({
+          purchase_order_item_id: poItem.id,
+          product_id: poItem.product_id,
+          ordered_qty: Number(poItem.quantity),
+          expected_stock_qty: expectedStockQty,
+          actual_stock_qty: actualStockQty,
+          purchase_price: Number(item.purchase_price || 0),
+        });
       }
 
       // S4.1-A CEO review: RV prefix, matching Purchase Order's PO convention (was RCV).
@@ -95,11 +152,13 @@ class InventoryReceiveService {
       );
       const receiveId = rHeader.insertId;
 
-      for (const item of items) {
+      for (const line of lines) {
         await conn.query(
-          `INSERT INTO inventory_receive_items (receive_id, product_id, received_quantity, purchase_price)
-           VALUES (?, ?, ?, ?)`,
-          [receiveId, item.product_id, Number(item.received_quantity), Number(item.purchase_price || 0)]
+          `INSERT INTO inventory_receive_items
+             (receive_id, purchase_order_item_id, product_id, ordered_qty, expected_stock_qty, actual_stock_qty, purchase_price)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [receiveId, line.purchase_order_item_id, line.product_id,
+           line.ordered_qty, line.expected_stock_qty, line.actual_stock_qty, line.purchase_price]
         );
       }
 
@@ -147,30 +206,44 @@ class InventoryReceiveService {
       );
       if (!items.length) throw Object.assign(new Error('Phiếu nhận hàng không có dòng hàng'), { status: 400 });
 
+      // S4.1-B CEO review: no purchase_order_items / purchase_orders reads-for-write
+      // or writes happen in this sprint — received-so-far is derived from the
+      // ledger, same as create(). Known limitation: unlike a locked PO-item row,
+      // this derived read isn't safe against two concurrent RECEIVE posts racing
+      // on the same PO line — accepted for S4.1-B; S4.1-D's maintained, lockable
+      // accumulator (received_stock_qty) is the intended fix for that gap.
+      const receivedSoFarMap = await this._getReceivedSoFarMap(conn, header.purchase_order_id, receiveId);
+
       for (const item of items) {
-        const qty = Number(item.received_quantity);
+        const qty = Number(item.actual_stock_qty);
         if (!(qty > 0)) {
           throw Object.assign(
-            new Error(`Số lượng nhận phải lớn hơn 0 cho sản phẩm ID=${item.product_id}`),
+            new Error(`Số lượng thực nhận phải lớn hơn 0 cho sản phẩm ID=${item.product_id}`),
             { status: 400 }
           );
         }
 
+        // Looked up by purchase_order_item_id, not product_id — a product can
+        // appear on more than one PO line. Read-only: expected_stock_qty is the
+        // S4.0 snapshot; this row is never written by S4.1-B.
         const [[poItem]] = await conn.query(
-          `SELECT id, quantity, received_quantity FROM purchase_order_items
-           WHERE purchase_order_id = ? AND product_id = ? LIMIT 1 FOR UPDATE`,
-          [header.purchase_order_id, item.product_id]
+          `SELECT id, expected_stock_qty FROM purchase_order_items
+           WHERE id = ? AND purchase_order_id = ? LIMIT 1`,
+          [item.purchase_order_item_id, header.purchase_order_id]
         );
         if (!poItem) {
           throw Object.assign(
-            new Error(`Sản phẩm ID=${item.product_id} không còn trong phiếu mua hàng`),
+            new Error(`Dòng hàng phiếu mua hàng ID=${item.purchase_order_item_id} không còn trong phiếu mua hàng`),
             { status: 400 }
           );
         }
-        const remaining = Number(poItem.quantity) - Number(poItem.received_quantity);
+        const remaining = Number(poItem.expected_stock_qty) - (receivedSoFarMap.get(poItem.id) || 0);
         if (qty > remaining + 0.001) {
           throw Object.assign(
-            new Error(`Số lượng nhận (${qty}) vượt quá số lượng còn lại (${remaining.toFixed(3)}) cho sản phẩm ID=${item.product_id}`),
+            new Error(
+              `Số lượng thực nhận (${qty} kg) vượt quá số lượng tồn kho dự kiến còn lại ` +
+              `(${remaining.toFixed(3)} kg) cho sản phẩm ID=${item.product_id}`
+            ),
             { status: 400 }
           );
         }
@@ -185,11 +258,6 @@ class InventoryReceiveService {
           `Nhận hàng phiếu ${header.receive_code}`,
           userId
         );
-
-        await conn.query(
-          `UPDATE purchase_order_items SET received_quantity = received_quantity + ? WHERE id = ?`,
-          [qty, poItem.id]
-        );
       }
 
       await conn.query(
@@ -197,23 +265,17 @@ class InventoryReceiveService {
         [userId || null, receiveId]
       );
 
-      const [[{ pending }]] = await conn.query(
-        `SELECT SUM(quantity - received_quantity) pending
-         FROM purchase_order_items WHERE purchase_order_id = ?`,
-        [header.purchase_order_id]
-      );
-      const newPoStatus = Number(pending || 0) < 0.001 ? 'RECEIVED' : 'PARTIAL_RECEIVED';
-      await conn.query(
-        `UPDATE purchase_orders SET status = ? WHERE id = ?`,
-        [newPoStatus, header.purchase_order_id]
-      );
-
+      // S4.1-B CEO review: Purchase Order aggregate/status is NOT touched this
+      // sprint — no accumulation, no status recalculation. purchase_orders.status
+      // stays exactly what it was before this receive; Sprint S4.1-D owns updating
+      // it. po.status was already fetched above only to gate whether receiving
+      // is allowed at all.
       await conn.commit();
       return {
         id: receiveId,
         receive_code: header.receive_code,
         status: 'RECEIVED',
-        purchase_order_status: newPoStatus,
+        purchase_order_status: po.status,
         message: 'Đã nhận hàng và cập nhật tồn kho',
       };
     } catch (e) {

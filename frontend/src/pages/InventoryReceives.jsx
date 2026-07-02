@@ -57,6 +57,7 @@ export default function InventoryReceives() {
   const [warehouses, setWarehouses] = useState([]);
   const [warehouseId, setWarehouseId] = useState('');
   const [recvQtys, setRecvQtys] = useState({});
+  const [receivedSummary, setReceivedSummary] = useState({}); // purchase_order_item_id → kg already received (derived, S4.1-B)
   const [recvPrices, setRecvPrices] = useState({});    // item.id → price string (editable)
   const [supplierPrices, setSupplierPrices] = useState({}); // product.id → negotiated price from product_supplier_links
   const [creating, setCreating] = useState(false);
@@ -112,6 +113,7 @@ export default function InventoryReceives() {
     setNote('');
     setSupplierDocNo('');
     setRecvQtys({});
+    setReceivedSummary({});
     setRecvPrices({});
     setSupplierPrices({});
     loadPos();
@@ -120,7 +122,7 @@ export default function InventoryReceives() {
 
   // ── Create: load PO detail + price suggestions when PO selected ────────────
   useEffect(() => {
-    if (!selectedPoId) { setPoDetail(null); setRecvQtys({}); setRecvPrices({}); setSupplierPrices({}); return; }
+    if (!selectedPoId) { setPoDetail(null); setRecvQtys({}); setReceivedSummary({}); setRecvPrices({}); setSupplierPrices({}); return; }
     setPoLoading(true);
 
     api.get(`/inventory-purchases/${selectedPoId}`)
@@ -128,10 +130,23 @@ export default function InventoryReceives() {
         const poData = r.data;
         setPoDetail(poData);
 
-        // Init receive quantities — default to full remaining
+        // S4.1-B CEO review: kg received-so-far per PO line is NOT read from
+        // purchase_order_items.received_quantity (purchase-unit basis, and this
+        // sprint doesn't write a kg accumulator there either — see
+        // InventoryReceiveService._getReceivedSoFarMap). Derived from the receive
+        // ledger via GET /inventory-receives/received-summary instead.
+        let summary = {};
+        try {
+          const sumR = await api.get('/inventory-receives/received-summary', { params: { purchase_order_id: selectedPoId } });
+          summary = sumR.data || {};
+        } catch { /* non-fatal — treat as nothing received yet */ }
+        setReceivedSummary(summary);
+
+        // Init actual-receive quantities — default to full remaining (Expected Stock
+        // Qty basis, kg — S4.1-B), not the ordered purchase-unit quantity.
         const initQty = {};
         for (const item of poData?.items || []) {
-          const rem = Math.max(0, Number(item.quantity) - Number(item.received_quantity || 0));
+          const rem = Math.max(0, Number(item.expected_stock_qty) - Number(summary[item.id] || 0));
           initQty[item.id] = rem > 0 ? String(rem) : '0';
         }
         setRecvQtys(initQty);
@@ -163,7 +178,11 @@ export default function InventoryReceives() {
       .finally(() => setPoLoading(false));
   }, [selectedPoId]);
 
-  const remaining = item => Math.max(0, Number(item.quantity) - Number(item.received_quantity || 0));
+  // S4.1-B: remaining is always against Expected Stock Qty (kg, the ordered × conversion
+  // snapshot), never against the PO's ordered quantity in its purchase unit (e.g. crate).
+  // received-so-far comes from the derived receivedSummary (ledger sum), not
+  // purchase_order_items.received_quantity — see loading effect above.
+  const remaining = item => Math.max(0, Number(item.expected_stock_qty) - Number(receivedSummary[item.id] || 0));
 
   // ── Create voucher ─────────────────────────────────────────────────────────
   const createVoucher = async () => {
@@ -174,7 +193,7 @@ export default function InventoryReceives() {
       const qty = Number(recvQtys[item.id] || 0);
       const rem = remaining(item);
       if (qty > rem + 0.001) {
-        showWarning(`Số lượng nhận cho "${item.product_name}" (${qty}) vượt quá còn lại (${rem.toFixed(3)})`);
+        showWarning(`Số lượng thực nhận cho "${item.product_name}" (${qty} kg) vượt quá tồn kho dự kiến còn lại (${rem.toFixed(3)} kg)`);
         return;
       }
     }
@@ -182,13 +201,13 @@ export default function InventoryReceives() {
     const items = (poDetail?.items || [])
       .filter(item => Number(recvQtys[item.id] || 0) > 0)
       .map(item => ({
-        product_id: item.product_id,
-        received_quantity: Number(recvQtys[item.id]),
+        purchase_order_item_id: item.id,
+        actual_stock_qty: Number(recvQtys[item.id]),
         // Snapshot purchase price at receive time (user-editable; falls back to PO price or default)
         purchase_price: Number(recvPrices[item.id] || 0),
       }));
 
-    if (!items.length) { showWarning('Nhập số lượng nhận cho ít nhất một sản phẩm'); return; }
+    if (!items.length) { showWarning('Nhập số lượng thực nhận cho ít nhất một sản phẩm'); return; }
 
     setCreating(true);
     try {
@@ -364,9 +383,10 @@ export default function InventoryReceives() {
                   <tr style={{ background: '#f9fafb' }}>
                     <th>Sản phẩm</th>
                     <th style={{ textAlign: 'right' }}>Đặt hàng</th>
-                    <th style={{ textAlign: 'right' }}>Đã nhận</th>
-                    <th style={{ textAlign: 'right' }}>Còn lại</th>
-                    <th style={{ textAlign: 'right', width: 140 }}>Nhận lần này</th>
+                    <th style={{ textAlign: 'right' }}>Dự kiến (kg)</th>
+                    <th style={{ textAlign: 'right' }}>Đã nhận (kg)</th>
+                    <th style={{ textAlign: 'right' }}>Còn lại (kg)</th>
+                    <th style={{ textAlign: 'right', width: 140 }}>Thực nhận (kg)</th>
                     <th style={{ width: 170 }}>Giá mua NCC / Giá nhập</th>
                   </tr>
                 </thead>
@@ -385,10 +405,10 @@ export default function InventoryReceives() {
                       <tr key={item.id} style={rem === 0 ? { opacity: 0.45 } : {}}>
                         <td>
                           <b style={{ fontSize: 13 }}>{item.product_name}</b>
-                          <span style={{ color: '#9ca3af', fontSize: 11, marginLeft: 4 }}>{item.unit}</span>
                         </td>
-                        <td style={{ textAlign: 'right' }}>{fmt(item.quantity)}</td>
-                        <td style={{ textAlign: 'right', color: '#6b7280' }}>{fmt(item.received_quantity || 0)}</td>
+                        <td style={{ textAlign: 'right' }}>{fmt(item.quantity)} <span style={{ color: '#9ca3af', fontSize: 11 }}>{item.unit}</span></td>
+                        <td style={{ textAlign: 'right', color: '#6b7280' }}>{fmt(item.expected_stock_qty)}</td>
+                        <td style={{ textAlign: 'right', color: '#6b7280' }}>{fmt(receivedSummary[item.id] || 0)}</td>
                         <td style={{ textAlign: 'right', fontWeight: 600, color: rem > 0 ? '#059669' : '#9ca3af' }}>
                           {fmt(rem)}
                         </td>
@@ -501,31 +521,42 @@ export default function InventoryReceives() {
                 <thead>
                   <tr style={{ background: '#f9fafb' }}>
                     <th>Sản phẩm</th>
-                    <th style={{ textAlign: 'right' }}>Số lượng nhận</th>
+                    <th style={{ textAlign: 'right' }}>Đặt hàng</th>
+                    <th style={{ textAlign: 'right' }}>Dự kiến (kg)</th>
+                    <th style={{ textAlign: 'right' }}>Thực nhận (kg)</th>
+                    <th style={{ textAlign: 'right' }}>Chênh lệch (kg)</th>
                     <th style={{ textAlign: 'right' }}>Giá mua NCC / Giá nhập</th>
                     <th style={{ textAlign: 'right' }}>Thành tiền</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {(detail.items || []).map(item => (
-                    <tr key={item.id}>
-                      <td>
-                        <b style={{ fontSize: 13 }}>{item.product_name}</b>
-                        <span style={{ color: '#9ca3af', fontSize: 11, marginLeft: 4 }}>{item.unit}</span>
-                      </td>
-                      <td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(item.received_quantity)}</td>
-                      <td style={{ textAlign: 'right' }}>
-                        {Number(item.purchase_price) > 0
-                          ? `${fmt(item.purchase_price)} ₫`
-                          : <span style={{ color: '#f59e0b', fontSize: 12 }}>Chưa có giá</span>}
-                      </td>
-                      <td style={{ textAlign: 'right', color: '#059669', fontWeight: 600 }}>
-                        {fmt(Number(item.received_quantity) * Number(item.purchase_price))} ₫
-                      </td>
-                    </tr>
-                  ))}
+                  {/* Chênh lệch (Difference) = Dự kiến − Thực nhận, calculated here only — never stored (S4.1-B). */}
+                  {(detail.items || []).map(item => {
+                    const diff = Number(item.expected_stock_qty) - Number(item.actual_stock_qty);
+                    return (
+                      <tr key={item.id}>
+                        <td>
+                          <b style={{ fontSize: 13 }}>{item.product_name}</b>
+                        </td>
+                        <td style={{ textAlign: 'right' }}>{fmt(item.ordered_qty)} <span style={{ color: '#9ca3af', fontSize: 11 }}>{item.ordered_unit}</span></td>
+                        <td style={{ textAlign: 'right', color: '#6b7280' }}>{fmt(item.expected_stock_qty)}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(item.actual_stock_qty)}</td>
+                        <td style={{ textAlign: 'right', color: Math.abs(diff) < 0.001 ? '#9ca3af' : (diff > 0 ? '#f59e0b' : '#2563eb') }}>
+                          {diff > 0 ? '−' : diff < 0 ? '+' : ''}{fmt(Math.abs(diff))}
+                        </td>
+                        <td style={{ textAlign: 'right' }}>
+                          {Number(item.purchase_price) > 0
+                            ? `${fmt(item.purchase_price)} ₫`
+                            : <span style={{ color: '#f59e0b', fontSize: 12 }}>Chưa có giá</span>}
+                        </td>
+                        <td style={{ textAlign: 'right', color: '#059669', fontWeight: 600 }}>
+                          {fmt(Number(item.actual_stock_qty) * Number(item.purchase_price))} ₫
+                        </td>
+                      </tr>
+                    );
+                  })}
                   {!(detail.items || []).length && (
-                    <tr><td colSpan={4} style={{ textAlign: 'center', padding: '20px 0' }}>
+                    <tr><td colSpan={7} style={{ textAlign: 'center', padding: '20px 0' }}>
                       <p className="muted">Không có dòng hàng</p>
                     </td></tr>
                   )}

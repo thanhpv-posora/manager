@@ -957,11 +957,37 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
     // basis (paired with `quantity`) and must never be reused to accumulate a
     // stock-unit (kg) total — that was the unit-mixing bug flagged in review.
     // received_stock_qty is the explicit, kg-basis home for that concept.
-    // Column only: Sprint S4.1-B does not write to it (no PO aggregate writes this
-    // sprint — see InventoryReceiveService for the derived-read alternative used
-    // instead). Sprint S4.1-D owns turning this into a maintained accumulator
-    // alongside the purchase_orders.status transition logic.
+    // S4.2-A: now the authoritative, maintained accumulator — incremented under
+    // a row lock in InventoryReceiveService.receive() after each movement posts.
+    // Remaining quantity = expected_stock_qty - received_stock_qty.
     await safeAddColumn(conn, 'purchase_order_items', 'received_stock_qty', 'received_stock_qty DECIMAL(15,3) NOT NULL DEFAULT 0');
+
+    // S4.2-A CTO review: backfill received_stock_qty for receive history that
+    // predates this sprint (posted before the accumulator existed, via the old
+    // S4.1-B ledger-sum derivation). Idempotent by construction: only rows still
+    // at the column's default 0 are touched, so re-running on every startup
+    // never double-counts a row the app has since maintained for real (including
+    // a genuinely-zero row — the JOIN simply won't match it either way).
+    await conn.query(
+      `UPDATE purchase_order_items poi
+       JOIN (
+         SELECT iri.purchase_order_item_id, SUM(iri.actual_stock_qty) qty
+         FROM inventory_receive_items iri
+         JOIN inventory_receives ir ON ir.id = iri.receive_id
+         WHERE iri.purchase_order_item_id IS NOT NULL
+           AND ir.status <> 'CANCELLED'
+         GROUP BY iri.purchase_order_item_id
+       ) x ON x.purchase_order_item_id = poi.id
+       SET poi.received_stock_qty = x.qty
+       WHERE poi.received_stock_qty = 0`
+    );
+
+    // S4.2-A: Short Close — schema only this sprint. purchase_orders.status
+    // transitions (PARTIAL_RECEIVED/RECEIVED/SHORT_CLOSED) and the Short Close
+    // route/logic itself are S4.2-B/S4.2-C.
+    await safeAddColumn(conn, 'purchase_orders', 'short_close_reason', 'short_close_reason TEXT NULL');
+    await safeAddColumn(conn, 'purchase_orders', 'short_closed_by', 'short_closed_by BIGINT NULL');
+    await safeAddColumn(conn, 'purchase_orders', 'short_closed_at', 'short_closed_at DATETIME NULL');
 
     // S4.1-C: Inventory Movement Wiring — stock_transactions now records which
     // warehouse a movement affected. Nullable: only the Receive Voucher path

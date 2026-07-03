@@ -12,9 +12,8 @@ class InventoryReceiveAgent {
     return InventoryReceiveService.list(params);
   }
 
-  // S4.1-B: derived per-PO-line received-so-far (kg), read-only — see
-  // InventoryReceiveService._getReceivedSoFarMap for why this isn't sourced
-  // from purchase_order_items in this sprint.
+  // S4.2-A: per-PO-line received-so-far (kg), read-only — sourced from the
+  // authoritative purchase_order_items.received_stock_qty accumulator.
   async getReceivedSummary(purchaseOrderId) {
     return InventoryReceiveService.getReceivedSummary(purchaseOrderId);
   }

@@ -7,17 +7,25 @@ const WarehouseAgent = require('../agents/WarehouseAgent');
 
 class InventoryReceiveService {
 
-  // S4.1-B CEO review: "received so far" per PO line must NOT be read from or
-  // written to purchase_order_items this sprint (that accumulator + the
-  // purchase_orders.status transition are Sprint S4.1-D's job). Instead it is
-  // derived live from the receive ledger itself — every non-cancelled voucher's
-  // actual_stock_qty for that PO line, summed on read. Pure read, no PO-side writes.
-  //
-  // excludeReceiveId: when re-validating inside receive(), the voucher being
-  // posted already has its own (still-PENDING) lines sitting in the ledger —
-  // without excluding it, it would count its own actual_stock_qty against its
-  // own remaining and always self-block. create() has no such row yet, so it
-  // never needs this.
+  // S4.2-A: purchase_order_items.received_stock_qty is now the authoritative
+  // received-so-far accumulator (replaces the S4.1-B ledger-sum derivation —
+  // see receive() for where it's incremented under a row lock). Read-only
+  // summary for the frontend, keyed by purchase_order_item_id.
+  async getReceivedSummary(purchaseOrderId) {
+    const [rows] = await pool.query(
+      `SELECT id, received_stock_qty FROM purchase_order_items WHERE purchase_order_id = ?`,
+      [purchaseOrderId]
+    );
+    return Object.fromEntries(rows.map(r => [r.id, Number(r.received_stock_qty)]));
+  }
+
+  // S4.2-A CTO review: legacy verification only / accumulator rebuild support.
+  // NOT used in normal business flow (create/receive/getReceivedSummary all
+  // read the maintained received_stock_qty column). Kept as an independent,
+  // ledger-derived cross-check — sums actual_stock_qty straight from
+  // inventory_receive_items, bypassing the accumulator entirely — for auditing
+  // received_stock_qty against the source-of-truth ledger, or recomputing it
+  // from scratch if it's ever suspected to have drifted.
   async _getReceivedSoFarMap(runner, purchaseOrderId, excludeReceiveId = null) {
     const params = [purchaseOrderId];
     let excludeSql = '';
@@ -31,12 +39,6 @@ class InventoryReceiveService {
       params
     );
     return new Map(rows.map(r => [Number(r.poi_id), Number(r.received)]));
-  }
-
-  // Read-only summary for the frontend — same derivation, exposed per PO item id.
-  async getReceivedSummary(purchaseOrderId) {
-    const map = await this._getReceivedSoFarMap(pool, purchaseOrderId);
-    return Object.fromEntries(map);
   }
 
   async get(id) {
@@ -95,16 +97,15 @@ class InventoryReceiveService {
       // appear on more than one line under different supplier_purchase_option_id).
       // expected_stock_qty is the S4.0 snapshot (ordered_qty × conversion) — the
       // remaining-quantity basis is this, never purchase_order_items.quantity.
-      // received-so-far is derived from the receive ledger (see _getReceivedSoFarMap)
-      // — purchase_order_items.received_quantity is purchase-unit basis and is
-      // never read here to avoid re-introducing the unit-mixing bug.
+      // S4.2-A: received-so-far now reads purchase_order_items.received_stock_qty
+      // directly (authoritative accumulator) — purchase_order_items.received_quantity
+      // remains purchase-unit basis and is never read here to avoid the unit-mixing bug.
       const [poItems] = await conn.query(
-        `SELECT id, product_id, quantity, expected_stock_qty
+        `SELECT id, product_id, quantity, expected_stock_qty, received_stock_qty
          FROM purchase_order_items WHERE purchase_order_id = ?`,
         [purchase_order_id]
       );
       const poItemMap = new Map(poItems.map(i => [Number(i.id), i]));
-      const receivedSoFarMap = await this._getReceivedSoFarMap(conn, purchase_order_id);
 
       const lines = [];
       for (const item of items) {
@@ -120,7 +121,7 @@ class InventoryReceiveService {
           throw Object.assign(new Error('Số lượng thực nhận (kg) phải lớn hơn 0'), { status: 400 });
         }
         const expectedStockQty = Number(poItem.expected_stock_qty);
-        const remaining = expectedStockQty - (receivedSoFarMap.get(poItem.id) || 0);
+        const remaining = expectedStockQty - Number(poItem.received_stock_qty || 0);
         if (actualStockQty > remaining + 0.001) {
           throw Object.assign(
             new Error(
@@ -215,14 +216,6 @@ class InventoryReceiveService {
         throw Object.assign(new Error('Phiếu nhận hàng chưa xác định kho hàng hợp lệ, không thể nhận hàng'), { status: 400 });
       }
 
-      // S4.1-B CEO review: no purchase_order_items / purchase_orders reads-for-write
-      // or writes happen in this sprint — received-so-far is derived from the
-      // ledger, same as create(). Known limitation: unlike a locked PO-item row,
-      // this derived read isn't safe against two concurrent RECEIVE posts racing
-      // on the same PO line — accepted for S4.1-B; S4.1-D's maintained, lockable
-      // accumulator (received_stock_qty) is the intended fix for that gap.
-      const receivedSoFarMap = await this._getReceivedSoFarMap(conn, header.purchase_order_id, receiveId);
-
       for (const item of items) {
         const qty = Number(item.actual_stock_qty);
         if (!(qty > 0)) {
@@ -232,12 +225,17 @@ class InventoryReceiveService {
           );
         }
 
+        // S4.2-A: FOR UPDATE here — before validating remaining and before
+        // posting the movement — is what makes received_stock_qty a safe,
+        // concurrency-correct accumulator. A second receive() on the same PO
+        // line blocks on this SELECT until the first transaction commits or
+        // rolls back, so it always validates against the true post-commit
+        // remaining, closing the race the S4.1-B ledger-sum derivation had.
         // Looked up by purchase_order_item_id, not product_id — a product can
-        // appear on more than one PO line. Read-only: expected_stock_qty is the
-        // S4.0 snapshot; this row is never written by S4.1-B.
+        // appear on more than one PO line.
         const [[poItem]] = await conn.query(
-          `SELECT id, expected_stock_qty FROM purchase_order_items
-           WHERE id = ? AND purchase_order_id = ? LIMIT 1`,
+          `SELECT id, expected_stock_qty, received_stock_qty FROM purchase_order_items
+           WHERE id = ? AND purchase_order_id = ? LIMIT 1 FOR UPDATE`,
           [item.purchase_order_item_id, header.purchase_order_id]
         );
         if (!poItem) {
@@ -246,7 +244,7 @@ class InventoryReceiveService {
             { status: 400 }
           );
         }
-        const remaining = Number(poItem.expected_stock_qty) - (receivedSoFarMap.get(poItem.id) || 0);
+        const remaining = Number(poItem.expected_stock_qty) - Number(poItem.received_stock_qty || 0);
         if (qty > remaining + 0.001) {
           throw Object.assign(
             new Error(
@@ -271,6 +269,15 @@ class InventoryReceiveService {
           userId,
           header.warehouse_id
         );
+
+        // S4.2-A: increment only after the movement posts successfully — if
+        // postIn() throws (invalid product/warehouse/duplicate), this line is
+        // never reached and the whole transaction rolls back, so
+        // received_stock_qty and stock_quantity always stay consistent.
+        await conn.query(
+          `UPDATE purchase_order_items SET received_stock_qty = received_stock_qty + ? WHERE id = ?`,
+          [qty, poItem.id]
+        );
       }
 
       await conn.query(
@@ -278,11 +285,11 @@ class InventoryReceiveService {
         [userId || null, receiveId]
       );
 
-      // S4.1-B CEO review: Purchase Order aggregate/status is NOT touched this
-      // sprint — no accumulation, no status recalculation. purchase_orders.status
-      // stays exactly what it was before this receive; Sprint S4.1-D owns updating
-      // it. po.status was already fetched above only to gate whether receiving
-      // is allowed at all.
+      // S4.2-A scope: received_stock_qty (above) is now maintained, but
+      // purchase_orders.status is NOT recalculated here — it stays exactly what
+      // it was before this receive. Status transitions (PARTIAL_RECEIVED/RECEIVED)
+      // are S4.2-B. po.status was already fetched above only to gate whether
+      // receiving is allowed at all.
       await conn.commit();
       return {
         id: receiveId,

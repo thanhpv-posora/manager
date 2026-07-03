@@ -285,17 +285,35 @@ class InventoryReceiveService {
         [userId || null, receiveId]
       );
 
-      // S4.2-A scope: received_stock_qty (above) is now maintained, but
-      // purchase_orders.status is NOT recalculated here — it stays exactly what
-      // it was before this receive. Status transitions (PARTIAL_RECEIVED/RECEIVED)
-      // are S4.2-B. po.status was already fetched above only to gate whether
-      // receiving is allowed at all.
+      // S4.2-B: recompute purchase_orders.status from the just-updated
+      // received_stock_qty accumulator, in the same transaction as the
+      // movement + accumulator update above.
+      // remaining is expected_stock_qty - received_stock_qty (same basis used
+      // throughout this file); the 0.001 tolerance matches the existing
+      // over-receipt guard above.
+      const [[poStats]] = await conn.query(
+        `SELECT
+           SUM(CASE WHEN expected_stock_qty - received_stock_qty > 0.001 THEN 1 ELSE 0 END) remaining_cnt,
+           SUM(CASE WHEN received_stock_qty > 0 THEN 1 ELSE 0 END) received_cnt
+         FROM purchase_order_items WHERE purchase_order_id = ?`,
+        [header.purchase_order_id]
+      );
+      let newPoStatus = po.status;
+      if (Number(poStats.remaining_cnt) === 0) {
+        newPoStatus = 'RECEIVED';
+      } else if (Number(poStats.received_cnt) > 0) {
+        newPoStatus = 'PARTIAL_RECEIVED';
+      }
+      if (newPoStatus !== po.status) {
+        await conn.query(`UPDATE purchase_orders SET status = ? WHERE id = ?`, [newPoStatus, header.purchase_order_id]);
+      }
+
       await conn.commit();
       return {
         id: receiveId,
         receive_code: header.receive_code,
         status: 'RECEIVED',
-        purchase_order_status: po.status,
+        purchase_order_status: newPoStatus,
         message: 'Đã nhận hàng và cập nhật tồn kho',
       };
     } catch (e) {

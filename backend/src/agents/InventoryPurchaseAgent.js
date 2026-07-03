@@ -251,7 +251,7 @@ class InventoryPurchaseAgent {
             throw Object.assign(new Error('Phiếu đã có hàng nhập kho, không thể hủy'), { status: 400 });
           const [[{ rx_count }]] = await conn.query(
             `SELECT COUNT(*) rx_count FROM purchase_order_items
-             WHERE purchase_order_id=? AND received_quantity > 0`, [id]
+             WHERE purchase_order_id=? AND received_stock_qty > 0`, [id]
           );
           if (Number(rx_count) > 0)
             throw Object.assign(new Error('Phiếu đã có dòng hàng được nhận, không thể hủy'), { status: 400 });

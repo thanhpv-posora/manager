@@ -439,7 +439,7 @@ export default function InventoryPurchases() {
             </select>
           </div>
           <button className="btn secondary" onClick={loadList} disabled={listLoading}>Tải lại</button>
-          <button className="btn" style={{ marginLeft: 'auto' }} onClick={openNew}>+ Tạo phiếu nhập</button>
+          <button className="btn" style={{ marginLeft: 'auto' }} onClick={openNew}>+ Tạo phiếu mua hàng</button>
         </div>
 
         <div className="card">
@@ -529,7 +529,7 @@ export default function InventoryPurchases() {
                 </div>
                 <div className="actions" style={{ marginTop: 12 }}>
                   <button className="btn" onClick={saveHeader} disabled={hdrSaving}>
-                    {hdrSaving ? 'Đang lưu...' : (order ? 'Lưu thay đổi' : 'Tạo phiếu nhập')}
+                    {hdrSaving ? 'Đang lưu...' : (order ? 'Lưu thay đổi' : 'Tạo phiếu mua hàng')}
                   </button>
                   {order && <button className="btn secondary" onClick={() => setHdrEditing(false)}>Đóng</button>}
                 </div>

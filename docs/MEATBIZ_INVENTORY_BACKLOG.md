@@ -33,3 +33,9 @@
 - Export Excel Purchase Order
 - Export Excel Receive Voucher
 - Warehouse Ledger
+
+---
+
+## S4.x Future Optimization
+
+- Timeline API should move from JS merge/sort/paginate to SQL UNION ALL with ORDER BY event_time and LIMIT/OFFSET when timeline volume grows.

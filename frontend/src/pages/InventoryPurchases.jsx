@@ -6,13 +6,32 @@ import { showSuccess, showError, showWarning } from '../utils/toast';
 import EnterpriseAutocomplete from '../components/common/EnterpriseAutocomplete';
 import MoneyInput from '../components/MoneyInput';
 
-const STATUS_LABEL = { DRAFT: 'Nháp', CONFIRMED: 'Đã xác nhận', CANCELLED: 'Đã hủy' };
+const STATUS_LABEL = {
+  DRAFT: 'Nháp',
+  CONFIRMED: 'Đã xác nhận',
+  PARTIAL_RECEIVED: 'Nhận một phần',
+  RECEIVED: 'Đã nhận đủ',
+  SHORT_CLOSED: 'Đã đóng phần còn lại',
+  CANCELLED: 'Đã hủy',
+};
 const STATUS_STYLE = {
-  DRAFT:     { background: '#f3f4f6', color: '#374151' },
-  CONFIRMED: { background: '#dcfce7', color: '#166534' },
-  CANCELLED: { background: '#fee2e2', color: '#991b1b' },
+  DRAFT:            { background: '#f3f4f6', color: '#374151' },
+  CONFIRMED:        { background: '#dcfce7', color: '#166534' },
+  PARTIAL_RECEIVED: { background: '#fef9c3', color: '#854d0e' },
+  RECEIVED:         { background: '#bbf7d0', color: '#166534' },
+  SHORT_CLOSED:     { background: '#e5e7eb', color: '#4b5563' },
+  CANCELLED:        { background: '#fee2e2', color: '#991b1b' },
 };
 const badge = s => ({ ...STATUS_STYLE[s] || {}, borderRadius: 4, padding: '2px 8px', fontSize: 12, fontWeight: 600, display: 'inline-block' });
+
+// ── Receive History Timeline (S4.3) ───────────────────────────────────────
+const RECEIVE_STATUS_LABEL = { PENDING: 'Chờ nhập kho', RECEIVED: 'Đã nhập kho', CANCELLED: 'Đã hủy' };
+const RECEIVE_STATUS_STYLE = {
+  PENDING:   { background: '#fef9c3', color: '#854d0e' },
+  RECEIVED:  { background: '#dcfce7', color: '#166534' },
+  CANCELLED: { background: '#fee2e2', color: '#991b1b' },
+};
+const receiveBadge = s => ({ ...(RECEIVE_STATUS_STYLE[s] || { background: '#f3f4f6', color: '#374151' }), borderRadius: 4, padding: '2px 8px', fontSize: 12, fontWeight: 600, display: 'inline-block' });
 const LBL = { fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 3, color: '#374151' };
 const REQ = <span style={{ color: '#ef4444' }}> *</span>;
 
@@ -96,6 +115,15 @@ export default function InventoryPurchases() {
   // order detail
   const [order, setOrder] = useState(null);
   const [orderLoading, setOrderLoading] = useState(false);
+  const [detailTab, setDetailTab] = useState('detail'); // 'detail' | 'timeline'
+
+  // receive history timeline (S4.3, read-only)
+  const [timeline, setTimeline] = useState([]);
+  const [timelineSummary, setTimelineSummary] = useState(null);
+  const [timelinePage, setTimelinePage] = useState(1);
+  const [timelineTotal, setTimelineTotal] = useState(0);
+  const TIMELINE_PAGE_SIZE = 20;
+  const [timelineLoading, setTimelineLoading] = useState(false);
 
   // header form
   const [hdrForm, setHdrForm] = useState(mkHdr());
@@ -118,6 +146,11 @@ export default function InventoryPurchases() {
   const [addDlgSaving, setAddDlgSaving]           = useState(false);
   const [statusSaving, setStatusSaving]           = useState(false);
   const addDlgProductRef                          = useRef();
+
+  // short close dialog
+  const [shortCloseDlg, setShortCloseDlg]         = useState(false);
+  const [shortCloseReason, setShortCloseReason]   = useState('');
+  const [shortCloseSaving, setShortCloseSaving]   = useState(false);
 
   // ── Master data ────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -176,6 +209,28 @@ export default function InventoryPurchases() {
     setPoRows(mergePoRows(catalog, order?.items || []));
   }, [catalog, order?.items]);
 
+  // ── Receive History Timeline (S4.3, read-only) ────────────────────────────
+  const loadTimeline = useCallback(async (id, page) => {
+    setTimelineLoading(true);
+    try {
+      const r = await api.get(`/inventory-purchases/${id}/timeline`, {
+        params: { page, pageSize: TIMELINE_PAGE_SIZE },
+      });
+      setTimeline(r.data?.items || []);
+      setTimelineSummary(r.data?.summary || null);
+      setTimelineTotal(Number(r.data?.total || 0));
+    } catch (e) {
+      showError(e.response?.data?.message || e.message || 'Không tải được lịch sử nhận hàng');
+      setTimeline([]);
+      setTimelineSummary(null);
+      setTimelineTotal(0);
+    } finally { setTimelineLoading(false); }
+  }, []);
+
+  useEffect(() => {
+    if (detailTab === 'timeline' && order?.id) loadTimeline(order.id, timelinePage);
+  }, [detailTab, order?.id, timelinePage, loadTimeline]);
+
   // ── Add-dialog SPO load ────────────────────────────────────────────────────
   useEffect(() => {
     if (!addDlg?.product_id || !order?.partner_id) { setAddDlgOpts([]); return; }
@@ -196,16 +251,16 @@ export default function InventoryPurchases() {
 
   // ── Navigation ─────────────────────────────────────────────────────────────
   const openNew = () => {
-    setView('order'); setOrder(null); setPoRows([]);
+    setView('order'); setOrder(null); setPoRows([]); setDetailTab('detail'); setTimeline([]); setTimelinePage(1);
     setHdrForm(mkHdr()); setHdrEditing(true);
   };
 
   const openOrder = async id => {
-    setView('order'); setOrder(null); setPoRows([]); setHdrEditing(false);
+    setView('order'); setOrder(null); setPoRows([]); setHdrEditing(false); setDetailTab('detail'); setTimeline([]); setTimelinePage(1);
     await loadOrder(id);
   };
 
-  const goList = () => { setView('list'); setOrder(null); setPoRows([]); };
+  const goList = () => { setView('list'); setOrder(null); setPoRows([]); setDetailTab('detail'); setTimeline([]); setTimelinePage(1); };
 
   // ── Header CRUD ────────────────────────────────────────────────────────────
   const saveHeader = async () => {
@@ -289,6 +344,21 @@ export default function InventoryPurchases() {
       await loadOrder(order.id);
     } catch (e) { showError(e.response?.data?.message || e.message || 'Lỗi'); }
     finally { setStatusSaving(false); }
+  };
+
+  // ── Short close ────────────────────────────────────────────────────────────
+  const openShortCloseDlg = () => { setShortCloseReason(''); setShortCloseDlg(true); };
+
+  const submitShortClose = async () => {
+    if (!shortCloseReason.trim()) { showWarning('Cần nhập lý do đóng phần còn lại'); return; }
+    setShortCloseSaving(true);
+    try {
+      const r = await api.patch(`/inventory-purchases/${order.id}/short-close`, { reason: shortCloseReason.trim() });
+      showSuccess(r.data.message || 'Đã đóng phần còn lại');
+      setShortCloseDlg(false);
+      await loadOrder(order.id);
+    } catch (e) { showError(e.response?.data?.message || e.message || 'Lỗi'); }
+    finally { setShortCloseSaving(false); }
   };
 
   // ── Add-dialog: open / save ────────────────────────────────────────────────
@@ -473,6 +543,20 @@ export default function InventoryPurchases() {
               </div>
             )}
           </div>
+
+          {/* ── Tabs ── */}
+          {order && (
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+              <button className={detailTab === 'detail' ? 'btn' : 'btn secondary'} onClick={() => setDetailTab('detail')}>
+                Chi tiết
+              </button>
+              <button className={detailTab === 'timeline' ? 'btn' : 'btn secondary'} onClick={() => setDetailTab('timeline')}>
+                Lịch sử nhận hàng
+              </button>
+            </div>
+          )}
+
+          {detailTab === 'detail' && <>
 
           {/* ── Unified PO Detail Grid ── */}
           {order && (
@@ -686,14 +770,123 @@ export default function InventoryPurchases() {
             )}
           </div>}
 
-          {/* Cancel — CONFIRMED (no received inventory) */}
-          {order && order.status === 'CONFIRMED' && <div className="card">
+          {/* Cancel (CONFIRMED, no received inventory) + Short Close (CONFIRMED / PARTIAL_RECEIVED) */}
+          {order && (order.status === 'CONFIRMED' || order.status === 'PARTIAL_RECEIVED') && <div className="card">
             <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-              <button className="btn danger" onClick={() => changeStatus('CANCELLED')} disabled={statusSaving}>
-                Hủy phiếu
+              {order.status === 'CONFIRMED' && (
+                <button className="btn danger" onClick={() => changeStatus('CANCELLED')} disabled={statusSaving}>
+                  Hủy phiếu
+                </button>
+              )}
+              <button className="btn secondary" onClick={openShortCloseDlg} disabled={statusSaving}>
+                Đóng phần còn lại
               </button>
             </div>
           </div>}
+
+          {/* Short close reason — SHORT_CLOSED */}
+          {order && order.status === 'SHORT_CLOSED' && order.short_close_reason && <div className="card">
+            <span style={{ color: '#6b7280', fontSize: 12 }}>Lý do đóng phần còn lại</span>
+            <div style={{ marginTop: 4 }}>{order.short_close_reason}</div>
+          </div>}
+
+          </>}
+
+          {/* ── Receive History Timeline (read-only) ── */}
+          {detailTab === 'timeline' && order && (
+            <>
+              {/* Summary cards */}
+              {timelineSummary && (
+                <div className="card">
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6,1fr)', gap: '8px 16px', fontSize: 14 }}>
+                    <div><span style={{ color: '#6b7280', fontSize: 12 }}>Đặt hàng (kg)</span><div><b>{fmtQty(timelineSummary.expected_qty)}</b></div></div>
+                    <div><span style={{ color: '#6b7280', fontSize: 12 }}>Đã nhận (kg)</span><div><b>{fmtQty(timelineSummary.received_qty)}</b></div></div>
+                    <div><span style={{ color: '#6b7280', fontSize: 12 }}>Còn lại (kg)</span><div><b>{fmtQty(timelineSummary.remaining_qty)}</b></div></div>
+                    <div><span style={{ color: '#6b7280', fontSize: 12 }}>Hoàn thành</span><div><b>{fmtQty(timelineSummary.completion_percent)}%</b></div></div>
+                    <div><span style={{ color: '#6b7280', fontSize: 12 }}>Số lần nhận</span><div><b>{timelineSummary.receive_count}</b></div></div>
+                    <div><span style={{ color: '#6b7280', fontSize: 12 }}>Trạng thái</span><div><span style={badge(timelineSummary.status)}>{STATUS_LABEL[timelineSummary.status] || timelineSummary.status}</span></div></div>
+                  </div>
+                </div>
+              )}
+
+              <div className="card">
+                <h3 style={{ marginTop: 0, marginBottom: 12 }}>Lịch sử nhận hàng</h3>
+                {timelineLoading && <p className="muted">Đang tải...</p>}
+                {!timelineLoading && timeline.length === 0 && (
+                  <p className="muted">Chưa có lịch sử nhận hàng.</p>
+                )}
+                {!timelineLoading && timeline.length > 0 && (
+                  <>
+                    <div style={{ position: 'relative', paddingLeft: 22 }}>
+                      <div style={{ position: 'absolute', left: 5, top: 6, bottom: 6, width: 2, background: '#e5e7eb' }} />
+                      {timeline.map((ev, idx) => (
+                        <div key={idx} style={{ position: 'relative', marginBottom: 16 }}>
+                          <div style={{
+                            position: 'absolute', left: -22, top: 6, width: 10, height: 10, borderRadius: '50%',
+                            background: ev.type === 'SHORT_CLOSE' ? '#f97316' : '#16a34a',
+                          }} />
+                          {ev.type === 'RECEIVE' ? (
+                            <div className="card" style={{ margin: 0 }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                                <span>
+                                  📦{' '}
+                                  {/* TODO: InventoryReceives.jsx has no route/id-based deep link
+                                      to open a specific receive voucher from outside its own page.
+                                      Kept as link-style text only until that navigation exists —
+                                      do not invent a new route. */}
+                                  <span style={{ color: '#2563eb', textDecoration: 'underline', cursor: 'pointer' }}
+                                    title="Xem phiếu nhận hàng (chưa khả dụng)">
+                                    <b>{ev.receive_code}</b>
+                                  </span>
+                                </span>
+                                <span style={receiveBadge(ev.status)}>{RECEIVE_STATUS_LABEL[ev.status] || ev.status}</span>
+                              </div>
+                              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '6px 16px', fontSize: 13 }}>
+                                <div><span style={{ color: '#6b7280', fontSize: 12 }}>Ngày nhận</span><div>{fmtDate(ev.receive_date)}</div></div>
+                                <div><span style={{ color: '#6b7280', fontSize: 12 }}>Kho</span><div>{ev.warehouse_name || '—'}</div></div>
+                                <div><span style={{ color: '#6b7280', fontSize: 12 }}>Người nhận</span><div>{ev.received_by_name || '—'}</div></div>
+                                <div><span style={{ color: '#6b7280', fontSize: 12 }}>Số lượng nhận (kg)</span><div><b>{fmtQty(ev.total_qty)}</b></div></div>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="card" style={{ margin: 0, border: '1px solid #f97316' }}>
+                              <div style={{ marginBottom: 8 }}>
+                                <span style={{ background: '#ffedd5', color: '#9a3412', borderRadius: 4, padding: '2px 8px', fontSize: 12, fontWeight: 600, display: 'inline-block' }}>
+                                  ⚠ ĐÃ ĐÓNG PHẦN CÒN LẠI
+                                </span>
+                              </div>
+                              <div style={{ fontSize: 13, marginBottom: 8 }}>{ev.reason || '—'}</div>
+                              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 16px', fontSize: 13 }}>
+                                <div><span style={{ color: '#6b7280', fontSize: 12 }}>Đóng bởi</span><div>{ev.short_closed_by_name || '—'}</div></div>
+                                <div><span style={{ color: '#6b7280', fontSize: 12 }}>Thời điểm</span><div>{ev.short_closed_at || '—'}</div></div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+
+                    {timelineTotal > TIMELINE_PAGE_SIZE && (
+                      <div style={{ display: 'flex', justifyContent: 'center', gap: 10, alignItems: 'center', marginTop: 8 }}>
+                        <button className="btn secondary" disabled={timelinePage <= 1}
+                          onClick={() => setTimelinePage(p => Math.max(1, p - 1))}>
+                          ← Trước
+                        </button>
+                        <span style={{ fontSize: 13, color: '#6b7280' }}>
+                          Trang {timelinePage} / {Math.max(1, Math.ceil(timelineTotal / TIMELINE_PAGE_SIZE))}
+                        </span>
+                        <button className="btn secondary"
+                          disabled={timelinePage >= Math.ceil(timelineTotal / TIMELINE_PAGE_SIZE)}
+                          onClick={() => setTimelinePage(p => p + 1)}>
+                          Sau →
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </>
+          )}
 
         </>}
       </>}
@@ -769,6 +962,32 @@ export default function InventoryPurchases() {
                 {addDlgSaving ? 'Đang lưu...' : '+ Thêm'}
               </button>
               <button className="btn secondary" onClick={() => { setAddDlg(null); setAddDlgOpts([]); }}>
+                Đóng
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Short Close Dialog ────────────────────────────────────────────── */}
+      {shortCloseDlg && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1200,
+          display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onMouseDown={e => { if (e.target === e.currentTarget) setShortCloseDlg(false); }}>
+          <div className="card" style={{ width: 420, maxWidth: '92vw' }}>
+            <h3 style={{ margin: '0 0 16px' }}>Đóng phần còn lại</h3>
+            <div style={{ marginBottom: 14 }}>
+              <label style={LBL}>Lý do{REQ}</label>
+              <textarea className="input" rows={3} style={{ width: '100%', resize: 'vertical' }}
+                value={shortCloseReason}
+                onChange={e => setShortCloseReason(e.target.value)}
+                placeholder="Nhập lý do đóng phần còn lại của phiếu..." />
+            </div>
+            <div className="actions">
+              <button className="btn" onClick={submitShortClose} disabled={shortCloseSaving}>
+                {shortCloseSaving ? 'Đang lưu...' : 'Đóng phiếu'}
+              </button>
+              <button className="btn secondary" onClick={() => setShortCloseDlg(false)}>
                 Đóng
               </button>
             </div>

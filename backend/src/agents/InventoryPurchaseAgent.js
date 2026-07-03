@@ -2,6 +2,7 @@
 const pool = require('../config/db');
 const { nextCode } = require('../utils/code');
 const { normalizeInventoryMode } = require('../utils/inventoryMode');
+const PurchaseReceiveTimelineService = require('../services/PurchaseReceiveTimelineService');
 
 class InventoryPurchaseAgent {
   constructor() {
@@ -44,7 +45,8 @@ class InventoryPurchaseAgent {
       `SELECT po.id, po.order_code, po.partner_id, po.supplier_id,
               COALESCE(p.name, s.name) supplier_name,
               po.purchase_date, po.status, po.total_amount,
-              po.note, po.reference_no, po.created_by, po.created_at, po.updated_at
+              po.note, po.reference_no, po.created_by, po.created_at, po.updated_at,
+              po.short_close_reason, po.short_closed_by, po.short_closed_at
        FROM purchase_orders po
        LEFT JOIN customers p ON p.id = po.partner_id
        LEFT JOIN suppliers s ON s.id = po.supplier_id
@@ -64,6 +66,12 @@ class InventoryPurchaseAgent {
       [id]
     );
     return { ...order, items };
+  }
+
+  // S4.3: Receive History Timeline — thin passthrough. Business query lives in
+  // PurchaseReceiveTimelineService; this agent does not contain SQL for it.
+  async timeline(id, params) {
+    return PurchaseReceiveTimelineService.getTimeline(id, params);
   }
 
   async create(body, userId) {
@@ -261,6 +269,41 @@ class InventoryPurchaseAgent {
       await conn.query(`UPDATE purchase_orders SET status=? WHERE id=?`, [status, id]);
       await conn.commit();
       return { message: status === 'CONFIRMED' ? 'Đã xác nhận phiếu nhập' : 'Đã hủy phiếu nhập' };
+    } catch (e) { await conn.rollback(); throw e; } finally { conn.release(); }
+  }
+
+  // S4.2-C: Short Close — closes out the undelivered remainder of a PO without
+  // an inventory movement. Allowed only from CONFIRMED or PARTIAL_RECEIVED;
+  // once SHORT_CLOSED, InventoryReceiveService.receive() and this agent's own
+  // CANCEL guard both key off purchase_orders.status, so neither further
+  // receiving nor cancelling is separately re-checked here — status alone
+  // already excludes SHORT_CLOSED from both of those status lists.
+  async shortClose(id, reason, userId) {
+    const trimmedReason = String(reason || '').trim();
+    if (!trimmedReason)
+      throw Object.assign(new Error('Cần nhập lý do đóng phần còn lại'), { status: 400 });
+
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [[row]] = await conn.query(
+        `SELECT id, status FROM purchase_orders WHERE id=? AND del_flg=0 FOR UPDATE`, [id]
+      );
+      if (!row) throw Object.assign(new Error('Không tìm thấy phiếu nhập'), { status: 404 });
+      if (!['CONFIRMED', 'PARTIAL_RECEIVED'].includes(row.status))
+        throw Object.assign(
+          new Error(`Không thể đóng phần còn lại ở trạng thái "${row.status}". Cần CONFIRMED hoặc PARTIAL_RECEIVED`),
+          { status: 400 }
+        );
+
+      await conn.query(
+        `UPDATE purchase_orders
+         SET status='SHORT_CLOSED', short_close_reason=?, short_closed_by=?, short_closed_at=NOW()
+         WHERE id=?`,
+        [trimmedReason, userId || null, id]
+      );
+      await conn.commit();
+      return { message: 'Đã đóng phần còn lại của phiếu nhập' };
     } catch (e) { await conn.rollback(); throw e; } finally { conn.release(); }
   }
 

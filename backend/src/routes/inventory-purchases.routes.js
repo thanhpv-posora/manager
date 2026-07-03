@@ -15,6 +15,15 @@ router.get('/:id', auth(['ADMIN', 'STAFF']), async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+router.get('/:id/timeline', auth(['ADMIN', 'STAFF']), async (req, res, next) => {
+  try {
+    res.json(await InventoryPurchaseAgent.timeline(req.params.id, {
+      page: req.query.page,
+      pageSize: req.query.pageSize,
+    }));
+  } catch (e) { next(e); }
+});
+
 router.post('/', auth(['ADMIN', 'STAFF']), async (req, res, next) => {
   try { res.json(await InventoryPurchaseAgent.create(req.body, req.user.id)); } catch (e) { next(e); }
 });
@@ -41,6 +50,10 @@ router.delete('/:id/items/:itemId', auth(['ADMIN', 'STAFF']), async (req, res, n
 
 router.patch('/:id/status', auth(['ADMIN', 'STAFF']), async (req, res, next) => {
   try { res.json(await InventoryPurchaseAgent.updateStatus(req.params.id, req.body.status, req.user.id)); } catch (e) { next(e); }
+});
+
+router.patch('/:id/short-close', auth(['ADMIN', 'STAFF']), async (req, res, next) => {
+  try { res.json(await InventoryPurchaseAgent.shortClose(req.params.id, req.body.reason, req.user.id)); } catch (e) { next(e); }
 });
 
 module.exports = router;

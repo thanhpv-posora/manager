@@ -62,12 +62,22 @@ router.post('/login', loginLimiter, async (req,res,next)=>{
     }
 
     if (!ok) {
+      // Auth lock fix: if locked_until has already expired, treat the failed
+      // count as 0 before applying this new failure — otherwise stale counts
+      // from a past, already-expired lockout re-trigger a lock on a single
+      // new wrong attempt. failed_login_count is reassigned first so the
+      // locked_until CASE below can read its updated value (MySQL evaluates
+      // single-table UPDATE assignments left to right).
       await pool.query(
         `UPDATE users
-         SET failed_login_count = failed_login_count + 1,
+         SET failed_login_count = CASE
+               WHEN locked_until IS NOT NULL AND locked_until <= NOW() THEN 1
+               ELSE failed_login_count + 1
+             END,
              last_failed_login = NOW(),
              locked_until = CASE
-               WHEN failed_login_count + 1 >= 5 THEN DATE_ADD(NOW(), INTERVAL 15 MINUTE)
+               WHEN failed_login_count >= 5 THEN DATE_ADD(NOW(), INTERVAL 15 MINUTE)
+               WHEN locked_until IS NOT NULL AND locked_until <= NOW() THEN NULL
                ELSE locked_until
              END
          WHERE id = ?`,

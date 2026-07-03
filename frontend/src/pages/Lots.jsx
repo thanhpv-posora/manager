@@ -39,10 +39,6 @@ export default function Lots(){
   });
   const[rows,setRows]=useState([]);
   const[s,setS]=useState([]);
-  const[supplier,setSupplier]=useState({});
-  const[editingSupplier,setEditingSupplier]=useState(null);
-  const[supplierOpen,setSupplierOpen]=useState(false);
-  const[supplierListOpen,setSupplierListOpen]=useState(false);
   const[f,setF]=useState(defaultLotForm);
   const[deductOpen,setDeductOpen]=useState(false);
   const[pay,setPay]=useState({payment_date:today,type:'ADVANCE',payment_method:'CASH'});
@@ -217,7 +213,7 @@ export default function Lots(){
       window.removeEventListener('scroll',update);
       window.removeEventListener('resize',update);
     };
-  },[supplierOpen,supplierListOpen,deductOpen]);
+  },[deductOpen]);
 
 
   const load=async()=>{
@@ -279,30 +275,6 @@ export default function Lots(){
     final:a.final+n(r.total_weight),
     cost:a.cost+n(r.total_cost)
   }),{count:0,animals:0,male:0,female:0,raw:0,rib:0,ribMeat:0,deduct:0,fragment:0,final:0,cost:0});
-
-  const resetSupplier=()=>{setEditingSupplier(null);setSupplier({billing_calendar_type:'SOLAR',is_active:1,male_price:200000,female_price:195000,fragment_price:100000})};
-  const saveSupplier=async()=>{
-    try{
-      if(!supplier.name)return alert('Nhập tên nhà cung cấp');
-      const payload={...supplier,billing_calendar_type:String(supplier.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR'};
-      if(editingSupplier)await api.put('/suppliers/'+editingSupplier,payload);
-      else await api.post('/suppliers',payload);
-      resetSupplier();
-      setSupplierOpen(false);
-      setSupplierListOpen(false);
-      await load();
-    }catch(e){
-      alert(e.response?.data?.message||e.message||'Lưu nhà cung cấp thất bại');
-    }
-  };
-  const editSupplier=x=>{setEditingSupplier(x.id);setSupplier({...x,billing_calendar_type:x.billing_calendar_type||'SOLAR',is_active:1});setSupplierOpen(true)};
-  const deleteSupplier=async id=>{
-    const reason=prompt('Nhập lý do xóa mềm nhà cung cấp:');
-    if(reason){
-      try{await api.delete('/suppliers/'+id,{data:{reason}});await load()}
-      catch(e){alert(e.response?.data?.message||e.message)}
-    }
-  };
 
   const cancelEditMode=()=>{
     setEditingLotId(null);
@@ -554,52 +526,6 @@ export default function Lots(){
     />
     <div className="grid cols-2 lots-agent-page">
       <div ref={formRef} className="card lots-entry-card">
-        <div className="section-toggle-header">
-          <div>
-            <h3 style={{marginBottom:4}}>Nhà cung cấp</h3>
-            <p className="muted" style={{marginTop:0}}>Thu gọn form và danh sách nhà cung cấp để màn nhập lô sạch hơn.</p>
-          </div>
-          <div className="actions" style={{marginTop:0}}>
-            <button
-              type="button"
-              className="btn secondary"
-              onClick={()=>{
-                if(supplierOpen){resetSupplier()}
-                setSupplierOpen(v=>!v);
-              }}
-            >
-              {supplierOpen?'− Thu gọn form':'+ Thêm / sửa NCC'}
-            </button>
-            <button
-              type="button"
-              className="btn secondary"
-              onClick={()=>setSupplierListOpen(v=>!v)}
-            >
-              {supplierListOpen?'− Thu gọn danh sách':'📦 Danh sách NCC'}
-            </button>
-          </div>
-        </div>
-
-        {supplierOpen&&<>
-          <h3>{editingSupplier?'Sửa nhà cung cấp':'Thêm nhà cung cấp'}</h3>
-          <div className="form-grid">
-            <input className="input" placeholder="Tên NCC" value={supplier.name||''} onChange={e=>setSupplier({...supplier,name:e.target.value})}/>
-            <input className="input" placeholder="SĐT" value={supplier.phone||''} onChange={e=>setSupplier({...supplier,phone:e.target.value})}/>
-            <input className="input" placeholder="Địa chỉ" value={supplier.address||''} onChange={e=>setSupplier({...supplier,address:e.target.value})}/>
-            <input className="input" placeholder="Ghi chú" value={supplier.note||''} onChange={e=>setSupplier({...supplier,note:e.target.value})}/>
-            <label><span className="muted">Lịch tính bill NCC</span><select className="select" value={supplier.billing_calendar_type||'SOLAR'} onChange={e=>setSupplier({...supplier,billing_calendar_type:e.target.value})}><option value="SOLAR">Dương lịch</option><option value="LUNAR">Âm lịch</option></select></label>
-            <label><span className="muted">Giá bò xô đực / kg</span><MoneyInput placeholder="208,000" value={supplier.male_price??''} onChange={v=>setSupplier({...supplier,male_price:v})}/></label>
-            <label><span className="muted">Giá bò xô cái / kg</span><MoneyInput placeholder="195,000" value={supplier.female_price??''} onChange={v=>setSupplier({...supplier,female_price:v})}/></label>
-            <label><span className="muted">Giá thịt vụn / kg</span><MoneyInput placeholder="100,000" value={supplier.fragment_price??''} onChange={v=>setSupplier({...supplier,fragment_price:v})}/></label>
-          </div>
-          <div className="actions" style={{marginTop:10}}>
-            <button className="btn secondary" onClick={saveSupplier}>{editingSupplier?'Lưu sửa NCC':'+ Thêm NCC'}</button>
-            <button className="btn secondary" onClick={resetSupplier}>Làm mới</button>
-          </div>
-        </>}
-
-        {supplierListOpen&&<table className="table"><tbody>{s.map(x=><tr key={x.id}><td>{x.name}<br/><span className="muted">{x.phone}</span><br/><span className="badge">{x.billing_calendar_type==='LUNAR'?'Âm lịch':'Dương lịch'}</span><br/><span className="muted">Đực {money(x.male_price||0)} · Cái {money(x.female_price||0)} · Vụn {money(x.fragment_price||0)}</span></td><td><button className="btn secondary" onClick={()=>editSupplier(x)}>Sửa</button> <button className="btn danger" onClick={()=>deleteSupplier(x.id)}>Xóa mềm</button></td></tr>)}</tbody></table>}
-
         {editingLotId&&(()=>{const el=rows.find(r=>String(r.id)===String(editingLotId));return(<div style={{background:'#fffbe6',border:'1.5px solid #f59e0b',borderRadius:8,padding:'10px 14px',marginBottom:10}}>
           <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
             <span style={{fontWeight:700,fontSize:14}}>🟡 ĐANG CHỈNH SỬA NHẬP HÀNG</span>

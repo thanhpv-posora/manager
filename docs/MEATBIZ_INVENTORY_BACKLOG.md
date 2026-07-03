@@ -15,6 +15,7 @@
 
 ## Technical Debt
 
+- STAB-005: Remove direct stock update from `InventoryService.applyOrderInventory()`. Sales OUT must delegate to `InventoryMovementService.postOut()`.
 - Manual browser smoke test required before release
 - Event Stream / Business Events
 - Soft delete purchase_order_items

@@ -963,6 +963,15 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
     // alongside the purchase_orders.status transition logic.
     await safeAddColumn(conn, 'purchase_order_items', 'received_stock_qty', 'received_stock_qty DECIMAL(15,3) NOT NULL DEFAULT 0');
 
+    // S4.1-C: Inventory Movement Wiring — stock_transactions now records which
+    // warehouse a movement affected. Nullable: only the Receive Voucher path
+    // (InventoryReceiveService.receive(), passing inventory_receives.warehouse_id)
+    // populates this in S4.1-C; other IN/OUT/ADJUSTMENT callers (initial product
+    // stock, sales, manual adjustments) don't participate in warehouse tracking
+    // yet and are left untouched — out of this sprint's scope.
+    await safeAddColumn(conn, 'stock_transactions', 'warehouse_id', 'warehouse_id BIGINT NULL');
+    await safeAddIndex(conn, 'stock_transactions', 'idx_stock_transactions_warehouse', 'INDEX idx_stock_transactions_warehouse(warehouse_id)');
+
     // INV-002: add RECEIVE_VOUCHER to stock_transactions.reference_type ENUM
     {
       const [[rtInfo]] = await conn.query(

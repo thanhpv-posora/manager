@@ -206,6 +206,15 @@ class InventoryReceiveService {
       );
       if (!items.length) throw Object.assign(new Error('Phiếu nhận hàng không có dòng hàng'), { status: 400 });
 
+      // S4.1-C: every RECEIVE_VOUCHER movement must carry a warehouse_id.
+      // create() resolves a default when none is given, but that fallback can
+      // itself return null (no default warehouse configured) — without this
+      // guard, postIn() silently skips its warehouse check for a falsy
+      // warehouseId and posts the movement with warehouse_id = NULL.
+      if (!header.warehouse_id) {
+        throw Object.assign(new Error('Phiếu nhận hàng chưa xác định kho hàng hợp lệ, không thể nhận hàng'), { status: 400 });
+      }
+
       // S4.1-B CEO review: no purchase_order_items / purchase_orders reads-for-write
       // or writes happen in this sprint — received-so-far is derived from the
       // ledger, same as create(). Known limitation: unlike a locked PO-item row,
@@ -248,6 +257,9 @@ class InventoryReceiveService {
           );
         }
 
+        // S4.1-C: InventoryMovementService is the only component that changes
+        // stock. header.warehouse_id was already resolved (default-fallback) at
+        // create() time in S4.1-A — wired through here, not re-derived.
         await InventoryService.in(
           conn,
           item.product_id,
@@ -256,7 +268,8 @@ class InventoryReceiveService {
           'RECEIVE_VOUCHER',
           receiveId,
           `Nhận hàng phiếu ${header.receive_code}`,
-          userId
+          userId,
+          header.warehouse_id
         );
       }
 

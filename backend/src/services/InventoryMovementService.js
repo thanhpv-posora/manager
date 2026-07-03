@@ -38,9 +38,13 @@ class InventoryMovementService {
    * @param {number|null} refId
    * @param {string|null} note
    * @param {number|null} userId
+   * @param {number|null} warehouseId — S4.1-C. Optional and additive: when supplied
+   *   (Receive Voucher always supplies it) it's validated to exist and recorded on
+   *   the movement row. Omitted by callers that don't participate in warehouse
+   *   tracking yet — behavior for them is unchanged.
    * @returns {{ stock_added: boolean, inventory_mode: string, qty_added: number }}
    */
-  async postIn(conn, productId, quantity, date, refType, refId, note, userId) {
+  async postIn(conn, productId, quantity, date, refType, refId, note, userId, warehouseId = null) {
     const [rows] = await conn.query(
       `SELECT id, name, inventory_mode FROM products WHERE id = ? AND del_flg = 0`,
       [productId]
@@ -51,6 +55,34 @@ class InventoryMovementService {
     const qty = normalizeNumber(quantity);
     if (qty <= 0) return { stock_added: false, inventory_mode: mode, qty_added: 0 };
 
+    // S4.1-C hardening: idempotency guard against crash/retry duplicate posting
+    // of a Receive Voucher. Scoped by product_id as well as reference_id —
+    // one receive voucher posts one IN movement per product line, so the
+    // natural duplicate key is (product_id, reference_type, reference_id, type).
+    // InventoryReceiveService.receive() already guards this at the voucher
+    // level (status must be PENDING), but InventoryMovementService is the
+    // sole writer of stock_quantity and must not depend on callers getting
+    // that right — this is the last line of defense before any write.
+    if (refType === 'RECEIVE_VOUCHER' && refId) {
+      const [dupRows] = await conn.query(
+        `SELECT id FROM stock_transactions
+         WHERE product_id = ? AND reference_type = 'RECEIVE_VOUCHER' AND reference_id = ? AND type = 'IN'
+         LIMIT 1`,
+        [productId, refId]
+      );
+      if (dupRows.length) {
+        throw new Error('Phiếu nhận hàng này đã được ghi nhận tồn kho cho sản phẩm này, không thể ghi trùng');
+      }
+    }
+
+    if (warehouseId) {
+      const [wRows] = await conn.query(
+        `SELECT id FROM warehouses WHERE id = ? AND is_active = 1`,
+        [warehouseId]
+      );
+      if (!wRows.length) throw new Error('Không tìm thấy kho hàng');
+    }
+
     const skipBalance = mode === 'NON_STOCK' || mode === 'CARCASS_PART';
     if (!skipBalance) {
       await conn.query(
@@ -60,9 +92,9 @@ class InventoryMovementService {
     }
     await conn.query(
       `INSERT INTO stock_transactions
-         (product_id, transaction_date, type, quantity, reference_type, reference_id, note, created_by)
-       VALUES (?, ?, 'IN', ?, ?, ?, ?, ?)`,
-      [productId, date || new Date(), qty, refType || 'MANUAL', refId || null, note || null, userId || null]
+         (product_id, transaction_date, type, quantity, reference_type, reference_id, note, created_by, warehouse_id)
+       VALUES (?, ?, 'IN', ?, ?, ?, ?, ?, ?)`,
+      [productId, date || new Date(), qty, refType || 'MANUAL', refId || null, note || null, userId || null, warehouseId || null]
     );
     return { stock_added: !skipBalance, inventory_mode: mode, qty_added: qty };
   }

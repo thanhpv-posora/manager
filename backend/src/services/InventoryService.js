@@ -23,8 +23,8 @@ class InventoryService {
 
   // ── Delegating wrappers ───────────────────────────────────────────────────────
 
-  async in(conn, productId, quantity, date, refType, refId, note, userId) {
-    return InventoryMovementService.postIn(conn, productId, quantity, date, refType, refId, note, userId);
+  async in(conn, productId, quantity, date, refType, refId, note, userId, warehouseId) {
+    return InventoryMovementService.postIn(conn, productId, quantity, date, refType, refId, note, userId, warehouseId);
   }
 
   async out(conn, productId, quantity, date, refType, refId, note, userId) {

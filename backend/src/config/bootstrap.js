@@ -1313,11 +1313,11 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
       ['product-import','Import mặt hàng từ ảnh','Nhập danh mục nhanh từ hình ảnh hoặc file dữ liệu.','product-import','Package','catalog',2,0,1,'ProductImageImport'],
       ['ocr-providers','Cấu hình OCR nâng cao','Thiết lập nhận diện hình ảnh và alias sản phẩm.','ocr-providers','Bot','catalog',3,0,1,'OCRProviders'],
       ['price-matrix','Bảng giá riêng','Sắp xếp danh mục và bảng giá theo từng bạn hàng.','price-matrix','TableProperties','catalog',4,1,1,'PriceMatrix'],
-      ['lots','Nhập hàng / Nhà cung cấp','Quản lý nhập lô, trọng lượng, thanh toán và nhà cung cấp.','lots','Truck','purchase',1,0,1,'Lots'],
+      ['lots','Nhập xô','Quản lý nhập lô, trọng lượng, thanh toán và nhà cung cấp.','lots','Truck','purchase',1,0,1,'Lots'],
       ['units','Đơn vị tính','Quản lý đơn vị quy đổi dùng cho nhập hàng và tồn kho.','units','TableProperties','purchase',2,0,1,'Units'],
       ['supplier-purchase-options','Cấu hình quy cách nhập','Cấu hình đơn vị và quy đổi kg theo từng nhà cung cấp và sản phẩm.','supplier-purchase-options','Truck','purchase',3,0,1,'SupplierPurchaseOptions'],
-      ['inventory-purchases','Phiếu mua hàng NCC','Lập phiếu mua hàng theo nhà cung cấp, quy cách và tồn kho.','inventory-purchases','Package','purchase',4,0,1,'InventoryPurchases'],
-      ['inventory-receives','Nhận hàng vào kho','Tạo và xác nhận phiếu nhận hàng từ phiếu mua hàng đã xác nhận.','inventory-receives','PackageCheck','purchase',5,0,1,'InventoryReceives'],
+      ['inventory-purchases','Phiếu mua hàng','Lập phiếu mua hàng theo nhà cung cấp, quy cách và tồn kho.','inventory-purchases','Package','purchase',4,0,1,'InventoryPurchases'],
+      ['inventory-receives','Phiếu nhận hàng','Tạo và xác nhận phiếu nhận hàng từ phiếu mua hàng đã xác nhận.','inventory-receives','PackageCheck','purchase',5,0,1,'InventoryReceives'],
       ['revenue','Doanh thu','Xem doanh thu, đã thu và công nợ theo thời gian.','revenue','BarChart3','report',1,0,1,'Revenue'],
       ['profit','Lợi nhuận','Thống kê lợi nhuận theo ngày/tháng/năm, giá vốn FIFO và ngày nhập NCC.','profit','BarChart3','report',2,0,1,'Profit'],
       ['agents','Agent AI','Các kỹ năng AI phục vụ vận hành bán sỉ.','agents','Bot','ai',1,0,1,'Agents'],
@@ -1344,15 +1344,24 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
       );
     }
 
-    // INV-004 REVIEW: rename purchase/receive menu labels — idempotent UPDATE for existing installs.
-    // INSERT IGNORE above skips existing rows; these UPDATEs patch already-seeded titles.
+    // INV-004 REVIEW → PURCHASE-NAMING-STD-001: rename purchase/receive menu labels —
+    // idempotent UPDATE for existing installs. INSERT IGNORE above skips existing rows;
+    // these UPDATEs patch already-seeded titles. Labels only — menu_key/route/permissions
+    // untouched, so this is safe to re-run on every startup.
     await conn.query(
-      `UPDATE app_menus SET title='Phiếu mua hàng NCC', subtitle='Lập phiếu mua hàng theo nhà cung cấp, quy cách và tồn kho.'
+      `UPDATE app_menus SET title='Phiếu mua hàng', subtitle='Lập phiếu mua hàng theo nhà cung cấp, quy cách và tồn kho.'
        WHERE menu_key='inventory-purchases'`
     );
     await conn.query(
-      `UPDATE app_menus SET title='Nhận hàng vào kho', subtitle='Tạo và xác nhận phiếu nhận hàng từ phiếu mua hàng đã xác nhận.'
+      `UPDATE app_menus SET title='Phiếu nhận hàng', subtitle='Tạo và xác nhận phiếu nhận hàng từ phiếu mua hàng đã xác nhận.'
        WHERE menu_key='inventory-receives'`
+    );
+
+    // LOTS-NAMING-STD-001: rename 'lots' menu label — same idempotent-rename pattern
+    // as PURCHASE-NAMING-STD-001 above. Labels only — menu_key/route/permissions untouched.
+    await conn.query(
+      `UPDATE app_menus SET title='Nhập xô'
+       WHERE menu_key='lots'`
     );
 
     // MENU-MY-PREFERENCES-FINAL-FIX: place my-menu at the end of the system group — idempotent.

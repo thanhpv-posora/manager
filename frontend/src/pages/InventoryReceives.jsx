@@ -287,7 +287,7 @@ export default function InventoryReceives() {
         </div>
 
         <div className="card">
-          <h3 style={{ marginBottom: 12 }}>Phiếu nhập kho ({vouchers.length})</h3>
+          <h3 style={{ marginBottom: 12 }}>Phiếu nhận hàng ({vouchers.length})</h3>
           {listLoading && <p className="muted">Đang tải...</p>}
           {!listLoading && <table className="table">
             <thead><tr>

@@ -11,8 +11,14 @@ const { normalizeInventoryMode } = require('../utils/inventoryMode');
 //   InventoryService.in()             → InventoryMovementService.postIn()
 //   InventoryService.out()            → InventoryMovementService.postOut()
 //   InventoryService.adjustOrderItem()→ InventoryMovementService.postAdjustmentIncrease/Decrease()
-//   InventoryService.applyOrderInventory() — kept here; NON_STOCK skip behavior
-//                                           differs from postOut(); refactor in future ticket.
+//   InventoryService.applyOrderInventory() — S5.1-A: CARCASS_PART/allow_negative_stock/TRACK_STOCK
+//                                           branches now delegate their write to postOut(), making
+//                                           it the single writer of OUT movements. NON_STOCK still
+//                                           performs no write here (unchanged) — postOut() always
+//                                           logs a row even for NON_STOCK, so delegating that branch
+//                                           too would add a stock_transactions row that doesn't
+//                                           exist today. Left as-is to avoid a behavior change;
+//                                           revisit in a dedicated ticket if that gap should close.
 
 function normalizeNumber(value) {
   const v = Number(value || 0);
@@ -66,11 +72,12 @@ class InventoryService {
     }
   }
 
-  // ── applyOrderInventory — kept here; not delegated to postOut() yet ───────────
+  // ── applyOrderInventory — mode branching stays here; writes delegate to postOut() ──
   //
-  // Reason: NON_STOCK items are skipped entirely in this method (no log), whereas
-  // postOut() logs them with SKIP_STOCK_CHECK. Delegating would silently change
-  // behavior for NON_STOCK items. Deferred to a dedicated ticket.
+  // NON_STOCK: no write (unchanged — see call-graph note above).
+  // CARCASS_PART / allow_negative_stock / TRACK_STOCK: the actual stock_quantity
+  // UPDATE and stock_transactions INSERT now happen inside postOut(), the single
+  // writer of OUT movements shared with Manual POS (InventoryService.out()).
 
   async applyOrderInventory(conn, orderId, items = [], options = {}) {
     const userId = options.user_id || null;
@@ -98,13 +105,10 @@ class InventoryService {
 
       // CARCASS_PART or allow_negative_stock: log movement, skip balance update.
       if (mode === 'CARCASS_PART' || allowNeg === 1) {
-        await conn.query(
-          `INSERT INTO stock_transactions
-             (product_id, transaction_date, type, quantity, reference_type, reference_id, note, created_by)
-           VALUES (?, ?, 'OUT', ?, 'SALE', ?, ?, ?)`,
-          [p.id, orderDate || new Date(), qty, orderId,
-           mode === 'CARCASS_PART' ? 'AI sale from carcass part' : 'AI sale stock deduct',
-           userId]
+        await InventoryMovementService.postOut(
+          conn, p.id, qty, orderDate || new Date(), 'SALE', orderId,
+          mode === 'CARCASS_PART' ? 'AI sale from carcass part' : 'AI sale stock deduct',
+          userId
         );
         results.push({
           product_id: p.id, product_name: p.name, inventory_mode: mode,
@@ -114,21 +118,15 @@ class InventoryService {
         continue;
       }
 
-      // TRACK_STOCK: validate then atomically deduct.
+      // TRACK_STOCK: validate then atomically deduct via the single writer.
+      // Pre-check here (same condition postOut() re-checks internally) so the
+      // insufficient-stock error message stays byte-for-byte what callers already
+      // expect from applyOrderInventory() — postOut()'s own message text differs.
       if (beforeQty < qty) {
         throw new Error(`Không đủ tồn kho ${p.name}. Tồn hiện tại: ${beforeQty}, cần bán: ${qty}`);
       }
 
-      await conn.query(
-        `UPDATE products SET stock_quantity = stock_quantity - ?, updated_at = NOW() WHERE id = ?`,
-        [qty, p.id]
-      );
-      await conn.query(
-        `INSERT INTO stock_transactions
-           (product_id, transaction_date, type, quantity, reference_type, reference_id, note, created_by)
-         VALUES (?, ?, 'OUT', ?, 'SALE', ?, ?, ?)`,
-        [p.id, orderDate || new Date(), qty, orderId, 'AI sale stock deduct', userId]
-      );
+      await InventoryMovementService.postOut(conn, p.id, qty, orderDate || new Date(), 'SALE', orderId, 'AI sale stock deduct', userId);
 
       results.push({
         product_id: p.id, product_name: p.name, inventory_mode: mode,

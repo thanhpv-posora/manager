@@ -1,8 +1,8 @@
 import React, {useEffect, useState} from 'react';
-import {BarChart3,Beef,Bot,CalendarDays,Circle,ClipboardList,CreditCard,Home,KeyRound,LogOut,Megaphone,Package,PanelLeftClose,PanelLeftOpen,Settings,ShoppingCart,TableProperties,Trash2,Truck,Users} from 'lucide-react';
+import {BarChart3,Beef,Bot,CalendarDays,Circle,ClipboardList,CreditCard,Home,KeyRound,LogOut,Megaphone,Package,PackageCheck,PanelLeftClose,PanelLeftOpen,Settings,ShoppingCart,TableProperties,Trash2,Truck,Users} from 'lucide-react';
 import ChangePasswordModal from'../components/ChangePasswordModal';
 
-const ICON_MAP={BarChart3,Bot,CalendarDays,ClipboardList,CreditCard,Home,Megaphone,Package,Settings,ShoppingCart,TableProperties,Trash2,Truck,Users};
+const ICON_MAP={BarChart3,Bot,CalendarDays,ClipboardList,CreditCard,Home,Megaphone,Package,PackageCheck,Settings,ShoppingCart,TableProperties,Trash2,Truck,Users};
 const getIcon=(key)=>ICON_MAP[key]||Circle;
 
 export default function MainLayout({page,setPage,user,children,onLogout,allowedMenus,menusMeta}){

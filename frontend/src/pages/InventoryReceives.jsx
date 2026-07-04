@@ -33,7 +33,8 @@ const PO_STATUS_LABEL = {
 };
 const badge = s => ({
   ...(STATUS_STYLE[s] || { background: '#f3f4f6', color: '#374151' }),
-  borderRadius: 4, padding: '2px 8px', fontSize: 12, fontWeight: 600, display: 'inline-block',
+  border: '1px solid currentColor', borderRadius: 4, padding: '2px 9px', fontSize: 12,
+  fontWeight: 700, letterSpacing: 0.2, display: 'inline-block',
 });
 const LBL = { fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 3, color: '#374151' };
 
@@ -561,6 +562,16 @@ export default function InventoryReceives() {
                     </td></tr>
                   )}
                 </tbody>
+                {(detail.items || []).length > 0 && (
+                  <tfoot>
+                    <tr style={{ background: '#f9fafb', fontWeight: 700 }}>
+                      <td colSpan={6} style={{ textAlign: 'right', paddingRight: 12 }}>Tổng tiền:</td>
+                      <td style={{ textAlign: 'right', color: '#059669', fontSize: 15 }}>
+                        {fmt((detail.items || []).reduce((a, item) => a + Number(item.actual_stock_qty) * Number(item.purchase_price), 0))} ₫
+                      </td>
+                    </tr>
+                  </tfoot>
+                )}
               </table>
             </div>
           </div>
@@ -571,7 +582,7 @@ export default function InventoryReceives() {
                 <button className="btn" onClick={postVoucher} disabled={posting}>
                   {posting ? 'Đang nhập kho...' : '✓ Nhập kho'}
                 </button>
-                <button className="btn danger" onClick={cancelVoucher} disabled={cancelling}>
+                <button className="btn danger" style={{ marginLeft: 'auto' }} onClick={cancelVoucher} disabled={cancelling}>
                   {cancelling ? 'Đang hủy...' : '✕ Hủy phiếu'}
                 </button>
               </div>

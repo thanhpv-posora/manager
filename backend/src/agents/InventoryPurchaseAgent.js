@@ -272,9 +272,11 @@ class InventoryPurchaseAgent {
     } catch (e) { await conn.rollback(); throw e; } finally { conn.release(); }
   }
 
-  // S4.2-C: Short Close — closes out the undelivered remainder of a PO without
-  // an inventory movement. Allowed only from CONFIRMED or PARTIAL_RECEIVED;
-  // once SHORT_CLOSED, InventoryReceiveService.receive() and this agent's own
+  // S4.2-C / CEO review: Short Close — closes out the undelivered remainder of
+  // a PO that has already had at least one partial receipt, without an
+  // inventory movement. It must not be usable as a cancel: CONFIRMED with
+  // zero received_stock_qty is rejected (use CANCELLED for that). Once
+  // SHORT_CLOSED, InventoryReceiveService.receive() and this agent's own
   // CANCEL guard both key off purchase_orders.status, so neither further
   // receiving nor cancelling is separately re-checked here — status alone
   // already excludes SHORT_CLOSED from both of those status lists.
@@ -293,6 +295,17 @@ class InventoryPurchaseAgent {
       if (!['CONFIRMED', 'PARTIAL_RECEIVED'].includes(row.status))
         throw Object.assign(
           new Error(`Không thể đóng phần còn lại ở trạng thái "${row.status}". Cần CONFIRMED hoặc PARTIAL_RECEIVED`),
+          { status: 400 }
+        );
+
+      const [[{ total_received }]] = await conn.query(
+        `SELECT COALESCE(SUM(received_stock_qty), 0) total_received
+         FROM purchase_order_items WHERE purchase_order_id = ?`,
+        [id]
+      );
+      if (Number(total_received) <= 0)
+        throw Object.assign(
+          new Error('Chỉ được đóng phần còn lại sau khi đã nhận hàng một phần'),
           { status: 400 }
         );
 

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { Trash2 } from 'lucide-react';
+import { Trash2, ExternalLink } from 'lucide-react';
 import api from '../api/api';
 import SafePage from '../components/SafePage';
 import { showSuccess, showError, showWarning } from '../utils/toast';
@@ -22,7 +22,11 @@ const STATUS_STYLE = {
   SHORT_CLOSED:     { background: '#e5e7eb', color: '#4b5563' },
   CANCELLED:        { background: '#fee2e2', color: '#991b1b' },
 };
-const badge = s => ({ ...STATUS_STYLE[s] || {}, borderRadius: 4, padding: '2px 8px', fontSize: 12, fontWeight: 600, display: 'inline-block' });
+const badge = s => ({
+  ...STATUS_STYLE[s] || {},
+  border: '1px solid currentColor', borderRadius: 4, padding: '2px 9px', fontSize: 12,
+  fontWeight: 700, letterSpacing: 0.2, display: 'inline-block',
+});
 
 // ── Receive History Timeline (S4.3) ───────────────────────────────────────
 const RECEIVE_STATUS_LABEL = { PENDING: 'Chờ nhập kho', RECEIVED: 'Đã nhập kho', CANCELLED: 'Đã hủy' };
@@ -31,7 +35,11 @@ const RECEIVE_STATUS_STYLE = {
   RECEIVED:  { background: '#dcfce7', color: '#166534' },
   CANCELLED: { background: '#fee2e2', color: '#991b1b' },
 };
-const receiveBadge = s => ({ ...(RECEIVE_STATUS_STYLE[s] || { background: '#f3f4f6', color: '#374151' }), borderRadius: 4, padding: '2px 8px', fontSize: 12, fontWeight: 600, display: 'inline-block' });
+const receiveBadge = s => ({
+  ...(RECEIVE_STATUS_STYLE[s] || { background: '#f3f4f6', color: '#374151' }),
+  border: '1px solid currentColor', borderRadius: 4, padding: '2px 9px', fontSize: 12,
+  fontWeight: 700, letterSpacing: 0.2, display: 'inline-block',
+});
 const LBL = { fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 3, color: '#374151' };
 const REQ = <span style={{ color: '#ef4444' }}> *</span>;
 
@@ -39,6 +47,14 @@ function todayISO() { return new Date().toISOString().slice(0, 10); }
 const fmt    = n => Math.round(Number(n || 0)).toLocaleString('en-US');
 const fmtQty = n => Number(Number(n || 0).toFixed(2)).toLocaleString('en-US', { maximumFractionDigits: 2 });
 const fmtDate = s => s ? String(s).slice(0, 10) : '—';
+// dd/mm/yyyy hh:mm — used for timeline event_time, which is a full datetime (unlike receive_date/DATE fields above)
+const fmtDateTime = s => {
+  if (!s) return '—';
+  const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+  if (!m) return fmtDate(s);
+  const [, y, mo, d, h, mi] = m;
+  return `${d}/${mo}/${y} ${h}:${mi}`;
+};
 const mkHdr = () => ({ partner_id: '', purchase_date: todayISO(), note: '', reference_no: '' });
 const PRODUCT_SEARCH_FIELDS = ['name', 'product_code'];
 
@@ -227,9 +243,11 @@ export default function InventoryPurchases() {
     } finally { setTimelineLoading(false); }
   }, []);
 
+  // Fetched regardless of active tab — the lifecycle summary (expected/received/
+  // remaining/completion%) is also shown in the ERP header, not just the Timeline tab.
   useEffect(() => {
-    if (detailTab === 'timeline' && order?.id) loadTimeline(order.id, timelinePage);
-  }, [detailTab, order?.id, timelinePage, loadTimeline]);
+    if (order?.id) loadTimeline(order.id, timelinePage);
+  }, [order?.id, timelinePage, loadTimeline]);
 
   // ── Add-dialog SPO load ────────────────────────────────────────────────────
   useEffect(() => {
@@ -275,7 +293,7 @@ export default function InventoryPurchases() {
         await loadOrder(r.data.id);
       } else {
         await api.put(`/inventory-purchases/${order.id}`, hdrForm);
-        showSuccess('Đã cập nhật phiếu nhập');
+        showSuccess('Đã cập nhật phiếu mua hàng');
         setHdrEditing(false);
         await loadOrder(order.id);
       }
@@ -313,7 +331,7 @@ export default function InventoryPurchases() {
         note:                        r.note || null,
       }));
       const res = await api.post(`/inventory-purchases/${order.id}/sync`, { rows });
-      showSuccess(res.data.message || 'Đã lưu phiếu nhập');
+      showSuccess(res.data.message || 'Đã lưu phiếu mua hàng');
       await loadOrder(order.id);
     } catch (e) { showError(e.response?.data?.message || e.message || 'Lưu thất bại'); }
     finally { setGridSaving(false); }
@@ -326,10 +344,10 @@ export default function InventoryPurchases() {
     const ok = window.appConfirm
       ? await window.appConfirm(
           isCancelling
-            ? `Bạn có chắc chắn muốn hủy phiếu nhập ${order.order_code}?\n\nThao tác này không thể hoàn tác.`
+            ? `Bạn có chắc chắn muốn hủy phiếu mua hàng ${order.order_code}?\n\nThao tác này không thể hoàn tác.`
             : `Xác nhận phiếu ${order.order_code}?`,
           {
-            title: isCancelling ? 'Hủy phiếu nhập' : 'Xác nhận phiếu nhập',
+            title: isCancelling ? 'Hủy phiếu mua hàng' : 'Xác nhận phiếu mua hàng',
             confirmText: isCancelling ? 'Hủy phiếu' : 'Xác nhận',
             cancelText: 'Đóng',
             variant: isCancelling ? 'danger' : 'primary',
@@ -413,6 +431,10 @@ export default function InventoryPurchases() {
 
   // ── Derived ────────────────────────────────────────────────────────────────
   const isDraft  = order?.status === 'DRAFT';
+  // Short Close closes the remainder after a partial receipt — must not double as cancel.
+  // Matches the backend guard in InventoryPurchaseAgent.shortClose() (PARTIAL_RECEIVED, or
+  // CONFIRMED with total received_stock_qty > 0).
+  const canShortClose = order?.status === 'PARTIAL_RECEIVED' || Number(timelineSummary?.received_qty || 0) > 0;
   const spoLabel = o => o.display_label || `${o.unit_name} (${o.default_conversion_qty}kg)`;
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -443,7 +465,7 @@ export default function InventoryPurchases() {
         </div>
 
         <div className="card">
-          <h3 style={{ marginBottom: 12 }}>Phiếu nhập hàng tồn kho ({orders.length})</h3>
+          <h3 style={{ marginBottom: 12 }}>Phiếu mua hàng ({orders.length})</h3>
           {listLoading && <p className="muted">Đang tải...</p>}
           {!listLoading && <table className="table">
             <thead><tr>
@@ -469,7 +491,7 @@ export default function InventoryPurchases() {
                 </tr>
               ))}
               {!orders.length && <tr><td colSpan={8} style={{ textAlign: 'center', padding: '28px 0' }}>
-                <p className="muted">Chưa có phiếu nhập nào.</p>
+                <p className="muted">Chưa có phiếu mua hàng nào.</p>
               </td></tr>}
             </tbody>
           </table>}
@@ -482,7 +504,7 @@ export default function InventoryPurchases() {
           <button className="btn secondary" onClick={goList}>← Danh sách</button>
         </div>
 
-        {orderLoading && <div className="card"><p className="muted">Đang tải phiếu nhập...</p></div>}
+        {orderLoading && <div className="card"><p className="muted">Đang tải phiếu mua hàng...</p></div>}
 
         {!orderLoading && <>
 
@@ -490,8 +512,8 @@ export default function InventoryPurchases() {
           <div className="card">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
               <h3 style={{ margin: 0 }}>
-                {order ? order.order_code : 'Phiếu nhập mới'}
-                {order && <span style={{ marginLeft: 10, ...badge(order.status) }}>{STATUS_LABEL[order.status]}</span>}
+                {/* CEO review: Status moved into the ERP Summary section below (Expected/Received/Remaining/Completion/Status) */}
+                {order ? order.order_code : 'Phiếu mua hàng mới'}
               </h3>
               {order && isDraft && !hdrEditing && (
                 <button className="btn secondary" onClick={startEditHdr}>Sửa thông tin</button>
@@ -535,12 +557,41 @@ export default function InventoryPurchases() {
                 </div>
               </>
             ) : order && (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '8px 16px', fontSize: 14 }}>
-                <div><span style={{ color: '#6b7280', fontSize: 12 }}>Nhà cung cấp</span><div><b>{order.supplier_name || '—'}</b></div></div>
-                <div><span style={{ color: '#6b7280', fontSize: 12 }}>Ngày nhập</span><div><b>{fmtDate(order.purchase_date)}</b></div></div>
-                <div><span style={{ color: '#6b7280', fontSize: 12 }}>Số tham chiếu</span><div>{order.reference_no || '—'}</div></div>
-                <div><span style={{ color: '#6b7280', fontSize: 12 }}>Ghi chú</span><div>{order.note || '—'}</div></div>
-              </div>
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '8px 16px', fontSize: 14 }}>
+                  <div><span style={{ color: '#6b7280', fontSize: 12 }}>Nhà cung cấp</span><div><b>{order.supplier_name || '—'}</b></div></div>
+                  <div><span style={{ color: '#6b7280', fontSize: 12 }}>Ngày nhập</span><div><b>{fmtDate(order.purchase_date)}</b></div></div>
+                  <div><span style={{ color: '#6b7280', fontSize: 12 }}>Số tham chiếu</span><div>{order.reference_no || '—'}</div></div>
+                  <div><span style={{ color: '#6b7280', fontSize: 12 }}>Ghi chú</span><div>{order.note || '—'}</div></div>
+                </div>
+
+                {/* ERP lifecycle summary — reuses the existing timeline API's summary object, no new endpoint.
+                    CEO review: Status lives here now (Expected/Received/Remaining/Completion/Status), not on the title. */}
+                {timelineSummary && (
+                  <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #e5e7eb' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: '8px 16px', fontSize: 14, marginBottom: 10 }}>
+                      <div><span style={{ color: '#6b7280', fontSize: 12 }}>Dự kiến (kg)</span><div><b>{fmtQty(timelineSummary.expected_qty)}</b></div></div>
+                      <div><span style={{ color: '#6b7280', fontSize: 12 }}>Đã nhận (kg)</span><div><b style={{ color: '#166534' }}>{fmtQty(timelineSummary.received_qty)}</b></div></div>
+                      <div><span style={{ color: '#6b7280', fontSize: 12 }}>Còn lại (kg)</span><div><b style={{ color: timelineSummary.remaining_qty > 0.001 ? '#b45309' : '#9ca3af' }}>{fmtQty(timelineSummary.remaining_qty)}</b></div></div>
+                      <div><span style={{ color: '#6b7280', fontSize: 12 }}>Hoàn thành</span><div><b>{fmtQty(timelineSummary.completion_percent)}%</b></div></div>
+                      <div><span style={{ color: '#6b7280', fontSize: 12 }}>Trạng thái</span><div><span style={badge(order.status)}>{STATUS_LABEL[order.status] || order.status}</span></div></div>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4, fontSize: 12 }}>
+                      <span style={{ color: '#374151' }}>
+                        <b>{fmtQty(timelineSummary.received_qty)}</b> / {fmtQty(timelineSummary.expected_qty)} kg
+                      </span>
+                      <span style={{ fontWeight: 700, color: '#374151' }}>{fmtQty(timelineSummary.completion_percent)}%</span>
+                    </div>
+                    <div style={{ height: 10, borderRadius: 4, background: '#e5e7eb', overflow: 'hidden' }}>
+                      <div style={{
+                        height: '100%',
+                        width: `${Math.min(100, Math.max(0, timelineSummary.completion_percent))}%`,
+                        background: timelineSummary.completion_percent >= 100 ? '#16a34a' : '#3b82f6',
+                      }} />
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </div>
 
@@ -563,7 +614,7 @@ export default function InventoryPurchases() {
             <div className="card" style={{ padding: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 20px', borderBottom: '1px solid #e5e7eb', flexWrap: 'wrap' }}>
                 <div style={{ flex: 1 }}>
-                  <b style={{ fontSize: 16 }}>Chi tiết phiếu nhập</b>
+                  <b style={{ fontSize: 16 }}>Chi tiết phiếu mua hàng</b>
                   {catalogLoading && <span style={{ marginLeft: 8, color: '#6b7280', fontSize: 12 }}>Đang tải danh mục...</span>}
                   {!catalogLoading && catalog.length > 0 && (
                     <span style={{ marginLeft: 8, color: '#6b7280', fontSize: 12 }}>{catalog.length} sản phẩm từ danh mục NCC</span>
@@ -752,14 +803,15 @@ export default function InventoryPurchases() {
             </div>
           )}
 
-          {/* Confirm / Cancel — DRAFT */}
+          {/* Confirm / Cancel — DRAFT: primary business action first, destructive separated to the right */}
           {order && isDraft && <div className="card">
             <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
               <button className="btn" onClick={() => changeStatus('CONFIRMED')}
                 disabled={!(order?.items?.length > 0) || statusSaving}>
-                Xác nhận phiếu nhập
+                Xác nhận phiếu mua hàng
               </button>
-              <button className="btn danger" onClick={() => changeStatus('CANCELLED')} disabled={statusSaving}>
+              <button className="btn danger" style={{ marginLeft: 'auto' }}
+                onClick={() => changeStatus('CANCELLED')} disabled={statusSaving}>
                 Hủy phiếu
               </button>
             </div>
@@ -770,17 +822,20 @@ export default function InventoryPurchases() {
             )}
           </div>}
 
-          {/* Cancel (CONFIRMED, no received inventory) + Short Close (CONFIRMED / PARTIAL_RECEIVED) */}
+          {/* Short Close (CONFIRMED / PARTIAL_RECEIVED) + Cancel (CONFIRMED only, no received inventory) —
+              primary business action first, destructive separated to the right */}
           {order && (order.status === 'CONFIRMED' || order.status === 'PARTIAL_RECEIVED') && <div className="card">
             <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+              <button className="btn" onClick={openShortCloseDlg} disabled={statusSaving || !canShortClose}
+                title={!canShortClose ? 'Chỉ dùng khi phiếu đã nhận hàng một phần' : undefined}>
+                Đóng phần còn lại
+              </button>
               {order.status === 'CONFIRMED' && (
-                <button className="btn danger" onClick={() => changeStatus('CANCELLED')} disabled={statusSaving}>
+                <button className="btn danger" style={{ marginLeft: 'auto' }}
+                  onClick={() => changeStatus('CANCELLED')} disabled={statusSaving}>
                   Hủy phiếu
                 </button>
               )}
-              <button className="btn secondary" onClick={openShortCloseDlg} disabled={statusSaving}>
-                Đóng phần còn lại
-              </button>
             </div>
           </div>}
 
@@ -817,48 +872,78 @@ export default function InventoryPurchases() {
                 )}
                 {!timelineLoading && timeline.length > 0 && (
                   <>
-                    <div style={{ position: 'relative', paddingLeft: 22 }}>
-                      <div style={{ position: 'absolute', left: 5, top: 6, bottom: 6, width: 2, background: '#e5e7eb' }} />
+                    <div style={{ position: 'relative', paddingLeft: 20 }}>
+                      <div style={{ position: 'absolute', left: 4, top: 4, bottom: 4, width: 2, background: '#e5e7eb' }} />
                       {timeline.map((ev, idx) => (
-                        <div key={idx} style={{ position: 'relative', marginBottom: 16 }}>
+                        <div key={idx} style={{ position: 'relative', marginBottom: 10 }}>
                           <div style={{
-                            position: 'absolute', left: -22, top: 6, width: 10, height: 10, borderRadius: '50%',
+                            position: 'absolute', left: -20, top: 4, width: 9, height: 9, borderRadius: '50%',
                             background: ev.type === 'SHORT_CLOSE' ? '#f97316' : '#16a34a',
                           }} />
                           {ev.type === 'RECEIVE' ? (
-                            <div className="card" style={{ margin: 0 }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                                <span>
-                                  📦{' '}
-                                  {/* TODO: InventoryReceives.jsx has no route/id-based deep link
-                                      to open a specific receive voucher from outside its own page.
-                                      Kept as link-style text only until that navigation exists —
-                                      do not invent a new route. */}
-                                  <span style={{ color: '#2563eb', textDecoration: 'underline', cursor: 'pointer' }}
-                                    title="Xem phiếu nhận hàng (chưa khả dụng)">
-                                    <b>{ev.receive_code}</b>
-                                  </span>
+                            /* CEO review: ERP block — vertically grouped identity (code/status/time)
+                               then detail (warehouse/receiver/quantity). Data unchanged. */
+                            <div className="card" style={{ margin: 0, padding: '10px 14px' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13, padding: '3px 0' }}>
+                                <span style={{ color: '#6b7280', fontSize: 12 }}>📦 Mã phiếu nhận</span>
+                                {/* TODO: InventoryReceives.jsx has no route/id-based deep link
+                                    to open a specific receive voucher from outside its own page.
+                                    Kept as link-style text only until that navigation exists —
+                                    do not invent a new route. */}
+                                <span style={{ color: '#2563eb', textDecoration: 'underline', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                                  title="Xem chi tiết">
+                                  <b>{ev.receive_code}</b>
+                                  <ExternalLink size={12} />
                                 </span>
+                              </div>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13, padding: '3px 0' }}>
+                                <span style={{ color: '#6b7280', fontSize: 12 }}>Trạng thái</span>
                                 <span style={receiveBadge(ev.status)}>{RECEIVE_STATUS_LABEL[ev.status] || ev.status}</span>
                               </div>
-                              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '6px 16px', fontSize: 13 }}>
-                                <div><span style={{ color: '#6b7280', fontSize: 12 }}>Ngày nhận</span><div>{fmtDate(ev.receive_date)}</div></div>
-                                <div><span style={{ color: '#6b7280', fontSize: 12 }}>Kho</span><div>{ev.warehouse_name || '—'}</div></div>
-                                <div><span style={{ color: '#6b7280', fontSize: 12 }}>Người nhận</span><div>{ev.received_by_name || '—'}</div></div>
-                                <div><span style={{ color: '#6b7280', fontSize: 12 }}>Số lượng nhận (kg)</span><div><b>{fmtQty(ev.total_qty)}</b></div></div>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '3px 0' }}>
+                                <span style={{ color: '#6b7280', fontSize: 12 }}>Thời gian</span>
+                                <span>{fmtDateTime(ev.event_time)}</span>
                               </div>
+
+                              <div style={{ borderTop: '1px dashed #e5e7eb', margin: '6px 0' }} />
+
+                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '3px 0' }}>
+                                <span style={{ color: '#6b7280', fontSize: 12 }}>Kho</span>
+                                <span>{ev.warehouse_name || '—'}</span>
+                              </div>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '3px 0' }}>
+                                <span style={{ color: '#6b7280', fontSize: 12 }}>Người nhận</span>
+                                <span>{ev.received_by_name || '—'}</span>
+                              </div>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '3px 0' }}>
+                                <span style={{ color: '#6b7280', fontSize: 12 }}>Số lượng</span>
+                                <span><b>{fmtQty(ev.total_qty)} kg</b></span>
+                              </div>
+                              {/* Total Amount intentionally omitted: the timeline API returns no
+                                  price/amount data, and this sprint is frontend-only (no backend/API
+                                  change) — per CEO decision. */}
                             </div>
                           ) : (
-                            <div className="card" style={{ margin: 0, border: '1px solid #f97316' }}>
-                              <div style={{ marginBottom: 8 }}>
-                                <span style={{ background: '#ffedd5', color: '#9a3412', borderRadius: 4, padding: '2px 8px', fontSize: 12, fontWeight: 600, display: 'inline-block' }}>
+                            <div className="card" style={{ margin: 0, padding: '10px 14px', border: '1px solid #f97316' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13, padding: '3px 0' }}>
+                                <span style={{ color: '#6b7280', fontSize: 12 }}>Trạng thái</span>
+                                <span style={{ background: '#ffedd5', color: '#9a3412', border: '1px solid currentColor', borderRadius: 4, padding: '2px 9px', fontSize: 12, fontWeight: 700, display: 'inline-block' }}>
                                   ⚠ ĐÃ ĐÓNG PHẦN CÒN LẠI
                                 </span>
                               </div>
-                              <div style={{ fontSize: 13, marginBottom: 8 }}>{ev.reason || '—'}</div>
-                              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 16px', fontSize: 13 }}>
-                                <div><span style={{ color: '#6b7280', fontSize: 12 }}>Đóng bởi</span><div>{ev.short_closed_by_name || '—'}</div></div>
-                                <div><span style={{ color: '#6b7280', fontSize: 12 }}>Thời điểm</span><div>{ev.short_closed_at || '—'}</div></div>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '3px 0' }}>
+                                <span style={{ color: '#6b7280', fontSize: 12 }}>Thời gian</span>
+                                <span>{fmtDateTime(ev.event_time)}</span>
+                              </div>
+
+                              <div style={{ borderTop: '1px dashed #fed7aa', margin: '6px 0' }} />
+
+                              <div style={{ fontSize: 13, padding: '3px 0' }}>
+                                <span style={{ color: '#6b7280', fontSize: 12 }}>Lý do</span><div>{ev.reason || '—'}</div>
+                              </div>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '3px 0' }}>
+                                <span style={{ color: '#6b7280', fontSize: 12 }}>Đóng bởi</span>
+                                <span><b>{ev.short_closed_by_name || '—'}</b></span>
                               </div>
                             </div>
                           )}

@@ -118,9 +118,14 @@ class InventoryMovementService {
    * @returns {{ stock_checked: boolean, inventory_mode: string }}
    */
   async postOut(conn, productId, quantity, date, refType, refId, note, userId) {
+    // S5.1-B: FOR UPDATE closes the check-then-act race where two concurrent
+    // sales of the same product both read stock as sufficient before either
+    // commits. Safe because every caller already runs this inside a
+    // transaction on a dedicated connection; the lock releases at commit/rollback.
     const [rows] = await conn.query(
       `SELECT id, name, inventory_mode, stock_quantity, allow_negative_stock
-       FROM products WHERE id = ? AND del_flg = 0`,
+       FROM products WHERE id = ? AND del_flg = 0
+       FOR UPDATE`,
       [productId]
     );
     if (!rows.length) throw new Error('Không tìm thấy mặt hàng');

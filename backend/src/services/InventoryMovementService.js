@@ -63,6 +63,11 @@ class InventoryMovementService {
       if (!wRows.length) throw new Error('Không tìm thấy kho hàng');
     }
 
+    // S5.2-C: affect_stock is decided here, at write time, and stored on the
+    // row — StockLedgerAgent reads it back verbatim rather than re-deriving
+    // it later from whatever the product looks like today.
+    const skipBalance = mode === 'NON_STOCK' || mode === 'CARCASS_PART';
+
     // S5.1-C hardening: insert-first instead of check-then-act. The prior
     // SELECT-then-INSERT guard left a race window where two concurrent
     // postIn() calls for the same (product_id, reference_id) could both pass
@@ -76,9 +81,9 @@ class InventoryMovementService {
     try {
       await conn.query(
         `INSERT INTO stock_transactions
-           (product_id, transaction_date, type, quantity, reference_type, reference_id, note, created_by, warehouse_id)
-         VALUES (?, ?, 'IN', ?, ?, ?, ?, ?, ?)`,
-        [productId, date || new Date(), qty, refType || 'MANUAL', refId || null, note || null, userId || null, warehouseId || null]
+           (product_id, transaction_date, type, quantity, reference_type, reference_id, note, created_by, warehouse_id, affect_stock)
+         VALUES (?, ?, 'IN', ?, ?, ?, ?, ?, ?, ?)`,
+        [productId, date || new Date(), qty, refType || 'MANUAL', refId || null, note || null, userId || null, warehouseId || null, skipBalance ? 0 : 1]
       );
     } catch (e) {
       const isDupReceiveKey = e && (e.code === 'ER_DUP_ENTRY' || e.errno === 1062) &&
@@ -89,7 +94,6 @@ class InventoryMovementService {
       throw e;
     }
 
-    const skipBalance = mode === 'NON_STOCK' || mode === 'CARCASS_PART';
     if (!skipBalance) {
       await conn.query(
         `UPDATE products SET stock_quantity = stock_quantity + ? WHERE id = ?`,
@@ -133,12 +137,15 @@ class InventoryMovementService {
     const mode = p.inventory_mode || 'STOCK';
     const qty = Number(quantity || 0);
 
+    // S5.2-C: affect_stock is decided here, at write time, and stored on the
+    // row — StockLedgerAgent reads it back verbatim rather than re-deriving
+    // it later from whatever the product looks like today.
     const skipStockCheck = mode === 'NON_STOCK' || mode === 'CARCASS_PART' || Number(p.allow_negative_stock) === 1;
     if (skipStockCheck) {
       await conn.query(
         `INSERT INTO stock_transactions
-           (product_id, transaction_date, type, quantity, reference_type, reference_id, note, created_by)
-         VALUES (?, ?, 'OUT', ?, ?, ?, ?, ?)`,
+           (product_id, transaction_date, type, quantity, reference_type, reference_id, note, created_by, affect_stock)
+         VALUES (?, ?, 'OUT', ?, ?, ?, ?, ?, 0)`,
         [productId, date, qty, refType, refId, `${note} / SKIP_STOCK_CHECK / ${mode}`, userId]
       );
       return { stock_checked: false, inventory_mode: mode };
@@ -154,8 +161,8 @@ class InventoryMovementService {
     await conn.query(`UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ?`, [qty, productId]);
     await conn.query(
       `INSERT INTO stock_transactions
-         (product_id, transaction_date, type, quantity, reference_type, reference_id, note, created_by)
-       VALUES (?, ?, 'OUT', ?, ?, ?, ?, ?)`,
+         (product_id, transaction_date, type, quantity, reference_type, reference_id, note, created_by, affect_stock)
+       VALUES (?, ?, 'OUT', ?, ?, ?, ?, ?, 1)`,
       [productId, date, qty, refType, refId, note, userId]
     );
     return { stock_checked: true, inventory_mode: mode };
@@ -187,8 +194,8 @@ class InventoryMovementService {
     await conn.query(`UPDATE products SET stock_quantity = stock_quantity + ? WHERE id = ?`, [d, productId]);
     await conn.query(
       `INSERT INTO stock_transactions
-         (product_id, transaction_date, type, quantity, reference_type, reference_id, note, created_by)
-       VALUES (?, ?, 'ADJUSTMENT_INCREASE', ?, ?, ?, ?, ?)`,
+         (product_id, transaction_date, type, quantity, reference_type, reference_id, note, created_by, affect_stock)
+       VALUES (?, ?, 'ADJUSTMENT_INCREASE', ?, ?, ?, ?, ?, 1)`,
       [productId, date || new Date(), d, refType || 'MANUAL', refId || null, note || null, userId || null]
     );
   }
@@ -217,8 +224,8 @@ class InventoryMovementService {
     await conn.query(`UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ?`, [d, productId]);
     await conn.query(
       `INSERT INTO stock_transactions
-         (product_id, transaction_date, type, quantity, reference_type, reference_id, note, created_by)
-       VALUES (?, ?, 'ADJUSTMENT_DECREASE', ?, ?, ?, ?, ?)`,
+         (product_id, transaction_date, type, quantity, reference_type, reference_id, note, created_by, affect_stock)
+       VALUES (?, ?, 'ADJUSTMENT_DECREASE', ?, ?, ?, ?, ?, 1)`,
       [productId, date || new Date(), d, refType || 'MANUAL', refId || null, note || null, userId || null]
     );
   }
@@ -248,8 +255,8 @@ class InventoryMovementService {
     );
     await conn.query(
       `INSERT INTO stock_transactions
-         (product_id, transaction_date, type, quantity, reference_type, reference_id, note, created_by)
-       VALUES (?, ?, 'IN', ?, 'OPENING_BALANCE', NULL, ?, ?)`,
+         (product_id, transaction_date, type, quantity, reference_type, reference_id, note, created_by, affect_stock)
+       VALUES (?, ?, 'IN', ?, 'OPENING_BALANCE', NULL, ?, ?, 1)`,
       [productId, date || new Date(), q, note || 'Tồn kho ban đầu', userId || null]
     );
   }

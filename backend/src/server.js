@@ -84,6 +84,7 @@ app.use('/api/inventory-receives', require('./routes/inventory-receives.routes')
 app.use('/api/warehouses', require('./routes/warehouses.routes'));
 app.use('/api/supplier-purchase-price', require('./routes/supplier-purchase-price.routes'));
 app.use('/api/supplier-catalog', require('./routes/supplier-catalog.routes'));
+app.use('/api/stock-ledger', require('./routes/stock-ledger.routes'));
 
 app.use(errorHandler);
 

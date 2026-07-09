@@ -1047,6 +1047,43 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
       'UNIQUE KEY uq_stock_transactions_receive_dedup(receive_dedup_key)'
     );
 
+    // S5.2-C: affect_stock — write-time truth for whether this specific
+    // movement actually changed products.stock_quantity. CEO review rejected
+    // deriving this at read time (StockLedgerAgent) from current product
+    // mode/flags/note text, since an audit ledger must reflect the decision
+    // made at movement creation time, not whatever the product looks like
+    // today. InventoryMovementService now sets this explicitly on every
+    // INSERT (see postIn/postOut/postAdjustmentIncrease/postAdjustmentDecrease/
+    // postOpening) — this column is the only source of truth going forward.
+    //
+    // Backfill runs exactly once, only on the migration that introduces the
+    // column (guarded by hadAffectStockColumn) — never on every boot, so a
+    // later manual correction to a historical row's affect_stock is never
+    // silently re-flipped by this heuristic. It is best-effort for
+    // pre-migration history only:
+    //   - note LIKE '%SKIP_STOCK_CHECK%' catches OUT rows postOut() already
+    //     stamped at write time when it skipped the balance UPDATE.
+    //   - IN rows have no equivalent write-time marker (postIn never
+    //     annotated the note), so those are backfilled from the product's
+    //     CURRENT inventory_mode — a best-effort approximation that cannot
+    //     see a mode change that happened after the row was posted.
+    //   - OPENING_BALANCE is excluded from the IN backfill because
+    //     postOpening() always updates the balance unconditionally.
+    const hadAffectStockColumn = await hasColumn(conn, 'stock_transactions', 'affect_stock');
+    await safeAddColumn(conn, 'stock_transactions', 'affect_stock', 'affect_stock TINYINT(1) NOT NULL DEFAULT 1');
+    if (!hadAffectStockColumn) {
+      await conn.query(`UPDATE stock_transactions SET affect_stock = 0 WHERE note LIKE '%SKIP_STOCK_CHECK%'`);
+      await conn.query(
+        `UPDATE stock_transactions st
+         JOIN products p ON p.id = st.product_id
+         SET st.affect_stock = 0
+         WHERE st.type = 'IN'
+           AND st.reference_type <> 'OPENING_BALANCE'
+           AND p.inventory_mode IN ('NON_STOCK','CARCASS_PART')`
+      );
+      console.log('[S5.2-C] Backfilled affect_stock for pre-existing stock_transactions rows (best-effort, history only — new rows are written explicitly by InventoryMovementService).');
+    }
+
     const [catCount] = await conn.query(`SELECT COUNT(*) cnt FROM product_categories`);
     if (Number(catCount[0].cnt) === 0) {
       await conn.query(`INSERT INTO product_categories(name,sort_order) VALUES ('Thịt bò',1),('Thịt heo',2),('Thịt gà',3),('Chả các loại',4),('Bò xô / pha lóc',5)`);
@@ -1341,6 +1378,7 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
       ['supplier-purchase-options','Cấu hình quy cách nhập','Cấu hình đơn vị và quy đổi kg theo từng nhà cung cấp và sản phẩm.','supplier-purchase-options','Truck','purchase',3,0,1,'SupplierPurchaseOptions'],
       ['inventory-purchases','Phiếu mua hàng','Lập phiếu mua hàng theo nhà cung cấp, quy cách và tồn kho.','inventory-purchases','Package','purchase',4,0,1,'InventoryPurchases'],
       ['inventory-receives','Phiếu nhận hàng','Tạo và xác nhận phiếu nhận hàng từ phiếu mua hàng đã xác nhận.','inventory-receives','PackageCheck','purchase',5,0,1,'InventoryReceives'],
+      ['stock-ledger','Sổ kho','Xem lịch sử nhập/xuất/điều chỉnh tồn kho theo từng dòng chứng từ (chỉ xem, không sửa).','stock-ledger','BookOpen','purchase',6,0,1,'StockLedger'],
       ['revenue','Doanh thu','Xem doanh thu, đã thu và công nợ theo thời gian.','revenue','BarChart3','report',1,0,1,'Revenue'],
       ['profit','Lợi nhuận','Thống kê lợi nhuận theo ngày/tháng/năm, giá vốn FIFO và ngày nhập NCC.','profit','BarChart3','report',2,0,1,'Profit'],
       ['agents','Agent AI','Các kỹ năng AI phục vụ vận hành bán sỉ.','agents','Bot','ai',1,0,1,'Agents'],
@@ -1440,7 +1478,7 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
       `INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled)
        SELECT 'ADMIN', menu_key, 1 FROM app_menus WHERE is_active = 1`
     );
-    for (const mk of ['create-order','orders','retail-daily-summary','payments','customers','products','product-import','ocr-providers','price-matrix','lots','revenue','profit','portal','my-menu','inventory-purchases','inventory-receives']) {
+    for (const mk of ['create-order','orders','retail-daily-summary','payments','customers','products','product-import','ocr-providers','price-matrix','lots','revenue','profit','portal','my-menu','inventory-purchases','inventory-receives','stock-ledger']) {
       await conn.query(`INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled) VALUES ('STAFF', ?, 1)`, [mk]);
     }
     for (const mk of ['orders','payments','portal','customers','my-menu']) {

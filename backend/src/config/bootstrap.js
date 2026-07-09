@@ -1024,6 +1024,29 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
       }
     }
 
+    // S5.1-C: Inventory Movement Idempotency IN — scoped dedup key so one
+    // inventory_receives.id can post at most one IN movement per product_id.
+    // Generated column evaluates to NULL for every row except
+    // reference_type='RECEIVE_VOUCHER' AND type='IN' (and NULL whenever
+    // reference_id is NULL); MySQL treats each NULL as distinct in a UNIQUE
+    // index, so SALE/ADJUSTMENT/LOT/MANUAL/OPENING_BALANCE rows — which may
+    // legitimately repeat the same (product_id, reference_id) tuple — are
+    // completely unaffected. See docs/MEATBIZ_INVENTORY_BACKLOG.md S5.1-C.
+    await safeAddColumn(
+      conn,
+      'stock_transactions',
+      'receive_dedup_key',
+      `receive_dedup_key VARCHAR(64) GENERATED ALWAYS AS
+         (CASE WHEN reference_type = 'RECEIVE_VOUCHER' AND type = 'IN'
+               THEN CONCAT(product_id, ':', reference_id) ELSE NULL END) STORED`
+    );
+    await safeAddIndex(
+      conn,
+      'stock_transactions',
+      'uq_stock_transactions_receive_dedup',
+      'UNIQUE KEY uq_stock_transactions_receive_dedup(receive_dedup_key)'
+    );
+
     const [catCount] = await conn.query(`SELECT COUNT(*) cnt FROM product_categories`);
     if (Number(catCount[0].cnt) === 0) {
       await conn.query(`INSERT INTO product_categories(name,sort_order) VALUES ('Thịt bò',1),('Thịt heo',2),('Thịt gà',3),('Chả các loại',4),('Bò xô / pha lóc',5)`);

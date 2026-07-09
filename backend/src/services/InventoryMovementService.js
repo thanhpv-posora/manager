@@ -55,32 +55,38 @@ class InventoryMovementService {
     const qty = normalizeNumber(quantity);
     if (qty <= 0) return { stock_added: false, inventory_mode: mode, qty_added: 0 };
 
-    // S4.1-C hardening: idempotency guard against crash/retry duplicate posting
-    // of a Receive Voucher. Scoped by product_id as well as reference_id —
-    // one receive voucher posts one IN movement per product line, so the
-    // natural duplicate key is (product_id, reference_type, reference_id, type).
-    // InventoryReceiveService.receive() already guards this at the voucher
-    // level (status must be PENDING), but InventoryMovementService is the
-    // sole writer of stock_quantity and must not depend on callers getting
-    // that right — this is the last line of defense before any write.
-    if (refType === 'RECEIVE_VOUCHER' && refId) {
-      const [dupRows] = await conn.query(
-        `SELECT id FROM stock_transactions
-         WHERE product_id = ? AND reference_type = 'RECEIVE_VOUCHER' AND reference_id = ? AND type = 'IN'
-         LIMIT 1`,
-        [productId, refId]
-      );
-      if (dupRows.length) {
-        throw new Error('Phiếu nhận hàng này đã được ghi nhận tồn kho cho sản phẩm này, không thể ghi trùng');
-      }
-    }
-
     if (warehouseId) {
       const [wRows] = await conn.query(
         `SELECT id FROM warehouses WHERE id = ? AND is_active = 1`,
         [warehouseId]
       );
       if (!wRows.length) throw new Error('Không tìm thấy kho hàng');
+    }
+
+    // S5.1-C hardening: insert-first instead of check-then-act. The prior
+    // SELECT-then-INSERT guard left a race window where two concurrent
+    // postIn() calls for the same (product_id, reference_id) could both pass
+    // the SELECT before either INSERT committed, doubling stock. Duplicate
+    // detection now relies on stock_transactions.receive_dedup_key — a
+    // generated column (bootstrap.js) that is non-NULL only for
+    // RECEIVE_VOUCHER+IN rows and is enforced UNIQUE at the DB level, so
+    // MySQL rejects the second concurrent INSERT atomically. Balance update
+    // happens only after the INSERT succeeds, so a rejected duplicate never
+    // touches stock_quantity.
+    try {
+      await conn.query(
+        `INSERT INTO stock_transactions
+           (product_id, transaction_date, type, quantity, reference_type, reference_id, note, created_by, warehouse_id)
+         VALUES (?, ?, 'IN', ?, ?, ?, ?, ?, ?)`,
+        [productId, date || new Date(), qty, refType || 'MANUAL', refId || null, note || null, userId || null, warehouseId || null]
+      );
+    } catch (e) {
+      const isDupReceiveKey = e && (e.code === 'ER_DUP_ENTRY' || e.errno === 1062) &&
+        /receive_dedup/i.test(e.sqlMessage || e.message || '');
+      if (isDupReceiveKey) {
+        throw new Error('Phiếu nhận hàng này đã được ghi nhận tồn kho cho sản phẩm này, không thể ghi trùng');
+      }
+      throw e;
     }
 
     const skipBalance = mode === 'NON_STOCK' || mode === 'CARCASS_PART';
@@ -90,12 +96,6 @@ class InventoryMovementService {
         [qty, productId]
       );
     }
-    await conn.query(
-      `INSERT INTO stock_transactions
-         (product_id, transaction_date, type, quantity, reference_type, reference_id, note, created_by, warehouse_id)
-       VALUES (?, ?, 'IN', ?, ?, ?, ?, ?, ?)`,
-      [productId, date || new Date(), qty, refType || 'MANUAL', refId || null, note || null, userId || null, warehouseId || null]
-    );
     return { stock_added: !skipBalance, inventory_mode: mode, qty_added: qty };
   }
 

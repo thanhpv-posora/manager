@@ -1,8 +1,5 @@
 const inventoryService = require('../services/inventory.service');
-
-function formatMoneyLikeNumber(value) {
-  return Number(value || 0).toLocaleString('vi-VN');
-}
+const { formatQty } = require('../utils/quantityFormat');
 
 async function summary(req, res) {
   try {
@@ -15,7 +12,7 @@ async function summary(req, res) {
       text: rows.length === 0
         ? 'Không có sản phẩm kiểm tồn phù hợp.'
         : rows.map((row) => {
-            return `${row.name}: ${formatMoneyLikeNumber(row.stock_quantity)} ${row.unit || ''} (${row.inventory_mode})`;
+            return `${row.name}: ${formatQty(row.stock_quantity)} ${row.unit || ''} (${row.inventory_mode})`;
           }).join('\\n')
     });
   } catch (err) {
@@ -38,7 +35,7 @@ async function lowStock(req, res) {
       text: rows.length === 0
         ? 'Hiện chưa có sản phẩm nào dưới ngưỡng tồn kho.'
         : rows.map((row) => {
-            return `${row.name}: còn ${formatMoneyLikeNumber(row.stock_quantity)} ${row.unit || ''}, ngưỡng ${formatMoneyLikeNumber(row.low_stock_threshold)}.`;
+            return `${row.name}: còn ${formatQty(row.stock_quantity)} ${row.unit || ''}, ngưỡng ${formatQty(row.low_stock_threshold)}.`;
           }).join('\\n')
     });
   } catch (err) {

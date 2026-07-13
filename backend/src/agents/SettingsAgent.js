@@ -1,4 +1,5 @@
 const pool=require('../config/db');
+const { refreshQuantityDecimalPlaces } = require('../utils/quantityFormat');
 
 class SettingsAgent {
   constructor(){
@@ -25,6 +26,7 @@ class SettingsAgent {
         );
       }
       await conn.commit();
+      if(Object.prototype.hasOwnProperty.call(data||{},'quantity_decimal_places')) await refreshQuantityDecimalPlaces();
       return {message:'Đã lưu cấu hình cửa hàng'};
     }catch(e){await conn.rollback();throw e;}finally{conn.release();}
   }

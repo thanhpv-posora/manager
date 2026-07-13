@@ -1,12 +1,9 @@
 const db = require('../config/db');
+const { formatQty } = require('../utils/quantityFormat');
 
 function n(value) {
   const number = Number(value || 0);
   return Number.isFinite(number) ? number : 0;
-}
-
-function formatQty(value) {
-  return n(value).toLocaleString('vi-VN', { maximumFractionDigits: 2 });
 }
 
 function normalizeDays(value, fallback = 7) {

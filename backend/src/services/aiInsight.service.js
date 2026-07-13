@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const { formatQty } = require('../utils/quantityFormat');
 
 function normalizeText(text) {
   return String(text || '')
@@ -30,10 +31,6 @@ function normalizeText(text) {
 
 function formatMoney(value) {
   return Number(value || 0).toLocaleString('vi-VN');
-}
-
-function formatQty(value) {
-  return Number(value || 0).toLocaleString('vi-VN', { maximumFractionDigits: 3 });
 }
 
 async function tableColumns(tableName) {

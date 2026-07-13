@@ -1,5 +1,6 @@
 import React,{useEffect,useMemo,useRef,useState}from'react';
 import api from'../../api/api';
+import {formatQty}from'../../utils/quantity';
 
 const hasSpeech=()=>typeof window!=='undefined'&&(window.SpeechRecognition||window.webkitSpeechRecognition);
 
@@ -489,7 +490,7 @@ export default function AIVoicePOSPanel({sessionId='POS_VOICE_001'}){
     <div className="ai-voice-hint">Mẹo: nói từng dòng, hệ thống đã chống nhận trùng trong vài giây. Nếu đọc nhầm: <b>xóa dòng cuối</b> hoặc <b>xóa bóp đi</b>. Muốn làm lại: <b>xóa tất cả</b>.</div>
     {!!previewItems.length&&<div className="ai-live-preview">
       <span>AI đang hiểu:</span>
-      {previewItems.map((it,i)=><b key={i}>{it.quantity}kg {it.name}</b>)}
+      {previewItems.map((it,i)=><b key={i}>{formatQty(it.quantity)}kg {it.name}</b>)}
     </div>}
 
     <div className="ai-voice-pos-examples">
@@ -529,7 +530,7 @@ export default function AIVoicePOSPanel({sessionId='POS_VOICE_001'}){
       {draft.payment_policy?.note&&<p className="muted">{draft.payment_policy.note}</p>}
       {!!warnings.length&&warnings.map((w,i)=><div key={i} className="ai-alert warn">{w}</div>)}
       {!!items.length&&<div className="ai-mini-table">
-        {items.map((it,i)=><div key={i} className="ai-mini-row"><span>{it.product_name}</span><b>{it.quantity} {it.unit}</b></div>)}
+        {items.map((it,i)=><div key={i} className="ai-mini-row"><span>{it.product_name}</span><b>{formatQty(it.quantity)} {it.unit}</b></div>)}
       </div>}
       {draft.total_amount!=null&&<p><b>Tổng:</b> {Number(draft.total_amount||0).toLocaleString('en-US')}đ</p>}
       {draft.paid_amount!=null&&<p><b>Đã thu:</b> {Number(draft.paid_amount||0).toLocaleString('en-US')}đ</p>}

@@ -1,4 +1,4 @@
-import React,{useEffect,useState}from'react';import api from'../api/api';import SafePage from'../components/SafePage';
+import React,{useEffect,useState}from'react';import api from'../api/api';import SafePage from'../components/SafePage';import {setQuantityDecimalPlaces}from'../utils/quantity';
 
 export default function Settings(){
   const[form,setForm]=useState({});
@@ -7,7 +7,11 @@ export default function Settings(){
   const[success,setSuccess]=useState('');
 
   useEffect(()=>{api.get('/settings').then(r=>setForm(r.data||{})).catch(e=>setError(e.response?.data?.message||e.message)).finally(()=>setLoading(false))},[]);
-  const save=async()=>{const r=await api.put('/settings',form);setSuccess(r.data.message)};
+  const save=async()=>{
+    const r=await api.put('/settings',form);
+    setQuantityDecimalPlaces(form.quantity_decimal_places);
+    setSuccess(r.data.message);
+  };
 
   return <SafePage loading={loading} error={error}>
     <div className="card">
@@ -22,6 +26,15 @@ export default function Settings(){
           <option value="A4">A4</option>
         </select>
         <input className="input" placeholder="Footer bill" value={form.bill_footer||''} onChange={e=>setForm({...form,bill_footer:e.target.value})}/>
+        <label className="field-label">
+          <span>Số chữ số thập phân số lượng</span>
+          <select className="select" value={form.quantity_decimal_places??'2'} onChange={e=>setForm({...form,quantity_decimal_places:e.target.value})}>
+            <option value="0">0 (588)</option>
+            <option value="1">1 (588.1)</option>
+            <option value="2">2 (588.10)</option>
+            <option value="3">3 (588.100)</option>
+          </select>
+        </label>
       </div>
       <button className="btn" style={{marginTop:12}} onClick={save}>Lưu cấu hình</button>
       {success&&<p className="success">{success}</p>}

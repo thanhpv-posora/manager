@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import api from '../api/api';
 import SafePage from '../components/SafePage';
 import { showSuccess, showError, showWarning } from '../utils/toast';
+import { formatQty as fmtQty } from '../utils/quantity';
 
 // TODO: PurchaseOrder status should migrate CONFIRMED → APPROVED in future stabilization.
 //       InventoryPurchaseAgent.updateStatus() currently writes 'CONFIRMED'.
@@ -194,7 +195,7 @@ export default function InventoryReceives() {
       const qty = Number(recvQtys[item.id] || 0);
       const rem = remaining(item);
       if (qty > rem + 0.001) {
-        showWarning(`Số lượng thực nhận cho "${item.product_name}" (${qty} kg) vượt quá tồn kho dự kiến còn lại (${rem.toFixed(3)} kg)`);
+        showWarning(`Số lượng thực nhận cho "${item.product_name}" (${fmtQty(qty)} kg) vượt quá tồn kho dự kiến còn lại (${fmtQty(rem)} kg)`);
         return;
       }
     }
@@ -407,11 +408,11 @@ export default function InventoryReceives() {
                         <td>
                           <b style={{ fontSize: 13 }}>{item.product_name}</b>
                         </td>
-                        <td style={{ textAlign: 'right' }}>{fmt(item.quantity)} <span style={{ color: '#9ca3af', fontSize: 11 }}>{item.unit}</span></td>
-                        <td style={{ textAlign: 'right', color: '#6b7280' }}>{fmt(item.expected_stock_qty)}</td>
-                        <td style={{ textAlign: 'right', color: '#6b7280' }}>{fmt(receivedSummary[item.id] || 0)}</td>
+                        <td style={{ textAlign: 'right' }}>{fmtQty(item.quantity)} <span style={{ color: '#9ca3af', fontSize: 11 }}>{item.unit}</span></td>
+                        <td style={{ textAlign: 'right', color: '#6b7280' }}>{fmtQty(item.expected_stock_qty)}</td>
+                        <td style={{ textAlign: 'right', color: '#6b7280' }}>{fmtQty(receivedSummary[item.id] || 0)}</td>
                         <td style={{ textAlign: 'right', fontWeight: 600, color: rem > 0 ? '#059669' : '#9ca3af' }}>
-                          {fmt(rem)}
+                          {fmtQty(rem)}
                         </td>
                         <td>
                           <input
@@ -427,7 +428,7 @@ export default function InventoryReceives() {
                           />
                           {overLimit && (
                             <div style={{ color: '#ef4444', fontSize: 11, marginTop: 2 }}>
-                              Vượt còn lại ({fmt(rem)})
+                              Vượt còn lại ({fmtQty(rem)})
                             </div>
                           )}
                         </td>
@@ -539,11 +540,11 @@ export default function InventoryReceives() {
                         <td>
                           <b style={{ fontSize: 13 }}>{item.product_name}</b>
                         </td>
-                        <td style={{ textAlign: 'right' }}>{fmt(item.ordered_qty)} <span style={{ color: '#9ca3af', fontSize: 11 }}>{item.ordered_unit}</span></td>
-                        <td style={{ textAlign: 'right', color: '#6b7280' }}>{fmt(item.expected_stock_qty)}</td>
-                        <td style={{ textAlign: 'right', fontWeight: 600 }}>{fmt(item.actual_stock_qty)}</td>
+                        <td style={{ textAlign: 'right' }}>{fmtQty(item.ordered_qty)} <span style={{ color: '#9ca3af', fontSize: 11 }}>{item.ordered_unit}</span></td>
+                        <td style={{ textAlign: 'right', color: '#6b7280' }}>{fmtQty(item.expected_stock_qty)}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>{fmtQty(item.actual_stock_qty)}</td>
                         <td style={{ textAlign: 'right', color: Math.abs(diff) < 0.001 ? '#9ca3af' : (diff > 0 ? '#f59e0b' : '#2563eb') }}>
-                          {diff > 0 ? '−' : diff < 0 ? '+' : ''}{fmt(Math.abs(diff))}
+                          {diff > 0 ? '−' : diff < 0 ? '+' : ''}{fmtQty(Math.abs(diff))}
                         </td>
                         <td style={{ textAlign: 'right' }}>
                           {Number(item.purchase_price) > 0

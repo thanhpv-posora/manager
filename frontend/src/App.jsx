@@ -30,6 +30,7 @@ import Registrations from'./pages/Registrations';import UserCustomerMapping from
 import LandingPage from'./pages/LandingPage';
 import MainLayout from'./layouts/MainLayout';
 import api from'./api/api';
+import {loadQuantityDecimalPlaces} from'./utils/quantity';
 
 function roleDefaultPage(user,menus){
   const role=user?.role||'ADMIN';
@@ -63,7 +64,7 @@ export default function App(){
     }
   };
 
-  useEffect(()=>{ if(token) refreshPermissions(); },[token]);
+  useEffect(()=>{ if(token){ refreshPermissions(); loadQuantityDecimalPlaces(api); } },[token]);
 
   const onLoggedIn=(data)=>{
     localStorage.setItem('token',data.token);

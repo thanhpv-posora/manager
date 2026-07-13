@@ -1,9 +1,10 @@
 import React,{useEffect,useMemo,useState}from'react';
 import {Bot,RefreshCw,PackagePlus,CheckCircle2,XCircle,AlertTriangle,Users,BarChart3,ShoppingCart} from'lucide-react';
 import api from'../../api/api';
+import {formatQty}from'../../utils/quantity';
 
 const money=n=>Number(n||0).toLocaleString('en-US')+'đ';
-const qty=n=>Number(n||0).toLocaleString('vi-VN',{maximumFractionDigits:3});
+const qty=formatQty;
 
 function getSessionId(){
   const key='meatbiz_ai_session_id';

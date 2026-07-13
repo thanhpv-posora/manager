@@ -1,6 +1,12 @@
 const QRCode = require('qrcode');
+const { formatQty: qty } = require('../utils/quantityFormat');
 
-function money(n) { return Number(n || 0).toLocaleString('en-US') + 'đ'; }
+// Print currency presentation policy — bare grouped number for table cells (currency
+// stated once in the column heading), " VND" suffix only for standalone totals outside
+// a table. One term ("VND") used consistently in printed output. Does not touch any
+// stored/calculated amount — presentation only.
+function formatMoneyValue(n) { return Number(n || 0).toLocaleString('en-US'); }
+function formatMoneyWithCurrency(n) { return `${formatMoneyValue(n)} VND`; }
 function allocationTender(row){
   const amount = Number(row?.allocated_amount || 0);
   let cash = Number(row?.allocation_cash_amount || 0);
@@ -70,7 +76,6 @@ function ymd(v){
 }
 const floor1=v=>Math.floor((Number(v)||0)*10)/10;
 const animal=v=>floor1(v).toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1});
-const kg1=v=>Number(v||0).toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1});
 
 function publicAppUrl(){
   const raw = process.env.PUBLIC_APP_URL || process.env.FRONTEND_PUBLIC_URL || process.env.SITE_URL || process.env.APP_URL || process.env.FRONTEND_URL || 'https://meatbiz.posora.vn';
@@ -130,40 +135,40 @@ class PrintService {
       : (rawCurrentBill || itemTotal || payableTotal);
     const {allocs:paymentAllocations, paid:allocatedPaidTotal, cash:allocatedCashTotal, bank:allocatedBankTotal, remaining:remainingDebt}=allocationSummary(order,payableTotal);
     const statusLabel = paymentStatusLabel(order.payment_status, remainingDebt);
-    const paymentRows = paymentAllocations.map((a,idx)=>{ const t={cash:Number(a.__cash ?? allocationTender(a).cash), bank:Number(a.__bank ?? allocationTender(a).bank), total:Number(a.__total ?? a.allocated_amount ?? allocationTender(a).total)}; return `<tr><td>Đợt thanh toán ${idx+1}</td><td>${ymd(a.payment_date)}</td><td>${a.payment_code||''}</td><td class="right">${money(t.cash)}</td><td class="right">${money(t.bank)}</td><td class="right"><b>${money(t.total)}</b></td></tr>`; }).join('');
+    const paymentRows = paymentAllocations.map((a,idx)=>{ const t={cash:Number(a.__cash ?? allocationTender(a).cash), bank:Number(a.__bank ?? allocationTender(a).bank), total:Number(a.__total ?? a.allocated_amount ?? allocationTender(a).total)}; return `<tr><td>Đợt thanh toán ${idx+1}</td><td>${ymd(a.payment_date)}</td><td>${a.payment_code||''}</td><td class="right">${formatMoneyValue(t.cash)}</td><td class="right">${formatMoneyValue(t.bank)}</td><td class="right"><b>${formatMoneyValue(t.total)}</b></td></tr>`; }).join('');
     const billDate = order.calendar_type==='LUNAR' && order.lunar_date_text ? `${order.lunar_date_text} ÂL / ${ymd(order.order_date)} DL` : (ymd(order.order_date) || ymd(pay.payment_date) || '');
     const createdDate = ymd(order.created_at) || ymd(order.order_date);
     const showInstallment = monthlyInstallment > 0;
     const oldDebtRows = (order.old_debts||[]).map(d=>`
-      <tr><td>${d.order_date}</td><td>${d.order_code}</td><td class="right">${money(d.total_amount)}</td><td class="right">${money(d.paid_amount)}</td><td class="right"><b>${money(d.debt_amount)}</b></td></tr>
+      <tr><td>${d.order_date}</td><td>${d.order_code}</td><td class="right">${formatMoneyValue(d.total_amount)}</td><td class="right">${formatMoneyValue(d.paid_amount)}</td><td class="right"><b>${formatMoneyValue(d.debt_amount)}</b></td></tr>
     `).join('');
     const rows = order.items.map((i,idx)=>`
-      <tr><td>${idx+1}</td><td>${i.product_name}</td><td class="right">${i.quantity} ${i.unit}</td><td class="right">${money(i.sale_price)}</td><td class="right">${money(i.total_price)}</td></tr>
+      <tr><td>${idx+1}</td><td>${i.product_name}</td><td class="center">${i.unit}</td><td class="right">${qty(i.quantity,settings.quantity_decimal_places)}</td><td class="right">${formatMoneyValue(i.sale_price)}</td><td class="right">${formatMoneyValue(i.total_price)}</td></tr>
     `).join('');
     return `<!doctype html><html><head><meta charset="utf-8"><title>${order.order_code}</title><style>
 body{font-family:Arial,sans-serif;margin:28px;color:#111}.header{display:flex;justify-content:space-between;border-bottom:3px solid #7f1d1d;padding-bottom:14px}
 .logo{font-size:30px;font-weight:900;color:#7f1d1d}.sub{color:#666;font-size:13px}.qr{width:120px;height:120px}.info{margin:18px 0;display:grid;grid-template-columns:1fr 1fr;gap:10px}
-table{width:100%;border-collapse:collapse;margin-top:10px}th{background:#7f1d1d;color:#fff}td,th{border:1px solid #ddd;padding:9px}.right{text-align:right}
+table{width:100%;border-collapse:collapse;margin-top:10px}th{background:#7f1d1d;color:#fff}td,th{border:1px solid #ddd;padding:9px}.right{text-align:right;white-space:nowrap}.center{text-align:center}
 .payment-box{margin-top:16px}.payment-line{font-size:17px;font-weight:700;margin-top:6px}.total{margin-top:15px;text-align:right;font-size:20px;font-weight:900}.section-title{margin-top:20px;font-size:16px;font-weight:900;color:#7f1d1d;border-bottom:2px solid #7f1d1d;padding-bottom:4px}.debt-summary{margin-top:10px;margin-left:auto;max-width:460px}.debt-summary div{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px dashed #ddd}.debt-summary b{font-size:17px}.status-paid{color:#15803d;font-weight:900}.status-unpaid{color:#b91c1c;font-weight:900}.print-btn{position:fixed;right:20px;top:20px;padding:12px 18px;background:#7f1d1d;color:#fff;border:0;border-radius:10px;font-weight:700}
 .sign{display:flex;justify-content:space-between;margin-top:45px;text-align:center}@media print{.print-btn{display:none}body{margin:10px}}</style></head><body>
 <button class="print-btn" onclick="window.print()">IN BILL</button>
 <div class="header"><div><div class="logo">${settings.shop_name||"MEATBIZ FOOD"}</div><div class="sub">${settings.shop_address||""} ${settings.shop_phone? " - " + settings.shop_phone : ""}</div><div class="sub">Phiếu giao hàng / Bill bán hàng</div><div>Mã bill: <b>${order.order_code}</b></div><div>Ngày lập phiếu: ${createdDate}</div><div>Ngày xuất hàng: ${billDate}</div></div><div><img class="qr" src="${qr}"><div class="sub">Quét QR xem bill</div></div></div>
 <div class="info"><div><b>Khách hàng:</b> ${order.customer_name}<br><b>SĐT:</b> ${order.phone || ''}<br><b>Địa chỉ:</b> ${order.address || ''}</div><div><b>Trạng thái:</b> ${order.payment_status}<br><b>Ghi chú:</b> ${order.note || ''}</div></div>
-<table><thead><tr><th>STT</th><th>Mặt hàng</th><th>SL</th><th>Đơn giá</th><th>Thành tiền</th></tr></thead><tbody>${rows}</tbody></table>
+<table><thead><tr><th>STT</th><th>Mặt hàng</th><th>ĐVT</th><th>Số lượng</th><th>Đơn giá (VND)</th><th>Thành tiền (VND)</th></tr></thead><tbody>${rows}</tbody></table>
 <div class="section-title">THÔNG TIN THANH TOÁN</div>
-<table><thead><tr><th>Nội dung</th><th>Ngày thu</th><th>Mã phiếu thu</th><th>Tiền mặt</th><th>Chuyển khoản</th><th>Giá trị thanh toán</th></tr></thead><tbody>${paymentRows || '<tr><td colspan="6" class="right">Chưa phát sinh thanh toán cho bill này</td></tr>'}</tbody></table>
+<table><thead><tr><th>Nội dung</th><th>Ngày thu</th><th>Mã phiếu thu</th><th>Tiền mặt (VND)</th><th>Chuyển khoản (VND)</th><th>Giá trị thanh toán (VND)</th></tr></thead><tbody>${paymentRows || '<tr><td colspan="6" class="right">Chưa phát sinh thanh toán cho bill này</td></tr>'}</tbody></table>
 <div class="section-title">TỔNG HỢP CÔNG NỢ</div>
 <div class="debt-summary">
-  <div><span>Giá trị hàng hóa</span><b>${money(todayBillTotal)}</b></div>
-  ${showInstallment ? `<div><span>Góp nợ/ngày</span><b>${money(monthlyInstallment)}</b></div>` : ''}
-  <div><span>Tổng giá trị bill</span><b>${money(payableTotal)}</b></div>
-  <div><span>Tổng tiền mặt đã thanh toán</span><b>${money(allocatedCashTotal)}</b></div>
-  <div><span>Tổng chuyển khoản đã thanh toán</span><b>${money(allocatedBankTotal)}</b></div>
-  <div><span>Tổng đã thanh toán</span><b>${money(allocatedPaidTotal)}</b></div>
-  <div><span>Dư nợ còn lại</span><b>${money(remainingDebt)}</b></div>
+  <div><span>Giá trị hàng hóa</span><b>${formatMoneyWithCurrency(todayBillTotal)}</b></div>
+  ${showInstallment ? `<div><span>Góp nợ/ngày</span><b>${formatMoneyWithCurrency(monthlyInstallment)}</b></div>` : ''}
+  <div><span>Tổng giá trị bill</span><b>${formatMoneyWithCurrency(payableTotal)}</b></div>
+  <div><span>Tổng tiền mặt đã thanh toán</span><b>${formatMoneyWithCurrency(allocatedCashTotal)}</b></div>
+  <div><span>Tổng chuyển khoản đã thanh toán</span><b>${formatMoneyWithCurrency(allocatedBankTotal)}</b></div>
+  <div><span>Tổng đã thanh toán</span><b>${formatMoneyWithCurrency(allocatedPaidTotal)}</b></div>
+  <div><span>Dư nợ còn lại</span><b>${formatMoneyWithCurrency(remainingDebt)}</b></div>
   <div><span>Tình trạng thanh toán</span><b class="${remainingDebt<=0?'status-paid':'status-unpaid'}">${statusLabel}</b></div>
 </div>
-${oldDebtRows ? `<h3>Những bill chưa thanh toán</h3><table><thead><tr><th>Ngày</th><th>Bill</th><th>Tổng</th><th>Đã thu</th><th>Còn nợ</th></tr></thead><tbody>${oldDebtRows}</tbody></table><div class="total">Tổng nợ cũ: ${money(order.old_debt_total)}</div>` : ''}
+${oldDebtRows ? `<h3>Những bill chưa thanh toán</h3><table><thead><tr><th>Ngày</th><th>Bill</th><th>Tổng (VND)</th><th>Đã thu (VND)</th><th>Còn nợ (VND)</th></tr></thead><tbody>${oldDebtRows}</tbody></table><div class="total">Tổng nợ cũ: ${formatMoneyWithCurrency(order.old_debt_total)}</div>` : ''}
 <div class="sign"><div>Người giao<br><br><br>____________</div><div>Khách nhận<br><br><br>____________</div></div></body></html>`;
   }
 
@@ -191,7 +196,7 @@ ${oldDebtRows ? `<h3>Những bill chưa thanh toán</h3><table><thead><tr><th>Ng
 
     const {allocs:paymentAllocations, paid:allocatedPaidTotal, cash:allocatedCashTotal, bank:allocatedBankTotal, remaining:remainingDebt}=allocationSummary(order,payableTotal);
     const statusLabel = paymentStatusLabel(order.payment_status, remainingDebt);
-    const paymentRows = paymentAllocations.map((a,idx)=>{ const t={cash:Number(a.__cash ?? allocationTender(a).cash), bank:Number(a.__bank ?? allocationTender(a).bank), total:Number(a.__total ?? a.allocated_amount ?? allocationTender(a).total)}; return `<div>Dot TT ${idx+1}: TM ${money(t.cash)} / CK ${money(t.bank)}</div><div class="right">Gia tri TT: ${money(t.total)}</div>`; }).join('');
+    const paymentRows = paymentAllocations.map((a,idx)=>{ const t={cash:Number(a.__cash ?? allocationTender(a).cash), bank:Number(a.__bank ?? allocationTender(a).bank), total:Number(a.__total ?? a.allocated_amount ?? allocationTender(a).total)}; return `<div>Dot TT ${idx+1}: TM ${formatMoneyValue(t.cash)} / CK ${formatMoneyValue(t.bank)}</div><div class="right">Gia tri TT: ${formatMoneyValue(t.total)}</div>`; }).join('');
     const billDate = order.calendar_type==='LUNAR' && order.lunar_date_text ? `${order.lunar_date_text} ÂL / ${ymd(order.order_date)} DL` : (ymd(order.order_date) || ymd(pay.payment_date) || '');
     const createdDate = ymd(order.created_at) || ymd(order.order_date);
     const showInstallment = monthlyInstallment > 0;
@@ -199,9 +204,8 @@ ${oldDebtRows ? `<h3>Những bill chưa thanh toán</h3><table><thead><tr><th>Ng
     const rows = (order.items||[]).map((i,idx)=>`
       <tr>
         <td>${idx+1}. ${i.product_name}<br>
-          ${i.quantity} ${i.unit} x ${money(i.sale_price)}
+          ${qty(i.quantity,settings.quantity_decimal_places)} ${i.unit} × ${formatMoneyValue(i.sale_price)} = ${formatMoneyValue(i.total_price)}
         </td>
-        <td class="right">${money(i.total_price)}</td>
       </tr>
     `).join('');
 
@@ -209,7 +213,7 @@ ${oldDebtRows ? `<h3>Những bill chưa thanh toán</h3><table><thead><tr><th>Ng
 body{font-family:Arial,sans-serif;margin:0;padding:6px;color:#111;width:78mm;font-size:12px}
 .center{text-align:center}.shop{font-size:16px;font-weight:900}.muted{font-size:11px;color:#555}
 hr{border:0;border-top:1px dashed #333;margin:6px 0}
-table{width:100%;border-collapse:collapse}td{padding:3px 0;vertical-align:top}.right{text-align:right}
+table{width:100%;border-collapse:collapse}td{padding:3px 0;vertical-align:top}.right{text-align:right;white-space:nowrap}
 .total{font-size:13px;font-weight:900;margin-top:4px}.print-btn{position:fixed;right:10px;top:10px;padding:8px;background:#111;color:#fff;border:0;border-radius:6px}
 @media print{.print-btn{display:none}body{width:78mm;margin:0}}
 </style></head><body>
@@ -219,6 +223,7 @@ table{width:100%;border-collapse:collapse}td{padding:3px 0;vertical-align:top}.r
   <div class="muted">${settings.shop_address||""}</div>
   <div class="muted">${settings.shop_phone||""}</div>
   <div><b>PHIẾU BÁN HÀNG</b></div>
+  <div class="muted">Đơn vị tiền: VND</div>
 </div>
 <hr>
 <div>Mã bill: <b>${order.order_code}</b></div>
@@ -233,14 +238,14 @@ table{width:100%;border-collapse:collapse}td{padding:3px 0;vertical-align:top}.r
 <div>${paymentRows || 'Chua phat sinh thanh toan'}</div>
 <hr>
 <div><b>TONG HOP CONG NO</b></div>
-<div class="right total">Gia tri hang hoa: ${money(todayBillTotal)}</div>
-${showInstallment ? `<div class="right total">Gop no/ngay: ${money(monthlyInstallment)}</div>` : ''}
-<div class="right total">Tong gia tri bill: ${money(payableTotal)}</div>
-<div class="right total">Tong tien mat: ${money(allocatedCashTotal)}</div>
-<div class="right total">Tong chuyen khoan: ${money(allocatedBankTotal)}</div>
-<div class="right total">Tong da TT: ${money(allocatedPaidTotal)}</div>
-<div class="right total">Du no con lai: ${money(remainingDebt)}</div>
+<div class="right total">Gia tri hang hoa: ${formatMoneyValue(todayBillTotal)}</div>
+${showInstallment ? `<div class="right total">Gop no/ngay: ${formatMoneyValue(monthlyInstallment)}</div>` : ''}
+<div class="right total">Tong tien mat: ${formatMoneyValue(allocatedCashTotal)}</div>
+<div class="right total">Tong chuyen khoan: ${formatMoneyValue(allocatedBankTotal)}</div>
+<div class="right total">Tong da TT: ${formatMoneyValue(allocatedPaidTotal)}</div>
+<div class="right total">Du no con lai: ${formatMoneyValue(remainingDebt)}</div>
 <div class="right total">Tinh trang: ${statusLabel}</div>
+<div class="right total">TONG: ${formatMoneyWithCurrency(payableTotal)}</div>
 <hr>
 <div class="center muted">${settings.bill_footer||'Cảm ơn quý khách!'}</div>
 </body></html>`;
@@ -248,6 +253,7 @@ ${showInstallment ? `<div class="right total">Gop no/ngay: ${money(monthlyInstal
 
 
   async lotHtml(lot) {
+    const settings = await this.settings();
     const expr = (v, fallback) => v && String(v).trim() ? v : fallback;
     const rawExpr = expr(lot.raw_weight_expr, lot.raw_weight);
     const boneExpr = expr(lot.bone_weight_expr, lot.bone_weight);
@@ -265,34 +271,34 @@ ${showInstallment ? `<div class="right total">Gop no/ngay: ${money(monthlyInstal
 
     return `<!doctype html><html><head><meta charset="utf-8"><title>${lot.lot_code}</title><style>
 body{font-family:Arial;margin:28px;color:#111}.header{display:flex;justify-content:space-between;gap:18px;border-bottom:3px solid #7f1d1d;padding-bottom:12px}.logo{font-size:28px;font-weight:900;color:#7f1d1d}.qr{width:120px;height:120px}.sub{color:#666;font-size:12px;text-align:center}
-table{width:100%;border-collapse:collapse;margin-top:18px}td,th{border:1px solid #ddd;padding:10px}th{background:#7f1d1d;color:white}.right{text-align:right}.total{font-size:22px;font-weight:900;text-align:right;margin-top:18px}.print{position:fixed;right:20px;top:20px;padding:12px 18px;background:#7f1d1d;color:#fff;border:0;border-radius:10px}.note{white-space:pre-wrap}.muted{color:#666}@media print{.print{display:none}}</style></head><body>
+table{width:100%;border-collapse:collapse;margin-top:18px}td,th{border:1px solid #ddd;padding:10px}th{background:#7f1d1d;color:white}.right{text-align:right;white-space:nowrap}.total{font-size:22px;font-weight:900;text-align:right;margin-top:18px}.print{position:fixed;right:20px;top:20px;padding:12px 18px;background:#7f1d1d;color:#fff;border:0;border-radius:10px}.note{white-space:pre-wrap}.muted{color:#666}@media print{.print{display:none}}</style></head><body>
 <button class="print" onclick="window.print()">IN PHIẾU</button><div class="header"><div><div class="logo">PHIẾU NHẬP LÔ / NHÀ CUNG CẤP</div><div>Mã lô: <b>${lot.lot_code}</b></div><div>Ngày lập phiếu: ${lotCreatedDate}</div><div>Ngày nhập hàng: ${lot.calendar_type==='LUNAR' ? `${lotMappedSolarDate} (${lotDate} âm lịch)` : lotMappedSolarDate}</div><div>Lịch tính bill: ${lot.calendar_type==='LUNAR'?'Âm lịch':'Dương lịch'}</div></div><div><img class="qr" src="${lotQr}"><div class="sub">Quét QR xem phiếu NCC</div></div></div>
 <p><b>Nhà cung cấp:</b> ${lot.supplier_name||''} - ${lot.supplier_phone||''}<br><b>Địa chỉ:</b> ${lot.supplier_address||''}</p>
 <table><tbody>
-<tr><th>Nội dung</th><th>Cách nhập</th><th class="right">Giá trị</th></tr>
-<tr><td>Tổng kg thịt xô</td><td>${rawExpr}</td><td class="right">${lot.raw_weight||0} kg</td></tr>
-<tr><td>Xương sườn quy đổi thịt xô</td><td>${boneExpr} / 2</td><td class="right">+${Number(lot.bone_weight||0)/2} kg</td></tr>
-<tr><td>Trừ xô</td><td>${deductExpr}</td><td class="right">-${lot.deducted_weight||0} kg</td></tr>
-<tr><td>Trừ bò hư</td><td></td><td class="right">-${lot.damage_weight||0} kg</td></tr>
-<tr><td>Trừ mỡ</td><td></td><td class="right">-${lot.fat_weight||0} kg</td></tr>
-<tr><td>Trừ khác</td><td>${lot.deduct_note||''}</td><td class="right">-${lot.other_deduct_weight||0} kg</td></tr>
-<tr><td><b>Kg bò xô tính tiền</b></td><td></td><td class="right"><b>${lot.total_weight} kg</b></td></tr>
+<tr><th>Nội dung</th><th>Cách nhập</th><th class="right">Giá trị (kg)</th></tr>
+<tr><td>Tổng kg thịt xô</td><td>${rawExpr}</td><td class="right">${qty(lot.raw_weight,settings.quantity_decimal_places)}</td></tr>
+<tr><td>Xương sườn quy đổi thịt xô</td><td>${boneExpr} / 2</td><td class="right">+${qty(Number(lot.bone_weight||0)/2,settings.quantity_decimal_places)}</td></tr>
+<tr><td>Trừ xô</td><td>${deductExpr}</td><td class="right">-${qty(lot.deducted_weight,settings.quantity_decimal_places)}</td></tr>
+<tr><td>Trừ bò hư</td><td></td><td class="right">-${qty(lot.damage_weight,settings.quantity_decimal_places)}</td></tr>
+<tr><td>Trừ mỡ</td><td></td><td class="right">-${qty(lot.fat_weight,settings.quantity_decimal_places)}</td></tr>
+<tr><td>Trừ khác</td><td>${lot.deduct_note||''}</td><td class="right">-${qty(lot.other_deduct_weight,settings.quantity_decimal_places)}</td></tr>
+<tr><td><b>Kg bò xô tính tiền</b></td><td></td><td class="right"><b>${qty(lot.total_weight,settings.quantity_decimal_places)}</b></td></tr>
 </tbody></table>
 
 <table><tbody>
-<tr><th>Phân loại bò</th><th class="right">Số con</th><th class="right">Kg phân bổ</th><th class="right">Đơn giá</th></tr>
-<tr><td>Bò đực</td><td class="right">${animal(lot.male_animals)}</td><td class="right">${kg1(lot.male_weight)} kg</td><td class="right">${money(lot.male_price||lot.purchase_price)} / kg</td></tr>
-<tr><td>Bò cái</td><td class="right">${animal(lot.female_animals)}</td><td class="right">${kg1(lot.female_weight)} kg</td><td class="right">${money(lot.female_price||lot.purchase_price)} / kg</td></tr>
-<tr><td>Thịt vụn</td><td class="right"></td><td class="right">${Number(lot.fragment_weight||0).toFixed(3)} kg</td><td class="right">${money(lot.fragment_price||0)} / kg</td></tr>
+<tr><th>Phân loại bò</th><th class="right">Số con</th><th class="right">Kg phân bổ</th><th class="right">Đơn giá (VND/kg)</th></tr>
+<tr><td>Bò đực</td><td class="right">${animal(lot.male_animals)}</td><td class="right">${qty(lot.male_weight,settings.quantity_decimal_places)}</td><td class="right">${formatMoneyValue(lot.male_price||lot.purchase_price)}</td></tr>
+<tr><td>Bò cái</td><td class="right">${animal(lot.female_animals)}</td><td class="right">${qty(lot.female_weight,settings.quantity_decimal_places)}</td><td class="right">${formatMoneyValue(lot.female_price||lot.purchase_price)}</td></tr>
+<tr><td>Thịt vụn</td><td class="right"></td><td class="right">${qty(lot.fragment_weight,settings.quantity_decimal_places)}</td><td class="right">${formatMoneyValue(lot.fragment_price||0)}</td></tr>
 </tbody></table>
 
 <table><tbody>
-<tr><td>Đã ứng</td><td class="right">${money(lot.advance_amount)}</td></tr>
-<tr><td>Đã trả</td><td class="right">${money(lot.paid_amount)}</td></tr>
-<tr><td>Còn phải trả</td><td class="right">${money(lot.remaining_amount)}</td></tr>
+<tr><td>Đã ứng</td><td class="right">${formatMoneyValue(lot.advance_amount)}</td></tr>
+<tr><td>Đã trả</td><td class="right">${formatMoneyValue(lot.paid_amount)}</td></tr>
+<tr><td>Còn phải trả</td><td class="right">${formatMoneyValue(lot.remaining_amount)}</td></tr>
 <tr><td>Ghi chú / mô tả lô</td><td class="note">${lot.note||''}</td></tr>
 </tbody></table>
-<div class="total">Thành tiền: ${money(lot.total_cost)}</div></body></html>`;
+<div class="total">Thành tiền: ${formatMoneyWithCurrency(lot.total_cost)}</div></body></html>`;
   }
   
 }

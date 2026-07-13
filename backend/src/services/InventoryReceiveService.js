@@ -4,6 +4,7 @@ const pool = require('../config/db');
 const { nextCode } = require('../utils/code');
 const InventoryService = require('./InventoryService');
 const WarehouseAgent = require('../agents/WarehouseAgent');
+const { formatQty } = require('../utils/quantityFormat');
 
 class InventoryReceiveService {
 
@@ -125,8 +126,8 @@ class InventoryReceiveService {
         if (actualStockQty > remaining + 0.001) {
           throw Object.assign(
             new Error(
-              `Số lượng thực nhận (${actualStockQty} kg) vượt quá số lượng tồn kho dự kiến còn lại ` +
-              `(${remaining.toFixed(3)} kg) cho sản phẩm ID=${poItem.product_id}`
+              `Số lượng thực nhận (${formatQty(actualStockQty)} kg) vượt quá số lượng tồn kho dự kiến còn lại ` +
+              `(${formatQty(remaining)} kg) cho sản phẩm ID=${poItem.product_id}`
             ),
             { status: 400 }
           );
@@ -248,8 +249,8 @@ class InventoryReceiveService {
         if (qty > remaining + 0.001) {
           throw Object.assign(
             new Error(
-              `Số lượng thực nhận (${qty} kg) vượt quá số lượng tồn kho dự kiến còn lại ` +
-              `(${remaining.toFixed(3)} kg) cho sản phẩm ID=${item.product_id}`
+              `Số lượng thực nhận (${formatQty(qty)} kg) vượt quá số lượng tồn kho dự kiến còn lại ` +
+              `(${formatQty(remaining)} kg) cho sản phẩm ID=${item.product_id}`
             ),
             { status: 400 }
           );

@@ -1,6 +1,7 @@
 const db = require('../config/db');
 const { findBestMatch } = require('../utils/textNormalizer');
 const InventoryService = require('./InventoryService');
+const { formatQty } = require('../utils/quantityFormat');
 
 function normalizeInventoryMode(value) {
   const mode = String(value || 'NON_STOCK').toUpperCase();
@@ -78,7 +79,7 @@ async function validateOrderInventory(conn, items = []) {
       product.stock_quantity < qty
     ) {
       throw new Error(
-        `Không đủ tồn kho ${product.name}. Tồn hiện tại: ${product.stock_quantity}, cần bán: ${qty}`
+        `Không đủ tồn kho ${product.name}. Tồn hiện tại: ${formatQty(product.stock_quantity)}, cần bán: ${formatQty(qty)}`
       );
     }
   }

@@ -1,5 +1,6 @@
 'use strict';
 const { normalizeInventoryMode } = require('../utils/inventoryMode');
+const { formatQty } = require('../utils/quantityFormat');
 
 // InventoryMovementService — INV-004
 //
@@ -153,7 +154,7 @@ class InventoryMovementService {
 
     if (Number(p.stock_quantity) < qty) {
       throw new Error(
-        `Không đủ tồn kho cho "${p.name}". Tồn hiện tại: ${p.stock_quantity}, cần xuất: ${qty}.` +
+        `Không đủ tồn kho cho "${p.name}". Tồn hiện tại: ${formatQty(p.stock_quantity)}, cần xuất: ${formatQty(qty)}.` +
         ` Nếu đây là hàng bò xô/pha lóc, vào Mặt hàng / sửa giá đổi mode sang CARCASS_PART hoặc bật Cho phép không kiểm tồn.`
       );
     }

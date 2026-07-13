@@ -50,15 +50,43 @@ class ProductAgent {
   }
 
 
-  async categories() {
-    const [rows] = await pool.query(`SELECT * FROM product_categories WHERE del_flg=0 AND is_active=1 ORDER BY sort_order,id`);
+  async categories(includeInactive=false) {
+    if(!includeInactive){
+      const [rows] = await pool.query(`SELECT * FROM product_categories WHERE del_flg=0 AND is_active=1 ORDER BY sort_order,name`);
+      return rows;
+    }
+    const [rows] = await pool.query(
+      `SELECT pc.*, COUNT(p.id) product_count
+       FROM product_categories pc
+       LEFT JOIN products p ON p.category_id=pc.id AND p.del_flg=0
+       WHERE pc.del_flg=0
+       GROUP BY pc.id
+       ORDER BY pc.sort_order,pc.name`
+    );
     return rows;
+  }
+
+  async assertUniqueCategoryName(name, excludeId=null){
+    const normalized=this.normalizeName(name);
+    if(!normalized) throw new Error('Thiếu tên nhóm hàng');
+    const params=[normalized];
+    let sql=`SELECT id,name FROM product_categories WHERE del_flg=0 AND LOWER(TRIM(name))=?`;
+    if(excludeId){
+      sql+=` AND id<>?`;
+      params.push(excludeId);
+    }
+    sql+=` LIMIT 1`;
+    const [rows]=await pool.query(sql,params);
+    if(rows.length){
+      throw new Error('Danh mục đã tồn tại');
+    }
   }
 
   async addCategory(data) {
     if(!data.name) throw new Error('Thiếu tên nhóm hàng');
-    await pool.query(`INSERT INTO product_categories(name,sort_order,is_active,del_flg) VALUES(?,?,1,0)`, [data.name, data.sort_order||0]);
-    return {message:'Đã thêm nhóm hàng'};
+    await this.assertUniqueCategoryName(data.name);
+    const [result] = await pool.query(`INSERT INTO product_categories(name,sort_order,is_active,del_flg) VALUES(?,?,?,0)`, [data.name, data.sort_order||0, data.is_active===0||data.is_active===false?0:1]);
+    return {message:'Đã thêm nhóm hàng', id: result.insertId};
   }
 
   async updateCategory(id,data) {
@@ -67,6 +95,10 @@ class ProductAgent {
   }
 
   async removeCategory(id, reason, userId) {
+    const [[usage]] = await pool.query(`SELECT COUNT(*) cnt FROM products WHERE category_id=?`, [id]);
+    if(Number(usage.cnt) > 0) {
+      throw new Error('Danh mục đang được sử dụng, không thể xóa.');
+    }
     return SoftDeleteAgent.softDelete('category', id, reason, userId);
   }
 

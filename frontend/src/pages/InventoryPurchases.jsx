@@ -5,6 +5,7 @@ import SafePage from '../components/SafePage';
 import { showSuccess, showError, showWarning } from '../utils/toast';
 import EnterpriseAutocomplete from '../components/common/EnterpriseAutocomplete';
 import MoneyInput from '../components/MoneyInput';
+import { formatQty } from '../utils/quantity';
 
 const STATUS_LABEL = {
   DRAFT: 'Nháp',
@@ -45,7 +46,7 @@ const REQ = <span style={{ color: '#ef4444' }}> *</span>;
 
 function todayISO() { return new Date().toISOString().slice(0, 10); }
 const fmt    = n => Math.round(Number(n || 0)).toLocaleString('en-US');
-const fmtQty = n => Number(Number(n || 0).toFixed(2)).toLocaleString('en-US', { maximumFractionDigits: 2 });
+const fmtQty = formatQty;
 const fmtDate = s => s ? String(s).slice(0, 10) : '—';
 // dd/mm/yyyy hh:mm — used for timeline event_time, which is a full datetime (unlike receive_date/DATE fields above)
 const fmtDateTime = s => {

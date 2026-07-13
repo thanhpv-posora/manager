@@ -10,6 +10,7 @@ const { errorHandler }=require('./middleware/errorHandler');
 const { requestFileLogger } = require('./middleware/requestFileLogger');
 const fileLogger = require('./services/fileLogger.service');
 const { validateStartupConfig, parseAllowedOrigins } = require('./config/startupValidator');
+const { refreshQuantityDecimalPlaces } = require('./utils/quantityFormat');
 
 function buildCorsOptions() {
   const isProd = process.env.NODE_ENV === 'production';
@@ -101,5 +102,6 @@ process.on('unhandledRejection', (reason) => {
 const port=Number(process.env.PORT||4000);
 validateStartupConfig()
   .then(()=>ensureSchema())
+  .then(()=>refreshQuantityDecimalPlaces())
   .then(()=>app.listen(port,()=>{ console.log(`API running on http://localhost:${port}`); fileLogger.logSystem('SERVER_STARTED', { port }); }))
   .catch(e=>{ fileLogger.logError('DB_BOOTSTRAP_FAILED', { error: e }); console.error('DB bootstrap failed',e);process.exit(1);});

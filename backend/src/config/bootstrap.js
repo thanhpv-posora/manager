@@ -1187,8 +1187,17 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
         ('shop_address',''),
         ('bill_footer','Cảm ơn quý khách!'),
         ('print_size','K80'),
-        ('currency','VND')`);
+        ('currency','VND'),
+        ('quantity_decimal_places','2')`);
     }
+
+    // QTY-DECIMAL-CONFIG-001: backfill quantity_decimal_places for existing installs —
+    // INSERT IGNORE is a no-op if the key already exists (setting_key is UNIQUE), and only
+    // seeds the '2' default if missing. Global quantity display formatting policy — see
+    // frontend/src/utils/quantity.js and backend/src/services/PrintService.js.
+    await conn.query(
+      `INSERT IGNORE INTO business_settings(setting_key,setting_value) VALUES ('quantity_decimal_places','2')`
+    );
 
     const [userCount] = await conn.query(`SELECT COUNT(*) cnt FROM users`);
     if (Number(userCount[0].cnt) === 0) {
@@ -1423,6 +1432,32 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
     await conn.query(
       `UPDATE app_menus SET title='Nhập xô'
        WHERE menu_key='lots'`
+    );
+
+    // S4.2 — CATALOG-NAMING-STD-002: rename 'products' menu label to 'Mặt hàng'.
+    // Audit concluded this screen is Product CRUD, not a Category management module —
+    // Category is still just a lookup/master table with no standalone workflow, so a
+    // catalog-grouping-framed label was misleading. Same idempotent-rename pattern as
+    // PURCHASE-NAMING-STD-001/LOTS-NAMING-STD-001 above. Labels only — menu_key/route/
+    // component/permissions untouched, safe to re-run on every startup.
+    await conn.query(
+      `UPDATE app_menus SET title='Mặt hàng', subtitle='Quản lý mặt hàng, mã hàng, danh mục, đơn vị và giá bán mặc định.'
+       WHERE menu_key='products'`
+    );
+
+    // QTY-DECIMAL/MENU-CLEANUP-001 — CTO final audit: deactivate the stale 'product-categories'
+    // menu row left over from an abandoned standalone Category-management module attempt.
+    // That row's page_component ('ProductCategories') was never implemented in App.jsx, so
+    // clicking it silently fell through to the default page (Dashboard / AI Operating Center) —
+    // the reported "Danh mục hàng hóa opens AI Operating Center" defect. Category management now
+    // lives inside Products.jsx (+ Thêm danh mục... / Quản lý danh mục...), not a separate menu.
+    // is_active=0 is the project's existing menu-retirement convention — UserPermissionAgent's
+    // menu/permission queries all gate on is_active=1, so this fully removes it from every
+    // user's sidebar and from assignable permissions without deleting audit history. The row's
+    // menu_key stays UNIQUE and reserved — do not reuse 'product-categories' for another module.
+    // Idempotent: no-op once already inactive, safe to re-run on every startup.
+    await conn.query(
+      `UPDATE app_menus SET is_active=0, visible_in_sidebar=0 WHERE menu_key='product-categories'`
     );
 
     // MENU-MY-PREFERENCES-FINAL-FIX: place my-menu at the end of the system group — idempotent.

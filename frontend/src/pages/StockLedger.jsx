@@ -2,12 +2,13 @@ import React, { useEffect, useState, useCallback } from 'react';
 import api from '../api/api';
 import SafePage from '../components/SafePage';
 import { showError } from '../utils/toast';
+import { formatQty } from '../utils/quantity';
 
 // S5.2 — Stock Ledger. Read-only view over stock_transactions
 // (backend/src/agents/StockLedgerAgent.js). This page never writes anything —
 // there is no create/edit/delete UI here by design.
 
-const fmt = n => Number(n || 0).toLocaleString('vi-VN', { maximumFractionDigits: 3 });
+const fmt = formatQty;
 const fmtDate = s => s ? String(s).slice(0, 10) : '—';
 
 const TYPE_LABEL = {

@@ -1,4 +1,5 @@
 const inventoryService = require('./inventory.service');
+const { formatQty } = require('../utils/quantityFormat');
 
 function normalizeText(text) {
   return String(text || '')
@@ -53,10 +54,6 @@ function extractProductName(message) {
   return '';
 }
 
-function formatNumber(value) {
-  return Number(value || 0).toLocaleString('vi-VN');
-}
-
 async function handleInventoryInsight(message) {
   const text = normalizeText(message);
 
@@ -69,7 +66,7 @@ async function handleInventoryInsight(message) {
       text: rows.length === 0
         ? 'Hiện chưa có sản phẩm TRACK_STOCK nào dưới ngưỡng tồn kho.'
         : 'Các sản phẩm sắp hết:\n' + rows.map((row, index) => {
-            return `${index + 1}. ${row.name}: còn ${formatNumber(row.stock_quantity)} ${row.unit || ''}, ngưỡng ${formatNumber(row.low_stock_threshold)}.`;
+            return `${index + 1}. ${row.name}: còn ${formatQty(row.stock_quantity)} ${row.unit || ''}, ngưỡng ${formatQty(row.low_stock_threshold)}.`;
           }).join('\n')
     };
   }
@@ -86,7 +83,7 @@ async function handleInventoryInsight(message) {
           ? `Không tìm thấy sản phẩm kiểm tồn phù hợp với: ${productName}.`
           : 'Không có sản phẩm kiểm tồn phù hợp.')
       : rows.map((row) => {
-          return `${row.name}: còn ${formatNumber(row.stock_quantity)} ${row.unit || ''} (${row.inventory_mode})`;
+          return `${row.name}: còn ${formatQty(row.stock_quantity)} ${row.unit || ''} (${row.inventory_mode})`;
         }).join('\n')
   };
 }

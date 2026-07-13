@@ -41,6 +41,8 @@ export default function CreateOrder({setPage}){
   const[orderDate,setOrderDate]=useState(today);
   const[billCalendarType,setBillCalendarType]=useState('SOLAR');
   const[billLunarDateText,setBillLunarDateText]=useState('');
+  const[billLunarDraftText,setBillLunarDraftText]=useState('');
+  const[shipDateDialogError,setShipDateDialogError]=useState('');
   const[shipDateModalOpen,setShipDateModalOpen]=useState(false);
 
   const[customers,setCustomers]=useState([]);
@@ -297,34 +299,48 @@ export default function CreateOrder({setPage}){
     const preferred=String(customer.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
     setBillCalendarType(preferred);
     if(preferred==='LUNAR'){
-      setBillLunarDateText(formatLunarDate(orderDate||today).replace(/^ÂL\s*/,''));
+      const defaultLunarText=formatLunarDate(orderDate||today).replace(/^ÂL\s*/,'');
+      setBillLunarDateText(defaultLunarText);
+      setBillLunarDraftText(defaultLunarText);
     }else{
       setBillLunarDateText('');
+      setBillLunarDraftText('');
     }
+    setShipDateDialogError('');
     setShipDateModalOpen(true);
   };
 
   const applyShipDateModal=async()=>{
     if(!cid)return setShipDateModalOpen(false);
-    if(billCalendarType==='LUNAR'&&!String(billLunarDateText||'').trim()){
-      alert('Vui lòng chọn ngày xuất hàng âm lịch');
+    setShipDateDialogError('');
+    if(billCalendarType==='LUNAR'&&!String(billLunarDraftText||'').trim()){
+      setShipDateDialogError('Vui lòng nhập ngày xuất hàng âm lịch (dd/mm/yyyy).');
       return;
     }
-    const checked=validateShippingDate(billCalendarType,orderDate,billLunarDateText);
-    if(!checked.ok)return;
+    const checked=validateShippingDate(billCalendarType,orderDate,billLunarDraftText,{showAlert:false});
+    if(!checked.ok){
+      setShipDateDialogError(checked.reason==='FUTURE_BILL_DATE'
+        ? 'Không thể chọn ngày xuất hàng lớn hơn ngày hiện tại.'
+        : 'Ngày âm lịch không hợp lệ. Vui lòng nhập dạng dd/mm/yyyy.'
+      );
+      return;
+    }
     const nextOrderDate=checked.solarDate||orderDate;
     const nextCalendarType=billCalendarType;
-    const nextLunarDateText=billCalendarType==='LUNAR'?billLunarDateText:'';
+    const nextLunarDateText=billCalendarType==='LUNAR'?billLunarDraftText:'';
+    setBillLunarDateText(nextLunarDateText);
     if(nextOrderDate!==orderDate)setOrderDate(nextOrderDate);
     setShipDateModalOpen(false);
-    const dateLabel=nextCalendarType==='LUNAR'?`${billLunarDateText} ÂL`:(nextOrderDate||today);
+    const dateLabel=nextCalendarType==='LUNAR'?`${billLunarDraftText} ÂL`:(nextOrderDate||today);
     // Only show price-book lookup notice when customer actually has a price matrix.
     // Manual-price mode (no price matrix, walk-in) has nothing to look up.
     setSaveNotice((!noPrivatePrice&&!walkInCustomer)
       ? `Đã chọn ngày xuất hàng ${dateLabel}. Bảng giá sẽ lấy theo đúng ngày này.`
       : `Đã chọn ngày xuất hàng ${dateLabel}.`
     );
-    await refreshCurrentItemPrices({calendar_type:nextCalendarType,order_date:nextOrderDate,lunar_date_text:nextLunarDateText});
+    // The effect watching [cid,orderDate,billCalendarType,billLunarDateText] performs the
+    // single required price refresh once the state above commits — no need to also await
+    // refreshCurrentItemPrices here (that was firing a redundant second request per confirm).
   };
 
   const loadCustomerCatalog=async(id)=>{
@@ -444,18 +460,6 @@ export default function CreateOrder({setPage}){
     setBillCalendarType(next);
     if(next==='LUNAR'){
       setBillLunarDateText(formatLunarDate(orderDate||today).replace(/^ÂL\s*/,''));
-    }
-  };
-
-  const changeBillLunarDateText=(v)=>{
-    setBillLunarDateText(v);
-    const solar=lunarToSolarDate(parseLunarText(v));
-    if(solar){
-      if(isFutureIsoDate(solar)){
-        alert('Không thể chọn ngày xuất hàng âm lịch lớn hơn ngày hiện tại.');
-        return;
-      }
-      setOrderDate(solar);
     }
   };
 
@@ -1126,14 +1130,15 @@ export default function CreateOrder({setPage}){
           subtitle={currentCustomer&&<>Khách <b>{currentCustomer.name}</b> tính bill theo <b>{billCalendarType==='LUNAR'?'Âm lịch':'Dương lịch'}</b>. Bảng giá riêng sẽ lấy theo ngày xuất hàng này.</>}
           inputLabel="Ngày xuất hàng"
           solarDate={orderDate||today}
-          lunarDateText={billLunarDateText||''}
+          lunarDateText={billLunarDraftText||''}
           onSolarDateChange={changeOrderDate}
-          onLunarDateTextChange={changeBillLunarDateText}
+          onLunarDateTextChange={setBillLunarDraftText}
           maxSolarDate={today}
           onConfirm={applyShipDateModal}
-          onCancel={()=>setShipDateModalOpen(false)}
+          onCancel={()=>{setShipDateModalOpen(false);setShipDateDialogError('');}}
           confirmLabel="Áp dụng ngày xuất hàng"
           cancelLabel="Chọn sau"
+          errorText={shipDateDialogError}
         />
 
         <div className="pos-agent-layout pos-real-layout">

@@ -19,6 +19,7 @@ export default function CalendarDialog({
   maxSolarDate,
   confirmLabel='Xác nhận',
   cancelLabel='Hủy',
+  errorText='',
 }){
   if(!open)return null;
 
@@ -72,6 +73,7 @@ export default function CalendarDialog({
               />
             </label>
           )}
+          {errorText&&<div className="ai-alert danger" style={{marginTop:8}}>{errorText}</div>}
         </div>
 
         <div className="modal-footer">

@@ -8,12 +8,13 @@ import {showSuccess,showError} from'../utils/toast';
 import EnterpriseAutocomplete from'../components/common/EnterpriseAutocomplete';
 import {formatLunarDate,parseLunarText,lunarToSolarDate} from'../utils/lunarDate';
 import CalendarDialog from'../components/common/CalendarDialog';
+import {formatQty}from'../utils/quantity';
 
 const money=n=>Number(n||0).toLocaleString('en-US')+'đ';
 const n=v=>Number(v||0);
 const floor1=v=>Math.floor((Number(v)||0)*10)/10;
 const animal=v=>floor1(v).toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1});
-const kg1=v=>Number(v||0).toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1});
+const kg1=formatQty;
 
 export default function Lots(){
   const today=new Date().toISOString().slice(0,10);
@@ -408,7 +409,7 @@ export default function Lots(){
     catch(e){alert(e.response?.data?.message||e.message);}
   };
 
-  const kg=v=>Number(v||0).toLocaleString('en-US',{maximumFractionDigits:3});
+  const kg=formatQty;
   const isoDate=v=>v?String(v).slice(0,10):'';
   const dateText=v=>{ const raw=isoDate(v); const m=raw.match(/^(\d{4})-(\d{2})-(\d{2})$/); return m?`${m[3]}/${m[2]}/${m[1]}`:raw; };
   const lotCalendarType=r=>String(r?.calendar_type||r?.supplier_billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
@@ -566,7 +567,7 @@ export default function Lots(){
             ? <label className="kg-multiline-field"><span className="muted">Tổng kg trừ xô nhập tay</span><textarea ref={setNavRef(4)} onKeyDown={e=>{if(e.key!=='Enter')onLotNavKey(e,4)}} className="input lots-kg-textarea" rows="3" wrap="soft" placeholder={"Ví dụ:\n6\n7\n6"} value={f.deducted_weight_expr??''} onChange={e=>setField('deducted_weight_expr',e.target.value)}/><small className="muted">Có thể nhập mỗi số một dòng.</small></label>
             : <label><span className="muted">Kg trừ xô / con</span><input ref={setNavRef(4)} onKeyDown={e=>onLotNavKey(e,4)} className="input" placeholder="Ví dụ: 6 hoặc 7 - 1" value={f.deduct_kg_per_animal??''} onChange={e=>setField('deduct_kg_per_animal',e.target.value)}/></label>
           }
-          <label><span className="muted">Tổng kg trừ xô đã tính</span><input className="input" readOnly value={`${deductedWeight} kg`}/></label>
+          <label><span className="muted">Tổng kg trừ xô đã tính</span><input className="input" readOnly value={`${formatQty(deductedWeight)} kg`}/></label>
 
           <label><span className="muted">Giá bò xô đực / kg</span><MoneyInput placeholder="208,000" value={f.male_price??''} onChange={v=>setField('male_price',v)}/></label>
           <label><span className="muted">Giá bò xô cái / kg</span><MoneyInput placeholder="195,000" value={f.female_price??''} onChange={v=>setField('female_price',v)}/></label>
@@ -591,18 +592,18 @@ export default function Lots(){
         <div className="lots-sticky-panel" style={summaryFloatStyle}>
         <div className="card lots-calc-card" style={{boxShadow:'none',background:'#fff7ed',marginTop:12}}>
           <b>Cách tính:</b><br/>
-          Thịt xô {rawWeight} + xương sườn {boneWeight}/2 = +{ribToMeatWeight}kg
+          Thịt xô {formatQty(rawWeight)} + xương sườn {formatQty(boneWeight)}/2 = +{formatQty(ribToMeatWeight)}kg
           <br/>
-          Trừ xô {f.deduct_mode==='TOTAL_KG'?'nhập tổng':'theo số con'}: {deductedWeight}kg
+          Trừ xô {f.deduct_mode==='TOTAL_KG'?'nhập tổng':'theo số con'}: {formatQty(deductedWeight)}kg
           <br/>
-          Trừ bò hư {damageWeight} - trừ mỡ {fatWeight} - khác {otherDeductWeight}
+          Trừ bò hư {formatQty(damageWeight)} - trừ mỡ {formatQty(fatWeight)} - khác {formatQty(otherDeductWeight)}
           <br/>
-          Thịt vụn {fragmentWeight}kg × {money(fragmentPrice)} tính riêng
-          <h3>Kg bò xô tính tiền: {finalWeight}</h3>
+          Thịt vụn {formatQty(fragmentWeight)}kg × {money(fragmentPrice)} tính riêng
+          <h3>Kg bò xô tính tiền: {formatQty(finalWeight)}</h3>
           <div className="lots-price-split">
             <div>Bò đực: {animal(maleAnimals)} con = {kg1(maleWeight)}kg × {money(malePrice)}</div>
             <div>Bò cái: {animal(femaleAnimals)} con = {kg1(femaleWeight)}kg × {money(femalePrice)}</div>
-            <div>Thịt vụn: {fragmentWeight}kg × {money(fragmentPrice)} = {money(fragmentCost)}</div>
+            <div>Thịt vụn: {formatQty(fragmentWeight)}kg × {money(fragmentPrice)} = {money(fragmentCost)}</div>
           </div>
           <h3>Thành tiền: {money(totalCost)}</h3>
         </div>

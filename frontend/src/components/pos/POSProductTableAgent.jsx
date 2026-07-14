@@ -1,6 +1,7 @@
 import React from 'react';
 import {calcQtyExpression} from '../../utils/qtyExpression';
 import {movePosGridFocus} from '../../utils/posKeyboard';
+import {formatQty} from '../../utils/quantity';
 
 const money = n => Number(n || 0).toLocaleString('en-US') + 'đ';
 
@@ -15,8 +16,6 @@ export default function POSProductTableAgent({
   items,
   filter,
   setFilter,
-  saveOrder,
-  cid,
   qtyRefs,
   focusNext,
   focusFirstFilteredItem,
@@ -27,42 +26,57 @@ export default function POSProductTableAgent({
   allowManualPrice,
   updatePrice,
   priceRefs,
+  onQuickAdd,
+  onOpenTools,
+  onClearRow,
+  quickOpen,
+  toolsOpen,
 }){
   return (
     <div className="card pos-agent-products-card">
-      <h3>2. Danh mục mặt hàng của khách</h3>
-
       <div className="actions pos-agent-products-toolbar">
-        <input
-          className="input"
-          placeholder="Tìm mặt hàng..."
-          value={filter}
-          onChange={e => setFilter(e.target.value)}
-          onKeyDown={e=>{
-            if(e.key==='Enter'){
-              e.preventDefault();
-              focusFirstFilteredItem?.();
-            }
-          }}
-        />
-        <button type="button" className="btn secondary" onClick={saveOrder} disabled={!cid}>
-          Lưu thứ tự
-        </button>
+        <span className="pos-search-wrap">
+          <span className="pos-search-icon">🔍</span>
+          <input
+            className="input pos-agent-search-input"
+            placeholder="Tìm mã, tên mặt hàng..."
+            value={filter}
+            onChange={e => setFilter(e.target.value)}
+            onKeyDown={e=>{
+              if(e.key==='Enter'){
+                e.preventDefault();
+                focusFirstFilteredItem?.();
+              }
+            }}
+          />
+        </span>
+        {onQuickAdd && (
+          <button type="button" className="btn secondary" onClick={onQuickAdd}>
+            {quickOpen ? '− Thu gọn' : '+ Thêm nhanh'}
+          </button>
+        )}
+        {onOpenTools && (
+          <button type="button" className="btn secondary" onClick={onOpenTools}>
+            {toolsOpen ? '− Thu gọn công cụ' : '⚙ Công cụ'}
+          </button>
+        )}
       </div>
 
       <div className="pos-agent-table-scroll">
         <table className="table pos-agent-table">
           <thead>
             <tr>
-              <th>Mặt hàng</th>
-              <th>SL nhập</th>
-              <th>SL tính</th>
-              <th>Giá</th>
+              <th className="pos-col-stt">#</th>
+              <th>Tên</th>
+              <th className="pos-col-unit">ĐVT</th>
+              <th>Số lượng</th>
+              <th>Đơn giá</th>
               <th>Thành tiền</th>
+              <th className="pos-col-del"/>
             </tr>
           </thead>
           <tbody>
-            {shown.map(i => {
+            {shown.map((i, rowNo) => {
               const rowIndex = items.findIndex(x => x.product_id === i.product_id);
               const qty = Number(calcQtyExpression(i.quantity_expr) || 0);
               const rowKey = String(i.product_id);
@@ -75,11 +89,9 @@ export default function POSProductTableAgent({
                   onDrop={() => handleDrop(i.product_id)}
                   className={String(dragId) === String(i.product_id) ? 'dragging' : ''}
                 >
-                  <td>
-                    <b>{i.product_name}</b>
-                    <br/>
-                    <span className="muted">{i.category_name}</span>
-                  </td>
+                  <td className="pos-col-stt muted">{rowNo + 1}</td>
+                  <td><b>{i.product_name}</b></td>
+                  <td className="pos-col-unit muted">{i.unit || 'kg'}</td>
 
                   <td>
                     <input
@@ -92,9 +104,8 @@ export default function POSProductTableAgent({
                       onChange={e => updateQtyExpr(rowIndex, e.target.value)}
                       placeholder="10+12"
                     />
+                    {i.quantity_expr && <span className="pos-qty-computed">= {formatQty(qty)}</span>}
                   </td>
-
-                  <td><b>{qty}</b></td>
 
                   <td>
                     {allowManualPrice
@@ -114,6 +125,12 @@ export default function POSProductTableAgent({
                   </td>
 
                   <td><b>{money(qty * Number(i.sale_price || 0))}</b></td>
+
+                  <td className="pos-col-del">
+                    {i.quantity_expr && (
+                      <button type="button" className="pos-row-del-btn" title="Xóa số lượng dòng này" onClick={() => onClearRow && onClearRow(rowIndex)}>✕</button>
+                    )}
+                  </td>
                 </tr>
               );
             })}

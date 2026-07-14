@@ -590,15 +590,15 @@ input[data-pos-col="qty"]:focus,input[data-pos-col="price"]:focus{outline:3px so
 
 .pos-agent-layout{
   display:grid;
-  grid-template-columns:minmax(0,1fr) 360px;
-  gap:18px;
+  grid-template-columns:minmax(0,1fr) 340px;
+  gap:12px;
   align-items:start;
 }
 
 .pos-agent-main{
   min-width:0;
   display:grid;
-  gap:18px;
+  gap:12px;
 }
 
 .pos-agent-payment{
@@ -631,13 +631,13 @@ input[data-pos-col="qty"]:focus,input[data-pos-col="price"]:focus{outline:3px so
 }
 
 .pos-agent-products-toolbar{
-  margin-bottom:12px;
+  margin-bottom:8px;
 }
 
 .pos-agent-table-scroll{
-  max-height:calc(100vh - 270px);
+  max-height:calc(100vh - 260px);
   overflow:auto;
-  border-radius:18px;
+  border-radius:14px;
 }
 
 .pos-agent-table thead th{
@@ -647,8 +647,13 @@ input[data-pos-col="qty"]:focus,input[data-pos-col="price"]:focus{outline:3px so
   z-index:5;
 }
 
+.pos-agent-table th,.pos-agent-table td{
+  padding:8px 12px;
+}
+
 .pos-agent-qty-input{
   min-width:120px;
+  padding:8px 12px;
 }
 
 .inner-card{
@@ -671,35 +676,6 @@ input[data-pos-col="qty"]:focus,input[data-pos-col="price"]:focus{outline:3px so
     position:static;
     width:100%;
   }
-}
-
-/* POS customer section collapse - safe append */
-.pos-customer-collapse-card{
-  padding:16px 18px!important;
-}
-
-.pos-customer-collapse-head{
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:14px;
-}
-
-.pos-customer-collapse-head h3{
-  margin:0;
-}
-
-.pos-customer-summary{
-  margin-top:6px;
-  font-weight:700;
-}
-
-.pos-customer-collapse-body{
-  margin-top:14px;
-}
-
-.pos-customer-collapse-body > h3:first-child{
-  display:none;
 }
 
 /* Auth/Register UI refinements */
@@ -2588,49 +2564,9 @@ button,.btn,.menu-item,.input,.select,textarea{
   overflow:visible;
 }
 
-/* V65.9 - Sticky customer session after saving POS bill */
-.pos-customer-session-banner{
-  position:sticky;
-  top:84px;
-  z-index:110;
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:14px;
-  padding:12px 14px;
-  border:1px solid #fed7aa;
-  border-radius:18px;
-  background:linear-gradient(135deg,#fff7ed,#ffffff);
-  box-shadow:0 12px 28px rgba(15,23,42,.08);
-}
-.pos-customer-session-banner b{
-  color:#7f1d1d;
-  font-size:18px;
-  margin-left:6px;
-}
-.pos-session-label{
-  color:#64748b;
-  font-weight:800;
-  font-size:12px;
-  text-transform:uppercase;
-  letter-spacing:.03em;
-}
 .pos-save-session-notice{
   margin:0!important;
   border-radius:16px!important;
-}
-@media(max-width:760px){
-  .pos-customer-session-banner{
-    position:static;
-    align-items:flex-start;
-    flex-direction:column;
-  }
-  .pos-customer-session-banner .actions{
-    width:100%;
-  }
-  .pos-customer-session-banner .btn{
-    flex:1;
-  }
 }
 
 /* V65.10 - Payment overpay old debt allocation dialog */
@@ -2714,6 +2650,267 @@ button,.btn,.menu-item,.input,.select,textarea{
 @media(max-width:720px){
   .pos-bill-context-row{align-items:flex-start}
   .pos-bill-context-pill{border-radius:16px;align-items:flex-start;line-height:1.35}
+}
+
+/* V65.6x POS UI redesign: compact ERP-style layout, one-line bill context, no visual noise.
+   Spacing scale used throughout: 4 / 8 / 12 / 16 / 24. */
+.main:has(.pos-real-shell) .page-hero{
+  display:none;
+}
+
+.pos-real-shell .card{
+  border-radius:16px;
+  box-shadow:0 4px 16px rgba(15,23,42,.06);
+  margin-bottom:12px;
+}
+
+.pos-page-header-row{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  margin-bottom:12px;
+}
+.pos-page-title{
+  margin:0;
+  font-size:18px;
+  font-weight:800;
+  color:#1f2937;
+}
+.pos-page-header-row .actions{
+  flex-wrap:wrap;
+}
+
+.pos-context-card{
+  padding:12px 16px!important;
+  position:sticky;
+  top:12px;
+  z-index:60;
+}
+.pos-context-row{
+  display:flex;
+  align-items:flex-end;
+  gap:16px;
+  flex-wrap:wrap;
+}
+.pos-field{
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  flex:0 0 auto;
+}
+.pos-field-label{
+  font-size:11px;
+  font-weight:700;
+  color:#94a3b8;
+  text-transform:uppercase;
+  letter-spacing:.04em;
+}
+.pos-field-value{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  height:36px;
+  font-size:14px;
+  font-weight:700;
+  color:#1f2937;
+  white-space:nowrap;
+}
+.pos-field-value-row{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  height:36px;
+}
+.pos-field-customer{
+  flex:1 1 220px;
+  min-width:190px;
+  max-width:280px;
+}
+.pos-field-customer .ea-field{
+  min-height:36px;
+}
+.pos-field-change{
+  margin-left:auto;
+}
+.pos-field-change .btn{
+  height:36px;
+}
+.pos-price-dot{
+  width:8px;
+  height:8px;
+  border-radius:50%;
+  display:inline-block;
+  background:#94a3b8;
+}
+.pos-price-dot-ok{background:#16a34a}
+.pos-price-dot-none{background:#f59e0b}
+.pos-price-dot-loading{background:#94a3b8}
+
+.pos-field-value-stack{
+  height:auto!important;
+  flex-direction:column;
+  align-items:flex-start!important;
+  gap:2px;
+}
+.pos-field-value-stack > span:first-child{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+}
+.pos-field-sub{
+  font-size:11px;
+  font-weight:600;
+  color:#64748b;
+  padding-left:14px;
+}
+
+.pos-policy-note{
+  margin-top:8px;
+  font-size:12px;
+  color:#64748b;
+}
+.pos-policy-note.warn{
+  color:#b45309;
+  font-weight:700;
+}
+
+.pos-category-chooser{
+  margin-top:12px;
+  padding-top:12px;
+  border-top:1px solid #eef2f7;
+}
+
+.pos-advanced-tools-card{
+  margin-top:0;
+}
+.pos-advanced-tools-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+}
+
+.pos-quick-add-panel{
+  margin-top:12px;
+}
+.pos-quick-add-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  margin-bottom:10px;
+}
+
+.pos-search-wrap{
+  position:relative;
+  flex:1 1 220px;
+  min-width:200px;
+}
+.pos-search-icon{
+  position:absolute;
+  left:12px;
+  top:50%;
+  transform:translateY(-50%);
+  font-size:13px;
+  color:#94a3b8;
+  pointer-events:none;
+}
+.pos-agent-search-input{
+  padding-left:32px;
+}
+
+.pos-col-stt,.pos-col-unit{
+  width:48px;
+  text-align:center;
+}
+.pos-col-del{
+  width:32px;
+  text-align:center;
+}
+.pos-row-del-btn{
+  border:0;
+  background:transparent;
+  color:#94a3b8;
+  cursor:pointer;
+  font-size:14px;
+  line-height:1;
+  padding:4px;
+  border-radius:6px;
+}
+.pos-row-del-btn:hover{
+  color:#dc2626;
+  background:#fee2e2;
+}
+.pos-qty-computed{
+  display:block;
+  font-size:12px;
+  color:#94a3b8;
+  margin-top:2px;
+}
+
+.pos-summary-card{
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  padding:16px!important;
+  position:sticky;
+  top:12px;
+  z-index:50;
+  align-self:start;
+}
+.pos-summary-title{
+  margin:0;
+  font-size:13px;
+  font-weight:800;
+  text-transform:uppercase;
+  letter-spacing:.04em;
+  color:#94a3b8;
+}
+.pos-summary-totals{
+  display:flex;
+  flex-direction:column;
+}
+.pos-summary-row{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  padding:8px 0;
+  border-bottom:1px solid #eef2f7;
+  font-size:14px;
+}
+.pos-summary-row b{
+  font-size:16px;
+}
+.pos-summary-row-sl b{color:#1A73E8}
+.pos-summary-row-total b{color:#dc2626}
+.pos-summary-row-installment b{color:#16a34a}
+.pos-summary-actions{
+  display:flex;
+  gap:8px;
+  margin-top:4px;
+}
+.pos-summary-actions .btn{
+  flex:1;
+}
+.pos-summary-msg{
+  margin:0!important;
+  padding:8px 12px!important;
+}
+
+@media(max-width:1100px){
+  .pos-context-row{align-items:stretch}
+  .pos-field-customer{max-width:none}
+  .pos-field-change{margin-left:0}
+}
+@media(max-width:760px){
+  .pos-page-header-row .actions{width:100%}
+  .pos-page-header-row .btn{flex:1}
+  .pos-context-row{flex-direction:column;align-items:stretch;gap:10px}
+  .pos-field{width:100%}
+  .pos-field-value-row{justify-content:space-between}
+  .pos-field-change{width:100%}
+  .pos-field-change .btn{width:100%}
 }
 
 /* V65.56 global centered dialog: replaces browser alert style for production UX */

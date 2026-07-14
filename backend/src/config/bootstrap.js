@@ -48,7 +48,17 @@ async function safeDropIndex(conn, table, indexName) {
 }
 
 async function safeAddIndex(conn, table, indexName, ddl) {
-  if (!(await hasIndex(conn, table, indexName))) await conn.query(`ALTER TABLE ${table} ADD ${ddl}`);
+  if (await hasIndex(conn, table, indexName)) return;
+  try {
+    await conn.query(`ALTER TABLE ${table} ADD ${ddl}`);
+  } catch (e) {
+    // 1061 = ER_DUP_KEYNAME: information_schema.STATISTICS can be stale within the same
+    // session when many DDL statements fire in rapid succession on the same table (mirrors
+    // the 1091 handling in safeDropIndex above). If the index now exists under this exact
+    // name, the state safeAddIndex exists to guarantee is already true — treat as success.
+    if (e.errno === 1061 || e.code === 'ER_DUP_KEYNAME') return;
+    throw e;
+  }
 }
 
 async function ensureSchema() {
@@ -741,6 +751,76 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
   INDEX idx_ump_user (user_id),
   FOREIGN KEY (menu_id) REFERENCES app_menus(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- S4.3: Customer Price Category domain model upgrade. A CustomerPriceCategory represents
+-- ONE customer + ONE product category (default flag, display order - UI/business metadata
+-- that must never live on a price book version). customer_price_books now versions under
+-- customer_price_category_id. Fresh installs get the FK column directly. customer_id and
+-- category_id stay on customer_price_books too (deprecated in place, not dropped, see
+-- SchemaMigrationAgent) so nothing is lost for installs upgrading from S4.2.
+-- default_slot is a generated column (customer_id when is_default=1, else NULL) so the
+-- database itself enforces "at most one default category per customer" - MySQL unique
+-- indexes allow unlimited NULLs, so only a second is_default=1 row for the same customer
+-- collides. This is a backstop on top of the app-level transaction in
+-- PriceMatrixAgent.setDefaultCustomerPriceCategory/createCustomerPriceCategory.
+CREATE TABLE IF NOT EXISTS customer_price_categories (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  customer_id BIGINT NOT NULL,
+  category_id BIGINT NOT NULL,
+  is_default TINYINT(1) NOT NULL DEFAULT 0,
+  display_order INT NOT NULL DEFAULT 0,
+  note VARCHAR(255) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
+  default_slot BIGINT GENERATED ALWAYS AS (IF(is_default=1, customer_id, NULL)) STORED,
+  UNIQUE KEY uq_cpc_customer_category (customer_id, category_id),
+  UNIQUE KEY uq_cpc_one_default_per_customer (default_slot),
+  UNIQUE KEY uq_cpc_customer_display_order (customer_id, display_order),
+  INDEX idx_cpc_customer (customer_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- S4.2: customer_price_books / customer_price_book_items were previously created
+-- out-of-band (no CREATE TABLE existed anywhere in the codebase). Added here so
+-- fresh installs get them. category_id and the category-scoped unique key are
+-- included directly since a fresh table has no legacy rows to migrate.
+CREATE TABLE IF NOT EXISTS customer_price_books (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  customer_id BIGINT NOT NULL,
+  category_id BIGINT NULL,
+  customer_price_category_id BIGINT NULL,
+  book_name VARCHAR(255) NULL,
+  effective_from DATE NOT NULL,
+  effective_to DATE NULL,
+  effective_calendar_type ENUM('SOLAR','LUNAR') NOT NULL DEFAULT 'SOLAR',
+  effective_lunar_date_text VARCHAR(30) NULL,
+  effective_lunar_sort INT NULL,
+  status VARCHAR(30) NOT NULL DEFAULT 'ACTIVE',
+  note VARCHAR(255) NULL,
+  created_by BIGINT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_cpb_customer_category_date_type (customer_id, category_id, effective_from, effective_calendar_type),
+  UNIQUE KEY uq_cpb_category_date_type (customer_price_category_id, effective_from, effective_calendar_type),
+  INDEX idx_cpb_customer_effective (customer_id, effective_from, effective_to, status),
+  INDEX idx_cpb_customer_status (customer_id, status),
+  INDEX idx_price_book_lookup_solar (customer_id, effective_calendar_type, status, effective_from, id),
+  INDEX idx_price_book_lookup_lunar (customer_id, effective_calendar_type, status, effective_lunar_sort, id),
+  INDEX idx_cpb_category (category_id),
+  INDEX idx_cpb_customer_price_category (customer_price_category_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS customer_price_book_items (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  price_book_id BIGINT NOT NULL,
+  customer_id BIGINT NOT NULL,
+  product_id BIGINT NOT NULL,
+  sale_price DECIMAL(15,2) NOT NULL,
+  note VARCHAR(255) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_cpbi_book_product (price_book_id, product_id),
+  INDEX idx_cpbi_customer_product (customer_id, product_id),
+  INDEX idx_cpbi_product (product_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
 
     for (const table of ['customers','products','product_categories','suppliers','purchase_lots','orders']) {
@@ -767,6 +847,36 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
     await safeAddColumn(conn, 'suppliers', 'male_price', 'male_price DECIMAL(15,2) NOT NULL DEFAULT 0');
     await safeAddColumn(conn, 'suppliers', 'female_price', 'female_price DECIMAL(15,2) NOT NULL DEFAULT 0');
     await safeAddColumn(conn, 'suppliers', 'fragment_price', 'fragment_price DECIMAL(15,2) NOT NULL DEFAULT 0');
+
+    // S4.2: category-scoped price books. customer_price_books predates this migration on
+    // existing installs (created out-of-band, no category_id, old-style unique key may or
+    // may not exist). Add the column, backfill only unambiguous single-category books, then
+    // swap the unique key. Never guess a category for a book whose items span >1 category —
+    // it is left NULL and must be resolved manually (business decision, not a technical one).
+    if (await hasTable(conn, 'customer_price_books')) {
+      await safeAddColumn(conn, 'customer_price_books', 'category_id', 'category_id BIGINT NULL');
+      await safeAddIndex(conn, 'customer_price_books', 'idx_cpb_category', 'INDEX idx_cpb_category (category_id)');
+
+      if (await hasTable(conn, 'customer_price_book_items')) {
+        await conn.query(`
+          UPDATE customer_price_books b
+          JOIN (
+            SELECT bi.price_book_id, MIN(p.category_id) only_category, COUNT(DISTINCT p.category_id) distinct_categories
+            FROM customer_price_book_items bi
+            JOIN products p ON p.id = bi.product_id
+            GROUP BY bi.price_book_id
+          ) x ON x.price_book_id = b.id
+          SET b.category_id = x.only_category
+          WHERE b.category_id IS NULL AND x.distinct_categories = 1
+        `);
+      }
+
+      // Old 3-column key (customer_id, effective_from, effective_calendar_type) would collide
+      // with the new business rule (one book per customer PER CATEGORY per date) — replace it.
+      await safeDropIndex(conn, 'customer_price_books', 'uq_cpb_customer_date_type');
+      await safeAddIndex(conn, 'customer_price_books', 'uq_cpb_customer_category_date_type',
+        'UNIQUE KEY uq_cpb_customer_category_date_type (customer_id, category_id, effective_from, effective_calendar_type)');
+    }
 
     await safeAddColumn(conn, 'purchase_orders', 'source', "source VARCHAR(50) NOT NULL DEFAULT 'MANUAL'");
     await safeAddColumn(conn, 'purchase_orders', 'del_flg', 'del_flg TINYINT(1) NOT NULL DEFAULT 0');
@@ -1378,7 +1488,7 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
       ['payments','Thu tiền','Ghi nhận tiền mặt, chuyển khoản và lịch sử thu.','payments','CreditCard','sales',5,1,1,'Payments'],
       ['installments','Góp bill','Quản lý góp bill theo khách hàng và lịch âm/dương.','installments','CalendarDays','sales',6,0,1,'Installments'],
       ['customers','Đối tác','Quản lý đối tác, khách hàng và nhà cung cấp.','customers','Users','sales',7,0,1,'Customers'],
-      ['products','Mặt hàng','Quản lý sản phẩm, tồn kho, giá bán và chế độ kiểm tồn.','products','Package','catalog',1,0,1,'Products'],
+      ['products','Danh mục hàng hóa','Phân nhóm mặt hàng theo danh mục và quản lý giá bán.','products','Package','catalog',1,0,1,'Products'],
       ['product-import','Import mặt hàng từ ảnh','Nhập danh mục nhanh từ hình ảnh hoặc file dữ liệu.','product-import','Package','catalog',2,0,1,'ProductImageImport'],
       ['ocr-providers','Cấu hình OCR nâng cao','Thiết lập nhận diện hình ảnh và alias sản phẩm.','ocr-providers','Bot','catalog',3,0,1,'OCRProviders'],
       ['price-matrix','Bảng giá riêng','Sắp xếp danh mục và bảng giá theo từng bạn hàng.','price-matrix','TableProperties','catalog',4,1,1,'PriceMatrix'],
@@ -1434,12 +1544,23 @@ CREATE TABLE IF NOT EXISTS user_menu_preferences (
        WHERE menu_key='lots'`
     );
 
-    // S4.2 — CATALOG-NAMING-STD-002: rename 'products' menu label to 'Mặt hàng'.
-    // Audit concluded this screen is Product CRUD, not a Category management module —
-    // Category is still just a lookup/master table with no standalone workflow, so a
-    // catalog-grouping-framed label was misleading. Same idempotent-rename pattern as
-    // PURCHASE-NAMING-STD-001/LOTS-NAMING-STD-001 above. Labels only — menu_key/route/
-    // component/permissions untouched, safe to re-run on every startup.
+    // S4.1B — CATALOG-NAMING-STD-001: rename 'products' menu label to 'Danh mục hàng hóa'
+    // and reword its subtitle to drop inventory-check framing ("chế độ kiểm tồn",
+    // "quản lý tồn kho"). Category/product grouping is not an inventory-mode concern —
+    // see the Product/Purchase category cleanup audit. Same idempotent-rename pattern
+    // as PURCHASE-NAMING-STD-001/LOTS-NAMING-STD-001 above. Labels only —
+    // menu_key/route/component/permissions untouched, safe to re-run on every startup.
+    await conn.query(
+      `UPDATE app_menus SET title='Danh mục hàng hóa', subtitle='Phân nhóm mặt hàng theo danh mục và quản lý giá bán.'
+       WHERE menu_key='products'`
+    );
+
+    // S4.2 — CATALOG-NAMING-STD-002: rename 'products' menu label from 'Danh mục hàng hóa'
+    // to 'Mặt hàng'. Audit concluded this screen is Product CRUD, not a Category management
+    // module — Category is still just a lookup/master table with no standalone workflow, so
+    // the old label was misleading. Same idempotent-rename pattern as
+    // PURCHASE-NAMING-STD-001/LOTS-NAMING-STD-001/CATALOG-NAMING-STD-001 above. Labels only —
+    // menu_key/route/component/permissions untouched, safe to re-run on every startup.
     await conn.query(
       `UPDATE app_menus SET title='Mặt hàng', subtitle='Quản lý mặt hàng, mã hàng, danh mục, đơn vị và giá bán mặc định.'
        WHERE menu_key='products'`

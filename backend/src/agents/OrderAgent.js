@@ -38,6 +38,43 @@ async function buildMissingPriceError(conn, customerId, billDate, missingIds) {
   return err;
 }
 
+// S4.2: 1 POS bill = 1 customer + 1 category. Category is never trusted from the
+// frontend — it is derived here from products.category_id for every item on the bill.
+async function assertItemsSingleCategory(conn, items) {
+  const productIds = [...new Set((items || []).map(it => Number(it.product_id)).filter(Boolean))];
+  if (productIds.length < 2) return;
+  const [rows] = await conn.query(`SELECT id, name, category_id FROM products WHERE id IN (?)`, [productIds]);
+  const categoryIds = new Set(rows.map(r => Number(r.category_id)));
+  if (categoryIds.size > 1) {
+    const err = new Error(`Bill chỉ được chứa 1 danh mục hàng hóa. Mặt hàng đang thuộc nhiều danh mục khác nhau: ${rows.map(r => r.name).join(', ')}`);
+    err.status = 400;
+    err.statusCode = 400;
+    err.code = 'MIXED_CATEGORY_ITEMS';
+    throw err;
+  }
+}
+
+// Adding a line to an existing bill must not smuggle in a product from another
+// category — the product's category is checked against the categories already on the bill.
+async function assertItemMatchesOrderCategory(conn, orderId, newProductId) {
+  const [[newProduct]] = await conn.query(`SELECT id, name, category_id FROM products WHERE id=?`, [newProductId]);
+  if (!newProduct) return;
+  const [existingRows] = await conn.query(
+    `SELECT DISTINCT p.category_id, p.name
+     FROM order_items oi JOIN products p ON p.id=oi.product_id
+     WHERE oi.order_id=?`,
+    [orderId]
+  );
+  const mismatched = existingRows.find(r => Number(r.category_id) !== Number(newProduct.category_id));
+  if (mismatched) {
+    const err = new Error(`Bill chỉ được chứa 1 danh mục hàng hóa. Không thể thêm "${newProduct.name}" vì bill đang thuộc danh mục khác.`);
+    err.status = 400;
+    err.statusCode = 400;
+    err.code = 'MIXED_CATEGORY_ITEMS';
+    throw err;
+  }
+}
+
 function solarDateParts(dateText){
   const m=String(dateText||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if(m)return {day:Number(m[3]),month:Number(m[2]),year:Number(m[1])};
@@ -224,6 +261,7 @@ return await this.loadLegacyDirectPayments(orderId);
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
+      await assertItemsSingleCategory(conn, data.items);
       const code = await nextCode(conn,'orders','order_code','BILL');
       const safeCalendarType=data.calendar_type==='LUNAR'?'LUNAR':'SOLAR';
       const safeLunarDateText=safeCalendarType==='LUNAR'?(data.lunar_date_text||''):'';
@@ -418,6 +456,7 @@ const orderId = r.insertId;
       await this.ensureOrderEditable(conn, orderId);
 
       const p = await this.resolveAddItemProduct(conn, order, data);
+      await assertItemMatchesOrderCategory(conn, orderId, p.product_id);
       const qty = Number(data.quantity || data.qty || 0);
       if(!(qty > 0)) throw new Error('Số lượng phải lớn hơn 0');
       const salePrice = Number(data.sale_price || data.price || p.sale_price || 0);

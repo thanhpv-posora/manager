@@ -3,6 +3,9 @@ import api from'../api/api';
 import SafePage from'../components/SafePage';
 import MoneyInput from'../components/MoneyInput';
 import POSProductTableAgent from'../components/pos/POSProductTableAgent';
+import POSBillContextBar from'../components/pos/POSBillContextBar';
+import POSAdvancedTools from'../components/pos/POSAdvancedTools';
+import POSBillSummary from'../components/pos/POSBillSummary';
 import AIBusinessPanel from'../components/ai/AIBusinessPanel';
 import AIVoicePOSPanel from'../components/ai/AIVoicePOSPanel';
 import {calcQtyExpression}from'../utils/qtyExpression';
@@ -10,11 +13,8 @@ import {formatLunarDate,solarToLunar,parseLunarText,lunarToSolarDate}from'../uti
 import {createSpeechRecognition,parseVoiceBillCommand,voiceSupported} from'../utils/voiceBillParser';
 import {matchImportedRows,parseOrderText,rematchOne} from'../utils/orderImportParser';
 import {parseHandwritingText} from'../utils/handwritingBillParser';
-import EnterpriseAutocomplete from'../components/common/EnterpriseAutocomplete';
 import CalendarDialog from'../components/common/CalendarDialog';
-import {showWarning,showSuccess}from'../utils/toast';
-
-const money=n=>Number(n||0).toLocaleString('en-US')+'đ';
+import {showWarning,showSuccess,showError}from'../utils/toast';
 
 const parseLunarMonthYear=(text)=>{
   const m=String(text||'').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
@@ -49,20 +49,25 @@ export default function CreateOrder({setPage}){
   const[categories,setCategories]=useState([]);
   const[items,setItems]=useState([]);
   const[cid,setCid]=useState('');
+  const[selectedCategoryId,setSelectedCategoryId]=useState('');
+  const[categorySelection,setCategorySelection]=useState({categories:[],auto_selected_category_id:null,requires_selection:false,needs_initialization:false});
+  const[categoryChooserOpen,setCategoryChooserOpen]=useState(false);
+  const[addCategoryPickerId,setAddCategoryPickerId]=useState('');
+  const[addCategoryBusy,setAddCategoryBusy]=useState(false);
   const[paid,setPaid]=useState(0);
   const[cashAmount,setCashAmount]=useState(0);
   const[bankAmount,setBankAmount]=useState(0);
   const[monthlyInstallment,setMonthlyInstallment]=useState(0);
   const[monthlyInstallmentId,setMonthlyInstallmentId]=useState(null);
   const[msg,setMsg]=useState('');
-  const[source,setSource]=useState('');
   const[loading,setLoading]=useState(true);
   const[error,setError]=useState('');
   const[filter,setFilter]=useState('');
-  const[customerOpen,setCustomerOpen]=useState(false);
+  const[toolsOpen,setToolsOpen]=useState(false);
   const[saveNotice,setSaveNotice]=useState('');
   const[saving,setSaving]=useState(false);
   const[noPrivatePrice,setNoPrivatePrice]=useState(false);
+  const[catalogLoading,setCatalogLoading]=useState(false);
   const[pendingFocusQty,setPendingFocusQty]=useState(false);
 
   const[quickOpen,setQuickOpen]=useState(false);
@@ -90,10 +95,19 @@ export default function CreateOrder({setPage}){
   const qtyRefs=useRef({});
   const priceRefs=useRef({});
   const customerAutocompleteRef=useRef(null);
+  const categorySelectRef=useRef(null);
   const[pendingFocusCustomer,setPendingFocusCustomer]=useState(false);
   const importExcelFileRef=useRef(null);
   const importImageFileRef=useRef(null);
   const importReadSeqRef=useRef(0);
+
+  const quickNameInputRef=useRef(null);
+  const quickUnitInputRef=useRef(null);
+  const quickAddSaveBtnRef=useRef(null);
+  const quickAddSectionRef=useRef(null);
+  const toolsFirstInputRef=useRef(null);
+  const[pendingFocusQuickName,setPendingFocusQuickName]=useState(false);
+  const[pendingFocusTools,setPendingFocusTools]=useState(false);
 
   const isBusinessCustomer=(customer)=>{
     if(!customer)return false;
@@ -117,9 +131,8 @@ export default function CreateOrder({setPage}){
   };
 
   const currentCustomer=useMemo(()=>customers.find(c=>String(c.id)===String(cid)),[customers,cid]);
-  const currentCustomerLabel=currentCustomer
-    ? `${currentCustomer.name} • ${String(currentCustomer.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'Âm lịch':'Dương lịch'}`
-    : 'Chưa chọn khách';
+  const assignedCategoryIds=useMemo(()=>new Set((categorySelection.categories||[]).map(c=>String(c.category_id))),[categorySelection]);
+  const unassignedCategories=useMemo(()=>categories.filter(c=>!assignedCategoryIds.has(String(c.id))),[categories,assignedCategoryIds]);
   const walkInCustomer=isWalkInCustomer(currentCustomer);
   const paymentPolicyText=currentCustomer
     ? (walkInCustomer?'Khách vãng lai: thu tiền ngay tại POS':'Khách thường: tạo bill công nợ, thu tiền ở màn Thu tiền')
@@ -149,13 +162,13 @@ export default function CreateOrder({setPage}){
       const parsed=parseLunarText(lunarText);
       const converted=lunarToSolarDate(parsed);
       if(!converted){
-        if(showAlert)alert('Ngày âm lịch không hợp lệ. Vui lòng nhập dạng dd/mm/yyyy.');
+        if(showAlert)showWarning('Ngày âm lịch không hợp lệ. Vui lòng nhập dạng dd/mm/yyyy.');
         return {ok:false,solarDate:resolvedSolar,reason:'INVALID_LUNAR_DATE'};
       }
       resolvedSolar=converted;
     }
     if(isFutureIsoDate(resolvedSolar)){
-      if(showAlert)alert('Không thể tạo bill cho ngày xuất hàng lớn hơn ngày hiện tại.');
+      if(showAlert)showWarning('Không thể tạo bill cho ngày xuất hàng lớn hơn ngày hiện tại.');
       return {ok:false,solarDate:resolvedSolar,reason:'FUTURE_BILL_DATE'};
     }
     return {ok:true,solarDate:resolvedSolar};
@@ -226,7 +239,7 @@ export default function CreateOrder({setPage}){
     return (productList||[]).map(p=>{
       const price=priceMap[String(p.product_id)]||priceMap[p.product_id];
       if(price&&Number(price.sale_price)>0&&!p.manual_price){
-        return {...p,sale_price:Number(price.sale_price),price_type:price.price_type,price_book_id:price.price_book_id||null};
+        return {...p,sale_price:Number(price.sale_price),price_type:price.price_type,price_book_id:price.price_book_id||null,effective_from:price.effective_from||null};
       }
       return p;
     });
@@ -237,50 +250,59 @@ export default function CreateOrder({setPage}){
     const updated=await applyEffectivePrices(items,context);
     setItems(prev=>prev.map(x=>{
       const hit=updated.find(u=>String(u.product_id)===String(x.product_id));
-      return hit?{...x,sale_price:hit.sale_price,price_type:hit.price_type,price_book_id:hit.price_book_id}:x;
+      return hit?{...x,sale_price:hit.sale_price,price_type:hit.price_type,price_book_id:hit.price_book_id,effective_from:hit.effective_from}:x;
     }));
   };
 
 
   const reloadCustomerCatalogKeepQty=async(id)=>{
+    if(!selectedCategoryId){setItems([]);return;}
     const oldByProduct=new Map(items.map(x=>[
       String(x.product_id),
       {quantity_expr:x.quantity_expr,quantity:x.quantity,selected:x.selected}
     ]));
 
-    const r=(await api.get('/price-matrix/'+id+'/catalog/order')).data;
-    setSource(r.source);
-    const mapped=(r.products||[]).map((p,idx)=>{
-      const old=oldByProduct.get(String(p.product_id));
-      return {
-        ...p,
-        quantity_expr:old?.quantity_expr||'',
-        quantity:old?.quantity||0,
-        sale_price:p.sale_price,
-        selected:old?.selected||false,
-        sort_order:p.sort_order||idx+1
-      };
-    });
-    setItems(await applyEffectivePrices(mapped));
-    setNoPrivatePrice(!!r.no_private_prices);
+    setCatalogLoading(true);
+    try{
+      const r=(await api.get('/price-matrix/'+id+'/catalog/order',{params:{category_id:selectedCategoryId}})).data;
+      const mapped=(r.products||[]).map((p,idx)=>{
+        const old=oldByProduct.get(String(p.product_id));
+        return {
+          ...p,
+          quantity_expr:old?.quantity_expr||'',
+          quantity:old?.quantity||0,
+          sale_price:p.sale_price,
+          selected:old?.selected||false,
+          sort_order:p.sort_order||idx+1
+        };
+      });
+      setItems(await applyEffectivePrices(mapped));
+      setNoPrivatePrice(!!r.no_private_prices);
+    }finally{
+      setCatalogLoading(false);
+    }
   };
 
 
   const reloadCustomerCatalogClearQty=async(id)=>{
-    if(!id){setItems([]);return;}
-    const r=(await api.get('/price-matrix/'+id+'/catalog/order')).data;
-    setSource(r.source);
-    const mapped=(r.products||[]).map((p,idx)=>({
-      ...p,
-      quantity_expr:'',
-      quantity:0,
-      sale_price:p.sale_price,
-      selected:false,
-      sort_order:p.sort_order||idx+1
-    }));
-    setItems(await applyEffectivePrices(mapped,{customer_id:id,calendar_type:billCalendarType,order_date:orderDate,lunar_date_text:billCalendarType==='LUNAR'?billLunarDateText:''}));
-    setNoPrivatePrice(!!r.no_private_prices);
-    setPendingFocusQty(true);
+    if(!id||!selectedCategoryId){setItems([]);return;}
+    setCatalogLoading(true);
+    try{
+      const r=(await api.get('/price-matrix/'+id+'/catalog/order',{params:{category_id:selectedCategoryId}})).data;
+      const mapped=(r.products||[]).map((p,idx)=>({
+        ...p,
+        quantity_expr:'',
+        quantity:0,
+        sale_price:p.sale_price,
+        selected:false,
+        sort_order:p.sort_order||idx+1
+      }));
+      setItems(await applyEffectivePrices(mapped,{customer_id:id,calendar_type:billCalendarType,order_date:orderDate,lunar_date_text:billCalendarType==='LUNAR'?billLunarDateText:''}));
+      setNoPrivatePrice(!!r.no_private_prices);
+      setPendingFocusQty(true);
+    }finally{
+      setCatalogLoading(false);
+    }
   };
 
   const focusFirstQtyInput=()=>{
@@ -354,6 +376,9 @@ export default function CreateOrder({setPage}){
     setPaid(0);
     setCashAmount(0);
     setBankAmount(0);
+    setSelectedCategoryId('');
+    setItems([]);
+    setNoPrivatePrice(false);
     resetImportSession();
     setImportApplyMode('REPLACE');
     try{
@@ -363,30 +388,105 @@ export default function CreateOrder({setPage}){
       setOcrAliases([]);
     }
 
+    if(!id)return;
+
+    // Danh mục hàng hóa (category) is chosen next — 1 bill = 1 customer + 1 category,
+    // so the product catalog is not loaded until a category is resolved/picked
+    // (see loadCustomerCategorySelection — Customer Price Category Case 0/1/2/3).
+    const pickedCustomer=customers.find(c=>String(c.id)===String(id));
+    openShipDateModalForCustomer(pickedCustomer);
+    await loadCustomerCategorySelection(id);
+  };
+
+  const loadCategoryCatalog=async(id,categoryId)=>{
+    if(!id||!categoryId){setItems([]);return;}
+    setCatalogLoading(true);
+    try{
+      const pickedCustomer=customers.find(c=>String(c.id)===String(id));
+      const pickedCalendarType=String(pickedCustomer?.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
+      const pickedLunarText=pickedCalendarType==='LUNAR'?formatLunarDate(orderDate||today).replace(/^ÂL\s*/,''):'';
+      const r=(await api.get('/price-matrix/'+id+'/catalog/order',{params:{category_id:categoryId}})).data;
+      const mapped=(r.products||[]).map((p,idx)=>({
+        ...p,
+        quantity_expr:'',
+        quantity:0,
+        sale_price:p.sale_price,
+        selected:false,
+        sort_order:p.sort_order||idx+1
+      }));
+      const catalog=await applyEffectivePrices(mapped,{customer_id:id,calendar_type:pickedCalendarType,order_date:orderDate,lunar_date_text:pickedCalendarType==='LUNAR'?pickedLunarText:''});
+      setItems(catalog);
+      setNoPrivatePrice(!!r.no_private_prices);
+      setPendingFocusQty(true);
+    }finally{
+      setCatalogLoading(false);
+    }
+  };
+
+  // S4.3: Customer Price Category resolution — POS Case 0/1/2/3.
+  // Case 0 (0 categories): needs_initialization, guided init prompt required.
+  // Case 1 (1 category) / Case 2 (2+ with a default): auto_selected_category_id is set.
+  // Case 3 (2+, no default): requires_selection, chooser stays open.
+  const refreshCategoryList=async(id)=>{
+    const sel=(await api.get('/price-matrix/'+id+'/categories')).data;
+    setCategorySelection(sel);
+    return sel;
+  };
+
+  const loadCustomerCategorySelection=async(id)=>{
     if(!id){
-      setItems([]);
+      setCategorySelection({categories:[],auto_selected_category_id:null,requires_selection:false,needs_initialization:false});
+      setCategoryChooserOpen(false);
       return;
     }
+    const sel=await refreshCategoryList(id);
+    setAddCategoryPickerId('');
+    if(sel.auto_selected_category_id){
+      setCategoryChooserOpen(false);
+      setSelectedCategoryId(String(sel.auto_selected_category_id));
+      await loadCategoryCatalog(id,sel.auto_selected_category_id);
+    }else{
+      setSelectedCategoryId('');
+      setItems([]);
+        setNoPrivatePrice(false);
+      setCategoryChooserOpen(true);
+    }
+  };
 
-    const pickedCustomer=customers.find(c=>String(c.id)===String(id));
-    const pickedCalendarType=String(pickedCustomer?.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
-    const pickedLunarText=pickedCalendarType==='LUNAR'?formatLunarDate(orderDate||today).replace(/^ÂL\s*/,''):'';
-    openShipDateModalForCustomer(pickedCustomer);
+  const pickExistingCategory=async(categoryId)=>{
+    if(!cid||!categoryId)return;
+    const catId=String(categoryId);
+    if(selected.length && catId!==String(selectedCategoryId)){
+      const ok=await window.appConfirm('Bill hiện tại đang có số lượng. Đổi danh mục hàng hóa sẽ xóa bill đang nhập. Tiếp tục?',{title:'Đổi danh mục hàng hóa',confirmText:'Tiếp tục',variant:'warning'});
+      if(!ok)return;
+    }
+    setSelectedCategoryId(catId);
+    setCategoryChooserOpen(false);
+    await loadCategoryCatalog(cid,catId);
+  };
 
-    const r=(await api.get('/price-matrix/'+id+'/catalog/order')).data;
-    setSource(r.source);
-    const mapped=(r.products||[]).map((p,idx)=>({
-      ...p,
-      quantity_expr:'',
-      quantity:0,
-      sale_price:p.sale_price,
-      selected:false,
-      sort_order:p.sort_order||idx+1
-    }));
-    const catalog=await applyEffectivePrices(mapped,{customer_id:id,calendar_type:pickedCalendarType,order_date:orderDate,lunar_date_text:pickedCalendarType==='LUNAR'?pickedLunarText:''});
-    setItems(catalog);
-    setNoPrivatePrice(!!r.no_private_prices);
-    setPendingFocusQty(true);
+  // Guided init (Case 0) and "add another category" (customer already has categories but
+  // wants one not yet assigned) share this single explicit-confirm entry point — a
+  // CustomerPriceCategory is never created silently.
+  const confirmAddCategory=async()=>{
+    if(!cid||!addCategoryPickerId)return showWarning('Chọn danh mục hàng hóa cần thêm');
+    const catName=categories.find(c=>String(c.id)===String(addCategoryPickerId))?.name||'';
+    const ok=await window.appConfirm(`Xác nhận thêm danh mục "${catName}" cho khách hàng này?`,{title:'Thêm danh mục giá',confirmText:'Xác nhận',variant:'info'});
+    if(!ok)return;
+    setAddCategoryBusy(true);
+    try{
+      const newCategoryId=addCategoryPickerId;
+      await api.post('/price-matrix/'+cid+'/categories',{category_id:newCategoryId});
+      await refreshCategoryList(cid);
+      setAddCategoryPickerId('');
+      setCategoryChooserOpen(false);
+      setSelectedCategoryId(String(newCategoryId));
+      await loadCategoryCatalog(cid,newCategoryId);
+    }catch(e){
+      showError(e.response?.data?.message||e.message||'Không thể thêm danh mục');
+    }finally{
+      setAddCategoryBusy(false);
+    }
   };
 
   const update=(idx,patch)=>{
@@ -402,6 +502,10 @@ export default function CreateOrder({setPage}){
   const updatePrice=(idx,priceStr)=>{
     const price=Number(String(priceStr||'').replace(/[^0-9]/g,''))||0;
     update(idx,{sale_price:price,manual_price:true});
+  };
+
+  const clearRow=(idx)=>{
+    update(idx,{quantity_expr:'',quantity:0,selected:false});
   };
 
   const shown=useMemo(()=>{
@@ -428,25 +532,62 @@ export default function CreateOrder({setPage}){
   },[pendingFocusQty,cid,shown.length]);
 
   useEffect(()=>{
-    if(!pendingFocusCustomer||!customerOpen)return;
+    if(!pendingFocusCustomer)return;
     const t=setTimeout(()=>{
       customerAutocompleteRef.current?.focus();
       setPendingFocusCustomer(false);
     },80);
     return()=>clearTimeout(t);
-  },[pendingFocusCustomer,customerOpen]);
+  },[pendingFocusCustomer]);
+
+  useEffect(()=>{
+    if(!pendingFocusQuickName||!quickOpen)return;
+    const raf=requestAnimationFrame(()=>{
+      quickAddSectionRef.current?.scrollIntoView?.({block:'nearest'});
+      quickNameInputRef.current?.focus();
+      quickNameInputRef.current?.select?.();
+      setPendingFocusQuickName(false);
+    });
+    return()=>cancelAnimationFrame(raf);
+  },[pendingFocusQuickName,quickOpen]);
+
+  useEffect(()=>{
+    if(!pendingFocusTools||!toolsOpen)return;
+    const raf=requestAnimationFrame(()=>{
+      toolsFirstInputRef.current?.scrollIntoView?.({block:'nearest'});
+      toolsFirstInputRef.current?.focus();
+      setPendingFocusTools(false);
+    });
+    return()=>cancelAnimationFrame(raf);
+  },[pendingFocusTools,toolsOpen]);
+
+  // Keyboard-only flow: Customer -> (ship-date modal, already autoFocus) -> Category -> Quantity.
+  // Once the ship-date modal closes and a category still needs to be picked (Case 0/3), move
+  // focus straight to the category select so Enter/arrow keys can complete the bill with no mouse.
+  useEffect(()=>{
+    if(shipDateModalOpen||!currentCustomer||!categoryChooserOpen)return;
+    const t=setTimeout(()=>{categorySelectRef.current?.focus();},100);
+    return()=>clearTimeout(t);
+  },[shipDateModalOpen,currentCustomer,categoryChooserOpen]);
 
   const selected=items
     .map(i=>({...i,quantity:calcQtyExpression(i.quantity_expr)||Number(i.quantity||0)}))
     .filter(i=>i.selected&&Number(i.quantity)>0);
 
   const total=selected.reduce((s,i)=>s+Number(i.quantity||0)*Number(i.sale_price||0),0);
+  const totalQty=selected.reduce((s,i)=>s+Number(i.quantity||0),0);
+
+  const activeBookEffectiveFrom=useMemo(()=>{
+    const dates=items.filter(i=>i.price_type==='PRICE_BOOK'&&i.effective_from).map(i=>String(i.effective_from).slice(0,10));
+    if(!dates.length)return null;
+    return dates.reduce((max,d)=>d>max?d:max);
+  },[items]);
 
 
   const changeOrderDate=(v)=>{
     const next=String(v||today).slice(0,10);
     if(isFutureIsoDate(next)){
-      alert('Không thể chọn ngày xuất hàng lớn hơn ngày hiện tại.');
+      showWarning('Không thể chọn ngày xuất hàng lớn hơn ngày hiện tại.');
       return;
     }
     setOrderDate(next);
@@ -480,11 +621,12 @@ export default function CreateOrder({setPage}){
     if(saving)return;
     setError('');
     setSaveNotice('');
-    if(!cid)return alert('Chọn khách hàng');
+    if(!cid)return showWarning('Chọn khách hàng');
+    if(!selectedCategoryId)return showWarning('Chọn danh mục hàng hóa');
     const checkedDate=validateShippingDate(billCalendarType,orderDate,billLunarDateText);
     if(!checkedDate.ok)return;
     if(checkedDate.solarDate&&checkedDate.solarDate!==orderDate)setOrderDate(checkedDate.solarDate);
-    if(!selected.length)return alert('Nhập số lượng ít nhất 1 mặt hàng');
+    if(!selected.length)return showWarning('Nhập số lượng ít nhất 1 mặt hàng');
 
     const needManualPrice=walkInCustomer||noPrivatePrice;
     const wasNoPrivatePrice=noPrivatePrice;
@@ -503,12 +645,12 @@ export default function CreateOrder({setPage}){
     let actualPaid=Number(cashAmount||0)+Number(bankAmount||0);
 
     if(walkInCustomer && actualPaid<Number(total||0)){
-      alert('Khách vãng lai phải thu đủ tiền ngay tại POS trước khi lưu bill.');
+      showWarning('Khách vãng lai phải thu đủ tiền ngay tại POS trước khi lưu bill.');
       return;
     }
 
     if(!walkInCustomer && actualPaid>0){
-      alert('Khách hàng thường chỉ tạo bill công nợ tại POS. Vui lòng thu tiền ở màn Thu tiền.');
+      showWarning('Khách hàng thường chỉ tạo bill công nợ tại POS. Vui lòng thu tiền ở màn Thu tiền.');
       return;
     }
 
@@ -569,8 +711,11 @@ export default function CreateOrder({setPage}){
       if(data.code==='PRICE_NOT_FOUND' && data.details?.items?.length){
         message='Không thể lưu bill. Khách hàng chưa có giá cho: '+data.details.items.map(x=>x.product_name||('ID '+x.product_id)).join(', ')+'. Vui lòng cập nhật bảng giá riêng trước.';
       }
-      setError(message);
-      alert(message);
+      // `error` feeds SafePage's error prop, which replaces this entire POS screen with a
+      // full-page "Lỗi màn hình" box AND fires its own showError toast (SafePage.jsx) — using
+      // it here for a single save failure was a double-notification bug that also wiped the
+      // in-progress bill from view. A single toast is enough; the form must stay open.
+      showError(message);
     }finally{
       setSaving(false);
     }
@@ -586,24 +731,45 @@ export default function CreateOrder({setPage}){
     }
   };
 
+  // Thêm nhanh mặt hàng luôn dùng đúng danh mục hàng hóa đang chọn cho bill này.
+  useEffect(()=>{
+    if(quickOpen&&selectedCategoryId)loadNextCode(selectedCategoryId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[quickOpen,selectedCategoryId]);
+
   const addQuickProduct=async()=>{
-    if(!cid)return alert('Chọn khách trước');
-    if(!quick.name)return alert('Nhập tên mặt hàng');
+    if(!cid)return showWarning('Chọn khách trước');
+    if(!selectedCategoryId)return showWarning('Chọn danh mục hàng hóa trước');
+    if(!quick.name)return showWarning('Nhập tên mặt hàng');
 
-    const r=await api.post('/products/quick',{
-      ...quick,
-      customer_id:cid
-    });
+    try{
+      const r=await api.post('/products/quick',{
+        ...quick,
+        category_id:selectedCategoryId,
+        customer_id:cid
+      });
 
-    alert(r.data.message+' - '+r.data.product_code);
-    setQuick(q=>({
-      unit:q.unit||'kg',
-      inventory_mode:q.inventory_mode||'CARCASS_PART',
-      allow_negative_stock:q.allow_negative_stock??1,
-      category_id:q.category_id
-    }));
-    setQuickOpen(false);
-    await reloadCustomerCatalogKeepQty(cid);
+      showSuccess(r.data.message+' - '+r.data.product_code);
+      setQuick(q=>({
+        unit:q.unit||'kg',
+        inventory_mode:q.inventory_mode||'CARCASS_PART',
+        allow_negative_stock:q.allow_negative_stock??1,
+        category_id:q.category_id
+      }));
+      if(selectedCategoryId)loadNextCode(selectedCategoryId);
+      setPendingFocusQuickName(true);
+      await reloadCustomerCatalogKeepQty(cid);
+    }catch(e){
+      const backendMsg=e.response?.data?.message||e.message||'';
+      // Quick Add must survive a duplicate-name rejection: keep the panel open, keep what
+      // the user typed (quick state is untouched here), and refocus the name field so they
+      // can correct it immediately instead of losing their place.
+      showWarning(/đã tồn tại/i.test(backendMsg)
+        ? `Mặt hàng '${quick.name}' đã tồn tại.`
+        : (backendMsg||'Không thể thêm mặt hàng nhanh')
+      );
+      setPendingFocusQuickName(true);
+    }
   };
 
   const handleDrop=(targetId)=>{
@@ -619,17 +785,21 @@ export default function CreateOrder({setPage}){
   };
 
   const saveOrder=async()=>{
-    if(!cid)return alert('Chọn khách');
+    if(!cid)return showWarning('Chọn khách');
     await api.put('/price-matrix/'+cid+'/catalog/reorder',{
       items:items.map((x,i)=>({product_id:x.product_id,sort_order:i+1}))
     });
-    alert('Đã lưu thứ tự danh mục khách');
+    showSuccess('Đã lưu thứ tự danh mục khách');
     await reloadCustomerCatalogKeepQty(cid);
   };
 
   const applyVoiceCommand=(text)=>{
     if(!cid){
       setVoiceMsg('Chọn khách hàng trước khi nhập giọng nói');
+      return;
+    }
+    if(!selectedCategoryId){
+      setVoiceMsg('Chọn danh mục hàng hóa trước khi nhập giọng nói');
       return;
     }
 
@@ -724,8 +894,8 @@ export default function CreateOrder({setPage}){
     const customerCalendar=String(currentCustomer?.billing_calendar_type||billCalendarType||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
     if(customerCalendar==='LUNAR'){
       const solar=lunarToSolarDate(parseLunarText(bill.date.ddmmyyyy));
-      if(!solar){alert('Ngày âm lịch trong Excel không hợp lệ: '+bill.date.ddmmyyyy);return '';}
-      if(isFutureIsoDate(solar)){alert('Không thể import bill có ngày xuất hàng lớn hơn ngày hiện tại: '+bill.date.ddmmyyyy+' Âm lịch');return '';}
+      if(!solar){showWarning('Ngày âm lịch trong Excel không hợp lệ: '+bill.date.ddmmyyyy);return '';}
+      if(isFutureIsoDate(solar)){showWarning('Không thể import bill có ngày xuất hàng lớn hơn ngày hiện tại: '+bill.date.ddmmyyyy+' Âm lịch');return '';}
       setBillCalendarType('LUNAR');
       setBillLunarDateText(bill.date.ddmmyyyy);
       setOrderDate(solar);
@@ -733,7 +903,7 @@ export default function CreateOrder({setPage}){
       return `${bill.date.ddmmyyyy} Âm lịch`;
     }
     const solar=String(bill.date.iso||'').slice(0,10);
-    if(solar&&isFutureIsoDate(solar)){alert('Không thể import bill có ngày xuất hàng lớn hơn ngày hiện tại: '+bill.date.ddmmyyyy+' Dương lịch');return '';}
+    if(solar&&isFutureIsoDate(solar)){showWarning('Không thể import bill có ngày xuất hàng lớn hơn ngày hiện tại: '+bill.date.ddmmyyyy+' Dương lịch');return '';}
     setBillCalendarType('SOLAR');
     setBillLunarDateText('');
     if(solar)setOrderDate(solar);
@@ -792,21 +962,24 @@ export default function CreateOrder({setPage}){
     }
     resetImportSession();
     setCid('');
+    setSelectedCategoryId('');
+    setCategorySelection({categories:[],auto_selected_category_id:null,requires_selection:false,needs_initialization:false});
+    setCategoryChooserOpen(false);
+    setAddCategoryPickerId('');
     setItems([]);
     setFilter('');
-    setSource('');
     setMsg('');
     setSaveNotice('');
     setNoPrivatePrice(false);
     setPaid(0);
     setCashAmount(0);
     setBankAmount(0);
-    setCustomerOpen(true);
     setPendingFocusCustomer(true);
   };
 
   const previewImport=(sourceType='text')=>{
-    if(!cid)return alert('Chọn khách trước');
+    if(!cid)return showWarning('Chọn khách trước');
+    if(!selectedCategoryId)return showWarning('Chọn danh mục hàng hóa trước');
     const rows=parseOrderText(importText,sourceType);
     const matched=matchImportedRows(rows,items);
     setImportPreview(matched);
@@ -831,7 +1004,7 @@ export default function CreateOrder({setPage}){
     if(!importPreview.length)return;
     const rowsToApply=importPreview.filter(x=>x.selected&&x.canApply);
     if(!rowsToApply.length){
-      alert('Không có dòng hợp lệ được chọn');
+      showWarning('Không có dòng hợp lệ được chọn');
       return;
     }
 
@@ -873,13 +1046,20 @@ export default function CreateOrder({setPage}){
     setImportPreview(prev=>prev.map(x=>rowsToApply.includes(x)?{...x,selected:false,applied:true}:x));
     const duplicateCount=rowsToApply.length-grouped.size;
     setImportMsg(`Đã đưa ${applied} dòng đã chọn vào bill (${grouped.size} mặt hàng${duplicateCount>0?', đã gộp '+duplicateCount+' dòng trùng':''}, ${importApplyMode==='ADD'?'cộng thêm':'ghi đè'}). Đã bỏ chọn các dòng vừa đưa vào bill để tránh bấm nhầm lần 2.${missing?` Có ${missing} dòng không tìm thấy trong danh mục khách.`:''}`);
+    setImportOpen(false);
+    setToolsOpen(false);
+    setPendingFocusQty(true);
   };
 
   const readExcelFile=async(file)=>{
     if(!file)return;
     if(!cid){
       resetImportFileInputs();
-      return alert('Chọn khách trước khi import Excel');
+      return showWarning('Chọn khách trước khi import Excel');
+    }
+    if(!selectedCategoryId){
+      resetImportFileInputs();
+      return showWarning('Chọn danh mục hàng hóa trước khi import Excel');
     }
     const readSeq=importReadSeqRef.current+1;
     importReadSeqRef.current=readSeq;
@@ -1106,8 +1286,12 @@ export default function CreateOrder({setPage}){
   };
 
   const previewHandwriting=()=>{
-    if(!cid)return alert('Chọn khách trước');
-    const rows=parseHandwritingText(importText,items,allProducts,ocrAliases);
+    if(!cid)return showWarning('Chọn khách trước');
+    if(!selectedCategoryId)return showWarning('Chọn danh mục hàng hóa trước');
+    // Only match against products in the selected category — never let handwriting OCR
+    // pull a product from another category into this bill.
+    const categoryProducts=allProducts.filter(p=>String(p.category_id)===String(selectedCategoryId));
+    const rows=parseHandwritingText(importText,items,categoryProducts,ocrAliases);
     setImportPreview(rows);
     setImportMsg(`Viết tay: đọc ${rows.length} dòng, OK ${rows.filter(x=>x.status==='OK').length}, vàng ${rows.filter(x=>x.status==='WARN').length}, đỏ ${rows.filter(x=>x.status==='ERROR').length}`);
   };
@@ -1116,8 +1300,28 @@ export default function CreateOrder({setPage}){
     if(!cid||!row.product_id)return;
     await api.post('/price-matrix/'+cid+'/catalog',{product_id:row.product_id,sort_order:999});
     await api.post('/handwriting/aliases',{customer_id:cid,alias_text:row.name,product_id:row.product_id,source:'HANDWRITING'});
-    alert('Đã thêm vào danh mục khách và học alias');
+    showSuccess('Đã thêm vào danh mục khách và học alias');
     await reloadCustomerCatalogKeepQty(cid);
+  };
+
+  const toggleQuickAddPanel=()=>{
+    if(quickOpen){
+      setQuickOpen(false);
+      return;
+    }
+    setToolsOpen(false);
+    setQuickOpen(true);
+    setPendingFocusQuickName(true);
+  };
+
+  const toggleToolsPanel=()=>{
+    if(toolsOpen){
+      setToolsOpen(false);
+      return;
+    }
+    setQuickOpen(false);
+    setToolsOpen(true);
+    setPendingFocusTools(true);
   };
 
   return (
@@ -1141,211 +1345,170 @@ export default function CreateOrder({setPage}){
           errorText={shipDateDialogError}
         />
 
+        <div className="pos-page-header-row">
+          <h2 className="pos-page-title">Tạo bill POS</h2>
+          <div className="actions">
+            <button type="button" className="btn" disabled={saving||!cid||!selectedCategoryId||!selected.length} onClick={save}>{saving?'Đang lưu...':'Lưu bill'}</button>
+          </div>
+        </div>
+
+        {saveNotice&&<div className="ai-alert success pos-save-session-notice">✔ {saveNotice}</div>}
+
         <div className="pos-agent-layout pos-real-layout">
           <main className="pos-agent-main pos-real-main">
-            <div className="card pos-customer-card pos-customer-collapse-card">
-              <div className="pos-customer-collapse-head">
-                <div>
-                      <div className="muted pos-customer-summary">
-                    {currentCustomerLabel}{source ? ` • ${source}` : ''}
-                  </div>
-                </div>
+            <POSBillContextBar
+              customers={customers}
+              cid={cid}
+              currentCustomer={currentCustomer}
+              customerAutocompleteRef={customerAutocompleteRef}
+              onChangeCustomer={id=>loadCustomerCatalog(id)}
+              walkInCustomer={walkInCustomer}
+              paymentPolicyText={paymentPolicyText}
+              orderDate={orderDate}
+              today={today}
+              billCalendarType={billCalendarType}
+              billLunarDateText={billLunarDateText}
+              onOpenShipDateModal={openShipDateModalForCustomer}
+              selectedCategoryId={selectedCategoryId}
+              categories={categories}
+              categorySelection={categorySelection}
+              categoryChooserOpen={categoryChooserOpen}
+              setCategoryChooserOpen={setCategoryChooserOpen}
+              unassignedCategories={unassignedCategories}
+              addCategoryPickerId={addCategoryPickerId}
+              setAddCategoryPickerId={setAddCategoryPickerId}
+              addCategoryBusy={addCategoryBusy}
+              onPickExistingCategory={pickExistingCategory}
+              onConfirmAddCategory={confirmAddCategory}
+              noPrivatePrice={noPrivatePrice}
+              catalogLoading={catalogLoading}
+              activeBookEffectiveFrom={activeBookEffectiveFrom}
+              categorySelectRef={categorySelectRef}
+              onStartChangeCustomer={startChangeCustomer}
+            />
 
-                <button
-                  type="button"
-                  className="btn secondary"
-                  onClick={()=>setCustomerOpen(!customerOpen)}
-                >
-                  {customerOpen?'Thu gọn':'Chọn khách / chức năng'}
-                </button>
-              </div>
-
-              {currentCustomer&&(<div className={walkInCustomer?'ai-alert warn':'ai-alert'} style={{marginTop:12}}>{paymentPolicyText}</div>)}
-              {currentCustomer&&(
-                <div className="pos-bill-context-row">
-                  <div className="pos-bill-context-pill" title="Ngày xuất hàng dùng để lấy bảng giá riêng đúng thời gian bill">
-                    <span className="pos-bill-context-icon">📅</span>
-                    <span>
-                      <b>Ngày bill:</b>{' '}
-                      {billCalendarType==='LUNAR'
-                        ? `${billLunarDateText||'chưa chọn'} ÂL${orderDate ? ' / DL '+String(orderDate).slice(0,10).split('-').reverse().join('/') : ''}`
-                        : `${String(orderDate||today).slice(0,10).split('-').reverse().join('/')} DL`}
-                    </span>
-                  </div>
-                  <button type="button" className="btn tiny secondary" onClick={()=>openShipDateModalForCustomer(currentCustomer)}>
-                    Đổi ngày
-                  </button>
-                </div>
-              )}
-
-              {customerOpen&&(
-                <div className="pos-customer-collapse-body">
-
-              <EnterpriseAutocomplete
-                ref={customerAutocompleteRef}
-                items={customers}
-                value={customers.find(c=>String(c.id)===String(cid))||null}
-                onChange={item=>loadCustomerCatalog(item?String(item.id):'')}
-                placeholder="Tìm khách hàng..."
-                displayField="name"
-                secondaryFields={['customer_code','phone']}
-                searchFields={['name','customer_code','phone','address']}
-                filter={item=>(Number(item.partner_type||2)&2)===2}
-                emptyText="Không tìm thấy khách hàng"
-                getItemKey={item=>item.id}
+            {selectedCategoryId ? (
+              <POSProductTableAgent
+                shown={shown}
+                items={items}
+                filter={filter}
+                setFilter={setFilter}
+                qtyRefs={qtyRefs}
+                focusNext={focusNext}
+                focusFirstFilteredItem={focusFirstQtyInput}
+                updateQtyExpr={updateQtyExpr}
+                dragId={dragId}
+                setDragId={setDragId}
+                handleDrop={handleDrop}
+                allowManualPrice={walkInCustomer||noPrivatePrice}
+                updatePrice={updatePrice}
+                priceRefs={priceRefs}
+                onQuickAdd={toggleQuickAddPanel}
+                onOpenTools={toggleToolsPanel}
+                onClearRow={clearRow}
+                quickOpen={quickOpen}
+                toolsOpen={toolsOpen}
               />
-
-              <p className="muted">
-                Nguồn danh mục: {source||'chưa chọn'}. Enter nhảy dòng tiếp theo. Kéo thả dòng để đổi thứ tự.
-              </p>
-
-              <div className="actions pos-agent-action-row">
-                <button className="btn secondary" onClick={()=>setQuickOpen(!quickOpen)}>
-                  {quickOpen?'− Thu gọn thêm nhanh':'+ Thêm nhanh mặt hàng'}
-                </button>
-                <button className="btn secondary" onClick={()=>setImportOpen(!importOpen)}>
-                  {importOpen?'− Thu gọn import':'+ Import Excel/Ảnh'}
-                </button>
-              </div>
-
-              {quickOpen&&(
-                <div className="card inner-card">
-                  <h3>Thêm nhanh mặt hàng vào danh mục khách này</h3>
-                  <div className="form-grid">
-                    <select className="select" value={quick.category_id||''} onChange={e=>loadNextCode(e.target.value)}>
-                      <option value="">Chọn nhóm</option>
-                      {categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
-                    </select>
-                    <input className="input" placeholder="Mã tự sinh" value={quick.product_code||''} onChange={e=>setQuick({...quick,product_code:e.target.value})}/>
-                    <input className="input" placeholder="Tên mặt hàng mới" value={quick.name||''} onChange={e=>setQuick({...quick,name:e.target.value})}/>
-                    <input inputMode="decimal" className="input" placeholder="Đơn vị" value={quick.unit||'kg'} onChange={e=>setQuick({...quick,unit:e.target.value})}/>
-                    <select className="select" value={quick.inventory_mode||'CARCASS_PART'} onChange={e=>setQuick({...quick,inventory_mode:e.target.value,allow_negative_stock:e.target.value==='STOCK'?0:1})}>
-                      <option value="STOCK">Quản tồn kho</option>
-                      <option value="NON_STOCK">Bò xô không kiểm tồn</option>
-                      <option value="CARCASS_PART">Phần pha lóc không kiểm tồn</option>
-                    </select>
-                  </div>
-                  <button className="btn secondary" style={{marginTop:10}} onClick={addQuickProduct}>
-                    + Thêm vào danh mục khách
-                  </button>
-                </div>
-              )}
-
-              {importOpen&&(
-                <div className="card inner-card">
-                  <h3>Import đơn từ Excel / hình ảnh</h3>
-                  <p className="muted">
-                    File chỉ cần 2 cột: <b>Tên mặt hàng</b> và <b>Số lượng</b>.
-                  </p>
-                  <div className="actions">
-                    <input className="input" style={{maxWidth:360}} placeholder="Sheet cần đọc (trống = tất cả, nhiều sheet cách nhau dấu phẩy)" value={importSheetFilter} onChange={e=>setImportSheetFilter(e.target.value)}/>
-                    <input ref={importExcelFileRef} type="file" accept=".xlsx,.xls,.csv" onClick={e=>{e.currentTarget.value='';startFreshImportSession();}} onChange={e=>{const file=e.target.files?.[0];e.target.value='';readExcelFile(file);}}/>
-                    <input ref={importImageFileRef} type="file" accept="image/*" onClick={e=>{e.currentTarget.value='';startFreshImportSession();}} onChange={e=>{const file=e.target.files?.[0];e.target.value='';readImageFile(file);}}/>
-                  </div>
-                  <textarea className="input" style={{minHeight:120,marginTop:10}} placeholder={"Bò búp 10+12\nĐùi bò 5.5"} value={importText} onChange={e=>setImportText(e.target.value)}/>
-                  <div className="actions" style={{marginTop:10}}>
-                    <select className="select" style={{width:220}} value={importApplyMode} onChange={e=>setImportApplyMode(e.target.value)}>
-                      <option value="REPLACE">Ghi đè số lượng trong bill</option>
-                      <option value="ADD">Cộng thêm vào số lượng cũ</option>
-                    </select>
-                    <button className="btn secondary" onClick={()=>previewImport('text')}>Xem trước import text/excel</button>
-                    <button className="btn secondary" onClick={()=>previewImport('image')}>Xem trước OCR ảnh</button>
-                    <button className="btn secondary" onClick={previewHandwriting}>Xem ảnh viết tay</button>
-                    <button className="btn" onClick={applyImport} disabled={!importPreview.length}>Đưa dòng đã chọn vào bill</button>
-                    <button className="btn danger" onClick={clearCurrentBillQty}>Xóa SL bill hiện tại</button>
-                  </div>
-                  {importMsg&&<p className="muted">{importMsg}</p>}
-
-                  {importPreview.length>0&&(
-                    <div className="card inner-card">
-                      <h3>Preview import</h3>
-                      <table className="table">
-                        <thead>
-                          <tr>
-                            <th>Chọn</th>
-                            <th>Raw</th>
-                            <th>Mặt hàng khớp</th>
-                            <th>Số lượng</th>
-                            <th>Trạng thái</th>
-                            <th>Thao tác</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {importPreview.map((r,idx)=>(
-                            <tr key={idx} style={{background:r.status==='ERROR'?'#fee2e2':(r.status==='WARN'?'#fef3c7':'#dcfce7')}}>
-                              <td>
-                                <input type="checkbox" checked={!!r.selected} disabled={!r.canApply} onChange={e=>updateImportRow(idx,{selected:e.target.checked})}/>
-                              </td>
-                              <td><b>{r.name||r.raw||''}</b><br/><span className="muted">{r.raw||''}</span></td>
-                              <td>{r.product?<span>{r.product.product_code} - {r.product.product_name}</span>:<span className="muted">Chưa khớp danh mục</span>}</td>
-                              <td>
-                                <input inputMode="decimal" className="input" style={{width:120}} value={r.qtyExpr||r.quantity_expr||r.qty||''} onChange={e=>updateImportRow(idx,{qtyExpr:e.target.value})}/>
-                              </td>
-                              <td>
-                                {r.errors?.length?<span>🔴 {r.errors.join(', ')}</span>:r.warnings?.length?<span>🟡 {r.warnings.join(', ')}</span>:<span>🟢 OK</span>}
-                              </td>
-                              <td>
-                                {r.product_id&&!r.inCustomerCatalog&&(
-                                  <button className="btn secondary" onClick={()=>addMissingToCatalog(r)}>
-                                    Thêm vào DM khách
-                                  </button>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-              )}
-                </div>
-              )}
-            </div>
-
-            {currentCustomer&&(
-              <div className="pos-customer-session-banner">
-                <div>
-                  <span className="pos-session-label">Đang tạo bill cho</span>
-                  <b>{currentCustomer.name}</b>
-                  <span className="muted"> • {billCalendarType==='LUNAR'?'Âm lịch':'Dương lịch'} {billCalendarType==='LUNAR'?billLunarDateText:orderDate}</span>
-                </div>
-                <div className="actions">
-                  <button type="button" className="btn secondary" onClick={focusFirstQtyInput}>Nhập bill tiếp</button>
-                  <button type="button" className="btn secondary" onClick={startChangeCustomer}>Đổi khách</button>
-                </div>
+            ) : currentCustomer && (
+              <div className="card">
+                <p className="muted">Chọn danh mục hàng hóa ở trên để tải mặt hàng và bảng giá đúng danh mục.</p>
               </div>
             )}
 
-            {saveNotice&&<div className="ai-alert success pos-save-session-notice">✔ {saveNotice}</div>}
+            {quickOpen && (
+              <div className="card pos-quick-add-panel" ref={quickAddSectionRef}>
+                <div className="pos-quick-add-head">
+                  <h3 style={{margin:0}}>Thêm nhanh mặt hàng</h3>
+                  <button type="button" className="btn secondary" onClick={toggleQuickAddPanel}>
+                    − Thu gọn
+                  </button>
+                </div>
+                {!selectedCategoryId && <p className="muted">Chọn danh mục hàng hóa ở trên trước khi thêm nhanh mặt hàng.</p>}
+                <div className="form-grid">
+                  <input className="input" disabled value={categories.find(c=>String(c.id)===String(selectedCategoryId))?.name||'Chưa chọn danh mục'} />
+                  <input className="input" placeholder="Mã tự sinh" value={quick.product_code||''} onChange={e=>setQuick({...quick,product_code:e.target.value})} />
+                  <input
+                    ref={quickNameInputRef}
+                    className="input"
+                    placeholder="Tên mặt hàng mới"
+                    value={quick.name||''}
+                    onChange={e=>setQuick({...quick,name:e.target.value})}
+                    onKeyDown={e=>{
+                      if(e.key==='Enter'){
+                        e.preventDefault();
+                        quickUnitInputRef.current?.focus();
+                        quickUnitInputRef.current?.select?.();
+                      }
+                    }}
+                  />
+                  <input
+                    ref={quickUnitInputRef}
+                    inputMode="decimal"
+                    className="input"
+                    placeholder="Đơn vị"
+                    value={quick.unit||'kg'}
+                    onChange={e=>setQuick({...quick,unit:e.target.value})}
+                    onKeyDown={e=>{
+                      if(e.key==='Enter'){
+                        e.preventDefault();
+                        quickAddSaveBtnRef.current?.focus();
+                      }
+                    }}
+                  />
+                  <select className="select" value={quick.inventory_mode||'CARCASS_PART'} onChange={e=>setQuick({...quick,inventory_mode:e.target.value,allow_negative_stock:e.target.value==='STOCK'?0:1})}>
+                    <option value="STOCK">Quản tồn kho</option>
+                    <option value="NON_STOCK">Bò xô không kiểm tồn</option>
+                    <option value="CARCASS_PART">Phần pha lóc không kiểm tồn</option>
+                  </select>
+                </div>
+                <button ref={quickAddSaveBtnRef} className="btn secondary" style={{marginTop:10}} disabled={!selectedCategoryId} onClick={addQuickProduct}>
+                  + Thêm vào danh mục khách
+                </button>
+              </div>
+            )}
 
-            <POSProductTableAgent
-              shown={shown}
-              items={items}
-              filter={filter}
-              setFilter={setFilter}
-              saveOrder={saveOrder}
+            <POSAdvancedTools
+              toolsOpen={toolsOpen}
+              setToolsOpen={setToolsOpen}
               cid={cid}
-              qtyRefs={qtyRefs}
-              focusNext={focusNext}
-              focusFirstFilteredItem={focusFirstQtyInput}
-              updateQtyExpr={updateQtyExpr}
-              dragId={dragId}
-              setDragId={setDragId}
-              handleDrop={handleDrop}
-              allowManualPrice={walkInCustomer||noPrivatePrice}
-              updatePrice={updatePrice}
-              priceRefs={priceRefs}
+              saveOrder={saveOrder}
+              toolsFirstInputRef={toolsFirstInputRef}
+              importOpen={importOpen}
+              setImportOpen={setImportOpen}
+              importSheetFilter={importSheetFilter}
+              setImportSheetFilter={setImportSheetFilter}
+              importExcelFileRef={importExcelFileRef}
+              importImageFileRef={importImageFileRef}
+              startFreshImportSession={startFreshImportSession}
+              readExcelFile={readExcelFile}
+              readImageFile={readImageFile}
+              importText={importText}
+              setImportText={setImportText}
+              importApplyMode={importApplyMode}
+              setImportApplyMode={setImportApplyMode}
+              previewImport={previewImport}
+              previewHandwriting={previewHandwriting}
+              applyImport={applyImport}
+              importPreview={importPreview}
+              clearCurrentBillQty={clearCurrentBillQty}
+              importMsg={importMsg}
+              updateImportRow={updateImportRow}
+              addMissingToCatalog={addMissingToCatalog}
             />
           </main>
 
-          <aside className="card pos-payment-panel pos-agent-payment">
-            <h3>Thông tin thanh toán</h3>
-            <p className="muted">Từ V65.47, Bill chỉ quản lý hàng và giá. Tiền mặt/chuyển khoản xử lý ở menu <b>Thu tiền</b> để công nợ và phân bổ bill cũ không bị rối.</p>
-            <div className="payment-total-box"><div>Tổng bill</div><b>{money(total)}</b><span>Góp/ngày: {money(monthlyInstallment)}</span><span>Thanh toán: vào menu Thu tiền</span></div>
-            <div className="actions" style={{marginTop:12}}><button type="button" className="btn" disabled={saving||!cid||!selected.length} onClick={save}>{saving?'Đang lưu...':'Lưu bill'}</button><button type="button" className="btn secondary" onClick={clearCurrentBillQty}>Xóa số lượng</button></div>
-            {msg&&<div className="ai-alert success" style={{marginTop:12}}>Đã lưu: <b>{msg}</b></div>}
-          </aside>
+          <POSBillSummary
+            totalQty={totalQty}
+            total={total}
+            monthlyInstallment={monthlyInstallment}
+            saving={saving}
+            cid={cid}
+            selectedCategoryId={selectedCategoryId}
+            selectedCount={selected.length}
+            onSave={save}
+            onClear={clearCurrentBillQty}
+            msg={msg}
+          />
         </div>
 
         <div className="pos-bottom-ai-tools">

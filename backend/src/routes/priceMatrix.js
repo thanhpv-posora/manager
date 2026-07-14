@@ -21,9 +21,43 @@ async function assertBookScope(bookId, user) {
   return rows[0].customer_id;
 }
 
+// S4.3: Customer Price Category (Customer + Product Category) endpoints.
+router.get('/:customerId/categories', auth(['ADMIN','STAFF','CUSTOMER']), async(req,res,next)=>{try{
+  await assertCustomerScope(req.user, req.params.customerId);
+  res.json(await PriceMatrixAgent.resolveCustomerCategorySelection(req.params.customerId))
+}catch(e){next(e)}});
+
+router.post('/:customerId/categories', auth(['ADMIN','STAFF','CUSTOMER']), async(req,res,next)=>{try{
+  await assertCustomerScope(req.user, req.params.customerId);
+  res.json(await PriceMatrixAgent.createCustomerPriceCategory(req.params.customerId, req.body.category_id, {note:req.body.note}))
+}catch(e){next(e)}});
+
+router.put('/:customerId/categories/reorder', auth(['ADMIN','STAFF','CUSTOMER']), async(req,res,next)=>{try{
+  await assertCustomerScope(req.user, req.params.customerId);
+  res.json(await PriceMatrixAgent.reorderCustomerPriceCategories(req.params.customerId, req.body.items))
+}catch(e){next(e)}});
+
+// Load the category's own customer_id and assert caller has scope over it.
+async function assertCategoryScope(categoryRowId, user) {
+  const [rows] = await pool.query(`SELECT customer_id FROM customer_price_categories WHERE id=? LIMIT 1`, [categoryRowId]);
+  if (!rows.length) { const e=new Error('Không tìm thấy danh mục giá'); e.status=404; e.statusCode=404; throw e; }
+  await assertCustomerScope(user, rows[0].customer_id);
+  return rows[0].customer_id;
+}
+
+router.put('/categories/:id/default', auth(['ADMIN','STAFF','CUSTOMER']), async(req,res,next)=>{try{
+  await assertCategoryScope(req.params.id, req.user);
+  res.json(await PriceMatrixAgent.setDefaultCustomerPriceCategory(req.params.id))
+}catch(e){next(e)}});
+
+router.delete('/categories/:id', auth(['ADMIN','STAFF','CUSTOMER']), async(req,res,next)=>{try{
+  await assertCategoryScope(req.params.id, req.user);
+  res.json(await PriceMatrixAgent.deleteCustomerPriceCategory(req.params.id))
+}catch(e){next(e)}});
+
 router.get('/:customerId/books', auth(['ADMIN','STAFF','CUSTOMER']), async(req,res,next)=>{try{
   await assertCustomerScope(req.user, req.params.customerId);
-  res.json(await PriceMatrixAgent.listBooks(req.params.customerId))
+  res.json(await PriceMatrixAgent.listBooks(req.params.customerId, req.query.category_id))
 }catch(e){next(e)}});
 
 router.get('/books/:bookId', auth(['ADMIN','STAFF','CUSTOMER']), async(req,res,next)=>{try{
@@ -64,23 +98,23 @@ router.post('/:customerId/effective-prices', auth(['ADMIN','STAFF','CUSTOMER']),
 
 router.get('/:customerId', auth(['ADMIN','STAFF','CUSTOMER']), async(req,res,next)=>{try{
   await assertCustomerScope(req.user, req.params.customerId);
-  res.json(await PriceMatrixAgent.matrix(req.params.customerId))
+  res.json(await PriceMatrixAgent.matrix(req.params.customerId, req.query.category_id))
 }catch(e){next(e)}});
 
 router.put('/:customerId', auth(['ADMIN','STAFF','CUSTOMER']), async(req,res,next)=>{try{
   await assertCustomerScope(req.user, req.params.customerId);
-  res.json(await PriceMatrixAgent.saveMatrix(req.params.customerId, req.body.items, req.user.id, effectivePayload(req.body)))
+  res.json(await PriceMatrixAgent.saveMatrix(req.params.customerId, req.body.items, req.user.id, effectivePayload(req.body), req.body.category_id))
 }catch(e){next(e)}});
 
 router.get('/:customerId/catalog/order', auth(['ADMIN','STAFF','CUSTOMER']), async(req,res,next)=>{try{
   await assertCustomerScope(req.user, req.params.customerId);
-  res.json(await PriceMatrixAgent.customerCatalogForOrder(req.params.customerId))
+  res.json(await PriceMatrixAgent.customerCatalogForOrder(req.params.customerId, req.query.category_id))
 }catch(e){next(e)}});
 
 router.post('/copy', auth(['ADMIN','STAFF','CUSTOMER']), async(req,res,next)=>{try{
   await assertCustomerScope(req.user, req.body.from_customer_id);
   await assertCustomerScope(req.user, req.body.to_customer_id);
-  res.json(await PriceMatrixAgent.copyCatalog(req.body.from_customer_id, req.body.to_customer_id, req.user.id, effectivePayload(req.body)))
+  res.json(await PriceMatrixAgent.copyCatalog(req.body.from_customer_id, req.body.to_customer_id, req.user.id, effectivePayload(req.body), req.body.category_id))
 }catch(e){next(e)}});
 
 router.put('/:customerId/catalog/reorder', auth(['ADMIN','STAFF','CUSTOMER']), async(req,res,next)=>{try{

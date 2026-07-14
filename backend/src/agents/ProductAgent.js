@@ -160,7 +160,7 @@ class ProductAgent {
     const [customers] = await pool.query(`SELECT * FROM customers WHERE id=? AND del_flg=0`, [customerId]);
     if (!customers.length) throw new Error('Không tìm thấy khách');
     const [rows] = await pool.query(
-      `SELECT p.id product_id,p.product_code,p.name product_name,p.unit,p.stock_quantity,p.default_sale_price,p.default_purchase_price,p.inventory_mode,p.allow_negative_stock,
+      `SELECT p.id product_id,p.product_code,p.name product_name,p.unit,p.stock_quantity,p.default_sale_price,p.default_purchase_price,p.inventory_mode,p.allow_negative_stock,p.category_id,
        COALESCE(cpp.sale_price,p.default_sale_price) sale_price,
        CASE WHEN cpp.sale_price IS NOT NULL THEN 'PRIVATE_PRICE' ELSE 'COMMON_PRICE' END price_type,
        pc.name category_name
@@ -180,12 +180,19 @@ class ProductAgent {
 
   async updateCustomerPrice(customerId, productId, salePrice, effectiveFrom=null, userId=null) {
     // V65.44: do not overwrite historical private price rows. Create a new price-book version.
+    // S4.2: a book is scoped to one product category — derive it from productId and only
+    // carry forward this customer's OTHER products in that same category, never all categories.
+    const [[product]] = await pool.query(`SELECT category_id FROM products WHERE id=? AND del_flg=0`, [productId]);
+    if (!product) throw Object.assign(new Error('Không tìm thấy sản phẩm'), { status: 404 });
+    const categoryId = product.category_id;
     const current = await this.customerProducts(customerId);
-    const items = (current.products || []).map(p => ({
-      product_id: p.product_id,
-      sale_price: Number(p.product_id)==Number(productId) ? Number(salePrice||0) : Number(p.sale_price||0)
-    }));
-    return PriceBookService.createOrReplaceBook(customerId, items, effectiveFrom || new Date().toISOString().slice(0,10), userId, 'Update single customer product price');
+    const items = (current.products || [])
+      .filter(p => Number(p.category_id) === Number(categoryId) || Number(p.product_id) === Number(productId))
+      .map(p => ({
+        product_id: p.product_id,
+        sale_price: Number(p.product_id)==Number(productId) ? Number(salePrice||0) : Number(p.sale_price||0)
+      }));
+    return PriceBookService.createOrReplaceBook(customerId, items, effectiveFrom || new Date().toISOString().slice(0,10), userId, 'Update single customer product price', categoryId);
   }
 
   async markCarcassParts() {

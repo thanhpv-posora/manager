@@ -157,6 +157,22 @@ async function findExactProductByAlias(customerId, keyword) {
   return null;
 }
 
+// S4.2: 1 POS bill = 1 customer + 1 category. Category is derived here from
+// products.category_id — never trusted from the AI draft/confirm payload.
+async function assertItemsSingleCategory(conn, items) {
+  const productIds = [...new Set((items || []).map((it) => Number(it.product_id)).filter(Boolean))];
+  if (productIds.length < 2) return;
+  const [rows] = await conn.query(`SELECT id, name, category_id FROM products WHERE id IN (?)`, [productIds]);
+  const categoryIds = new Set(rows.map((r) => Number(r.category_id)));
+  if (categoryIds.size > 1) {
+    const err = new Error(`Bill chỉ được chứa 1 danh mục hàng hóa. Mặt hàng đang thuộc nhiều danh mục khác nhau: ${rows.map((r) => r.name).join(', ')}`);
+    err.status = 400;
+    err.statusCode = 400;
+    err.code = 'MIXED_CATEGORY_ITEMS';
+    throw err;
+  }
+}
+
 function mergeDraftItemsByProduct(items) {
   const map = new Map();
   for (const item of items || []) {
@@ -483,23 +499,20 @@ async function createOrderDraft(payload) {
       throw new Error(`Số lượng không hợp lệ cho sản phẩm ${item.product_name}`);
     }
 
+    // S4.2-fix: price must come only from PriceBookService.getEffectivePrice(), which already
+    // derives category_id from product.id server-side. item.price (client hint) and
+    // product.price (legacy raw-SQL customer_product_prices/default_sale_price lookup used
+    // only for product identity matching above) must never be trusted as the bill price —
+    // a missing/zero resolution throws instead of silently falling back to either.
     const priceResult = await PriceBookService.getEffectivePrice(customer.id, product.id, billDate, db, calendarType, '');
-    let price, priceType, priceBookId;
-    if (priceResult && Number(priceResult.sale_price) > 0) {
-      price = Number(priceResult.sale_price);
-      priceType = priceResult.price_type;
-      priceBookId = priceResult.price_book_id || null;
-    } else {
-      price = normalizeAmount(item.price || product.price);
-      priceType = 'PRIVATE_PRICE';
-      priceBookId = null;
-    }
-
-    if (price <= 0) {
+    if (!priceResult || Number(priceResult.sale_price) <= 0) {
       throw new Error(
         `Khách ${customer.name} chưa có giá cho sản phẩm ${product.name}`
       );
     }
+    const price = Number(priceResult.sale_price);
+    const priceType = priceResult.price_type;
+    const priceBookId = priceResult.price_book_id || null;
 
     const amount = quantity * price;
 
@@ -522,6 +535,7 @@ async function createOrderDraft(payload) {
   }
 
   const mergedDraftItems = mergeDraftItemsByProduct(draftItems);
+  await assertItemsSingleCategory(db, mergedDraftItems);
   totalAmount = mergedDraftItems.reduce((sum, item) => sum + normalizeAmount(item.amount), 0);
 
   let cashAmount = normalizeAmount(cash_amount);
@@ -606,22 +620,19 @@ async function confirmOrderDraft(payload) {
 
     await inventoryService.validateOrderInventory(conn, items);
 
+    // S4.2-fix: re-resolve price server-side inside this transaction for every item.
+    // item.price / item.price_type / item.price_book_id from the caller's payload (which may
+    // be a client-controlled draft object, per order.agent.js's "backward compatible" path)
+    // are never trusted — a missing/zero resolution throws instead of falling back to them.
     const resolvedItems = [];
     for (const item of items) {
       const priceResult = await PriceBookService.getEffectivePrice(customer.id, item.product_id, orderDate, conn, calendarType, lunarDateText || '');
-      let resolvedPrice, resolvedPriceType, resolvedPriceBookId;
-      if (priceResult && Number(priceResult.sale_price) > 0) {
-        resolvedPrice = Number(priceResult.sale_price);
-        resolvedPriceType = priceResult.price_type;
-        resolvedPriceBookId = priceResult.price_book_id || null;
-      } else {
-        resolvedPrice = normalizeAmount(item.price);
-        resolvedPriceType = item.price_type || 'PRIVATE_PRICE';
-        resolvedPriceBookId = item.price_book_id || null;
-      }
-      if (resolvedPrice <= 0) {
+      if (!priceResult || Number(priceResult.sale_price) <= 0) {
         throw new Error(`Khách ${customer.name} chưa có giá cho sản phẩm ${item.product_name}`);
       }
+      const resolvedPrice = Number(priceResult.sale_price);
+      const resolvedPriceType = priceResult.price_type;
+      const resolvedPriceBookId = priceResult.price_book_id || null;
       resolvedItems.push({
         ...item,
         price: resolvedPrice,
@@ -630,6 +641,8 @@ async function confirmOrderDraft(payload) {
         price_book_id: resolvedPriceBookId
       });
     }
+
+    await assertItemsSingleCategory(conn, resolvedItems);
 
     const orderCode = `AI${Date.now()}`;
     const totalAmount = resolvedItems.reduce((sum, it) => sum + it.amount, 0);

@@ -94,6 +94,11 @@ export default function CreateOrder({setPage}){
 
   const qtyRefs=useRef({});
   const priceRefs=useRef({});
+  // S6.5: stable per-bill-attempt key sent to /orders so a double-click or a
+  // network retry of the SAME save() attempt resolves to the same order instead
+  // of creating a second one. Generated lazily on first use, rotated only after
+  // that attempt actually succeeds (see save()) — never regenerated on retry.
+  const billIdempotencyKeyRef=useRef(null);
   const customerAutocompleteRef=useRef(null);
   const categorySelectRef=useRef(null);
   const[pendingFocusCustomer,setPendingFocusCustomer]=useState(false);
@@ -656,6 +661,12 @@ export default function CreateOrder({setPage}){
 
     setSaving(true);
     try{
+      // S6.5: lazily mint the key for THIS bill-save attempt — reused verbatim if
+      // this exact call is retried (double-click before setSaving(true) re-renders
+      // the disabled button, or a network-level retry of the same request).
+      if(!billIdempotencyKeyRef.current){
+        billIdempotencyKeyRef.current=(crypto.randomUUID?crypto.randomUUID():`${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      }
       const r=await api.post('/orders',{
         customer_id:cid,
         order_date:checkedDate.solarDate||orderDate,
@@ -666,11 +677,15 @@ export default function CreateOrder({setPage}){
         installment_amount:monthlyInstallment,
         monthly_installment_id:monthlyInstallmentId,
         paid_amount:0,
-        items:payloadItems
+        items:payloadItems,
+        idempotency_key:billIdempotencyKeyRef.current
       });
 
       // V65.47: Bill bán hàng không ghi tiền. Tiền mặt/chuyển khoản xử lý riêng ở menu Thu tiền.
 
+      // This attempt succeeded — rotate the key so the NEXT bill (POS "keep going"
+      // flow) gets a fresh one, instead of ever being mistaken for a replay of this one.
+      billIdempotencyKeyRef.current=null;
       const code=r.data.order_code;
       setMsg(code);
       setSaveNotice(`Đã lưu ${code}. Đang giữ khách ${currentCustomer?.name||''}, có thể nhập bill tiếp theo ngay.`);

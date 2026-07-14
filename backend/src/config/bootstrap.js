@@ -1331,6 +1331,16 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
     await safeAddColumn(conn, 'orders', 'installment_amount', 'installment_amount DECIMAL(15,2) NOT NULL DEFAULT 0 AFTER current_bill_amount');
     await safeAddColumn(conn, 'orders', 'monthly_installment_id', 'monthly_installment_id BIGINT NULL AFTER installment_amount');
 
+    // S6.5: order-creation idempotency. Client sends the SAME key across a
+    // double-click / network retry for one bill-save attempt (rotates only after
+    // that attempt truly succeeds — see CreateOrder.jsx). NULL for callers that
+    // don't supply one (legacy clients, AI order path) — MySQL UNIQUE allows
+    // unlimited NULLs, so this is fully additive, no behavior change for them.
+    // Same proven pattern as stock_transactions.receive_dedup_key: insert-first,
+    // let the UNIQUE constraint reject a genuine concurrent duplicate atomically.
+    await safeAddColumn(conn, 'orders', 'idempotency_key', 'idempotency_key VARCHAR(64) NULL');
+    await safeAddIndex(conn, 'orders', 'uq_orders_idempotency_key', 'UNIQUE KEY uq_orders_idempotency_key (idempotency_key)');
+
     // V6.50 payment one receipt cash/bank + installment columns
     await safeAddColumn(conn, 'payments', 'cash_amount', 'cash_amount DECIMAL(15,2) NOT NULL DEFAULT 0');
     await safeAddColumn(conn, 'payments', 'bank_amount', 'bank_amount DECIMAL(15,2) NOT NULL DEFAULT 0');

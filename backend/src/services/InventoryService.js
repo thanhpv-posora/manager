@@ -1,8 +1,8 @@
 'use strict';
 const InventoryMovementService = require('./InventoryMovementService');
-const { normalizeInventoryMode } = require('../utils/inventoryMode');
+const InventoryPolicyResolver = require('./InventoryPolicyResolver');
 
-// InventoryService — INV-004
+// InventoryService — INV-004, S6.2
 //
 // Thin wrapper over InventoryMovementService.
 // Preserves the existing call surface so all callers need no changes.
@@ -19,6 +19,13 @@ const { normalizeInventoryMode } = require('../utils/inventoryMode');
 //                                           too would add a stock_transactions row that doesn't
 //                                           exist today. Left as-is to avoid a behavior change;
 //                                           revisit in a dedicated ticket if that gap should close.
+//
+// S6.2: the mode/allow_negative_stock decisions in adjustOrderItem() and
+// applyOrderInventory() below — previously duplicated inline conditionals,
+// separate from (but equivalent to) InventoryMovementService's own — now come
+// from the same InventoryPolicyResolver.resolve() used by postIn/postOut.
+// Branch structure and every observable outcome are unchanged; only where the
+// mode/allow_negative_stock decision is computed changed.
 
 function normalizeNumber(value) {
   const v = Number(value || 0);
@@ -55,8 +62,14 @@ class InventoryService {
       `SELECT inventory_mode, allow_negative_stock FROM products WHERE id = ?`,
       [productId]
     );
-    const mode = normalizeInventoryMode(rows[0]?.inventory_mode);
-    if (mode === 'NON_STOCK' || mode === 'CARCASS_PART' || Number(rows[0]?.allow_negative_stock) === 1) return;
+    // S6.2: identical shape to postOut's skip gate — a product skips real balance
+    // tracking here for exactly the same reasons it skips the stock-sufficiency
+    // check in postOut (NON_STOCK/CARCASS_PART mode, or allow_negative_stock).
+    // resolve({}) when the product row is missing normalizes to NON_STOCK, so a
+    // missing productId silently no-ops here — unchanged from the original
+    // `rows[0]?.inventory_mode` optional-chaining behavior.
+    const policy = InventoryPolicyResolver.resolve(rows[0] || {});
+    if (!policy.needStockCheck) return;
 
     const delta = normalizeNumber(Math.abs(newQty - oldQty));
     if (delta < 0.001) return; // no meaningful change
@@ -93,10 +106,10 @@ class InventoryService {
       if (!rows.length) throw new Error(`Không tìm thấy sản phẩm ID=${item.product_id}`);
 
       const p = rows[0];
-      const mode = normalizeInventoryMode(p.inventory_mode);
+      const policy = InventoryPolicyResolver.resolve(p);
+      const mode = policy.mode;
       const qty = normalizeNumber(item.quantity);
       const beforeQty = normalizeNumber(p.stock_quantity);
-      const allowNeg = Number(p.allow_negative_stock || 0);
 
       if (mode === 'NON_STOCK') {
         results.push({ product_id: p.id, product_name: p.name, inventory_mode: mode, action: 'NO_STOCK_SKIP' });
@@ -104,7 +117,9 @@ class InventoryService {
       }
 
       // CARCASS_PART or allow_negative_stock: log movement, skip balance update.
-      if (mode === 'CARCASS_PART' || allowNeg === 1) {
+      // (mode is guaranteed not NON_STOCK here, so !needStockCheck can only mean
+      // CARCASS_PART or allow_negative_stock — same set postOut's skip gate covers.)
+      if (!policy.needStockCheck) {
         await InventoryMovementService.postOut(
           conn, p.id, qty, orderDate || new Date(), 'SALE', orderId,
           mode === 'CARCASS_PART' ? 'AI sale from carcass part' : 'AI sale stock deduct',

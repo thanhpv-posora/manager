@@ -144,6 +144,122 @@ class StockLedgerAgent {
 
     return { items: rows, total: Number(total), page: pageNum, limit: limitNum, stock_effect: stockEffect };
   }
+
+  // reconciliation — S6.3. READ-ONLY. Compares the cached products.stock_quantity
+  // balance against the balance reconstructed from stock_transactions, to detect
+  // drift before Inventory is relied on in production. Never writes anything —
+  // no sync, no repair, no adjustment. See file header: this agent never mutates
+  // stock_transactions or products.
+  //
+  // Source-of-truth rule: only rows with affect_stock=1 contribute to ledger_qty.
+  // Rows with affect_stock=0 (CARCASS_PART sales, NON_STOCK audit rows, and
+  // TRACK_STOCK+allow_negative_stock sales — see InventoryMovementService) stay
+  // visible in stock_transactions/the ledger list above, but contribute zero here.
+  // This is what keeps Bò Xô (CARCASS_PART) from ever being flagged as "drifted"
+  // just because it has ledger history — its history was never supposed to move
+  // the balance in the first place.
+  //
+  // Movement types: only 'IN' and 'ADJUSTMENT_INCREASE' (positive) / 'OUT' and
+  // 'ADJUSTMENT_DECREASE' (negative) are ever written by InventoryMovementService
+  // today (audited against bootstrap.js's CREATE TABLE + live schema). The live
+  // `type` ENUM also allows a 5th value, 'OPENING' (present in the DB but absent
+  // from bootstrap.js's tracked CREATE TABLE — a pre-existing, undocumented
+  // schema drift; no code writes it and no row currently uses it). It is included
+  // here as a positive contribution for safety — if it is ever written, silently
+  // ignoring it here would create exactly the kind of blind spot this feature
+  // exists to prevent. RETURN_IN/REVERSAL_IN/TRANSFER_OUT/REVERSAL_OUT do not
+  // exist in the schema (postReturn/postTransfer/postReversal are unimplemented
+  // stubs) and are deliberately not referenced here — inventing them would
+  // violate "do not assume enum names."
+  //
+  // Product inclusion rule (documented, not configurable): active (is_active=1),
+  // non-deleted (del_flg=0) products where EITHER (a) inventory_mode is currently
+  // TRACK_STOCK, OR (b) the cached stock_quantity is non-zero even though the
+  // mode says otherwise (a data anomaly worth surfacing), OR (c) the product has
+  // at least one historical affect_stock=1 ledger row even if its mode has since
+  // changed away from TRACK_STOCK. (c) is what lets this endpoint see drift left
+  // behind by a product that used to be tracked and was later switched to
+  // NON_STOCK/CARCASS_PART — reconstruction always follows the stored
+  // affect_stock flag on each row, never today's product.inventory_mode.
+  // NON_STOCK/CARCASS_PART products with no such history are correctly excluded
+  // (they were never expected to reconcile to anything).
+  //
+  // An explicit product_id filter bypasses this heuristic (the caller is asking
+  // about one specific product by identity, not asking "which products are
+  // inventory-relevant") — it only still requires del_flg=0/is_active=1.
+  async reconciliation(query = {}) {
+    const { status, product_id, inventory_mode } = query;
+
+    const conds = [`p.del_flg = 0`, `p.is_active = 1`];
+    const params = [];
+    if (product_id) {
+      conds.push(`p.id = ?`);
+      params.push(product_id);
+    } else {
+      conds.push(`(
+        p.inventory_mode = 'TRACK_STOCK'
+        OR p.stock_quantity <> 0
+        OR EXISTS (SELECT 1 FROM stock_transactions st2 WHERE st2.product_id = p.id AND st2.affect_stock = 1)
+      )`);
+    }
+    if (inventory_mode) { conds.push(`p.inventory_mode = ?`); params.push(inventory_mode); }
+
+    // Single aggregate query for every in-scope product — no per-product round trips.
+    const [rows] = await pool.query(
+      `SELECT
+         p.id AS product_id,
+         p.product_code,
+         p.name AS product_name,
+         p.inventory_mode,
+         p.stock_quantity AS cache_qty,
+         COALESCE(SUM(
+           CASE
+             WHEN st.affect_stock = 0 THEN 0
+             WHEN st.type IN ('IN', 'OPENING', 'ADJUSTMENT_INCREASE') THEN st.quantity
+             WHEN st.type IN ('OUT', 'ADJUSTMENT_DECREASE') THEN -st.quantity
+             ELSE 0
+           END
+         ), 0) AS ledger_qty
+       FROM products p
+       LEFT JOIN stock_transactions st ON st.product_id = p.id
+       WHERE ${conds.join(' AND ')}
+       GROUP BY p.id, p.product_code, p.name, p.inventory_mode, p.stock_quantity
+       ORDER BY p.name`,
+      params
+    );
+
+    // Tolerance matches the existing inline convention used elsewhere in this
+    // codebase for the same DECIMAL(15,3) quantity precision (InventoryService,
+    // InventoryReceiveService) — no dedicated tolerance utility exists to reuse.
+    const TOLERANCE = 0.001;
+    let items = rows.map(r => {
+      const cache_qty = Number(r.cache_qty);
+      const ledger_qty = Number(r.ledger_qty);
+      const difference = cache_qty - ledger_qty;
+      return {
+        product_id: Number(r.product_id),
+        product_code: r.product_code,
+        product_name: r.product_name,
+        inventory_mode: r.inventory_mode,
+        cache_qty,
+        ledger_qty,
+        difference,
+        status: Math.abs(difference) <= TOLERANCE ? 'OK' : 'MISMATCH',
+      };
+    });
+
+    if (status === 'OK' || status === 'MISMATCH') {
+      items = items.filter(it => it.status === status);
+    }
+
+    const ok_count = items.filter(it => it.status === 'OK').length;
+    const mismatch_count = items.filter(it => it.status === 'MISMATCH').length;
+
+    return {
+      summary: { total_products: items.length, ok_count, mismatch_count },
+      items,
+    };
+  }
 }
 
 module.exports = new StockLedgerAgent();

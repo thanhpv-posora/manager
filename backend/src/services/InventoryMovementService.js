@@ -1,8 +1,8 @@
 'use strict';
-const { normalizeInventoryMode } = require('../utils/inventoryMode');
+const InventoryPolicyResolver = require('./InventoryPolicyResolver');
 const { formatQty } = require('../utils/quantityFormat');
 
-// InventoryMovementService — INV-004
+// InventoryMovementService — INV-004, S6.1
 //
 // SOLE OWNER of all stock write primitives:
 //   postIn()                → stock_quantity +qty  + stock_transactions type='IN'
@@ -12,6 +12,12 @@ const { formatQty } = require('../utils/quantityFormat');
 //
 // InventoryService is a thin wrapper — callers use InventoryService, not this class directly.
 // All business rules live here. InventoryService preserves the call surface.
+//
+// S6.1: the inline mode/allow_negative_stock branching that used to decide
+// skipBalance (postIn) / skipStockCheck (postOut) now comes from
+// InventoryPolicyResolver.resolve() — same decision, extracted to a named,
+// independently-testable object. This file still owns every read/write; the
+// resolver only answers the policy question.
 //
 // Future movements (stubs below — implement in dedicated tickets):
 //   postTransfer()  postReturn()  postOpening()  postReversal()
@@ -52,7 +58,8 @@ class InventoryMovementService {
     );
     if (!rows.length) throw new Error('Không tìm thấy mặt hàng');
     const p = rows[0];
-    const mode = normalizeInventoryMode(p.inventory_mode);
+    const policy = InventoryPolicyResolver.resolve(p);
+    const mode = policy.mode;
     const qty = normalizeNumber(quantity);
     if (qty <= 0) return { stock_added: false, inventory_mode: mode, qty_added: 0 };
 
@@ -67,7 +74,7 @@ class InventoryMovementService {
     // S5.2-C: affect_stock is decided here, at write time, and stored on the
     // row — StockLedgerAgent reads it back verbatim rather than re-deriving
     // it later from whatever the product looks like today.
-    const skipBalance = mode === 'NON_STOCK' || mode === 'CARCASS_PART';
+    const skipBalance = !policy.affectBalance;
 
     // S5.1-C hardening: insert-first instead of check-then-act. The prior
     // SELECT-then-INSERT guard left a race window where two concurrent
@@ -135,13 +142,14 @@ class InventoryMovementService {
     );
     if (!rows.length) throw new Error('Không tìm thấy mặt hàng');
     const p = rows[0];
-    const mode = p.inventory_mode || 'STOCK';
+    const policy = InventoryPolicyResolver.resolve(p);
+    const mode = policy.mode;
     const qty = Number(quantity || 0);
 
     // S5.2-C: affect_stock is decided here, at write time, and stored on the
     // row — StockLedgerAgent reads it back verbatim rather than re-deriving
     // it later from whatever the product looks like today.
-    const skipStockCheck = mode === 'NON_STOCK' || mode === 'CARCASS_PART' || Number(p.allow_negative_stock) === 1;
+    const skipStockCheck = !policy.needStockCheck;
     if (skipStockCheck) {
       await conn.query(
         `INSERT INTO stock_transactions

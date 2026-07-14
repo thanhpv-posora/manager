@@ -258,6 +258,20 @@ return await this.loadLegacyDirectPayments(orderId);
   async create(data, user) {
     if (!data.items || !data.items.length) throw new Error('Bill phải có ít nhất 1 mặt hàng');
     await assertCustomerScope(user, data.customer_id);
+
+    // S6.5: idempotency fast path. Optimistic, outside any transaction — the real
+    // guarantee is the UNIQUE constraint + catch around the INSERT below. This
+    // just skips repeating all the expensive work (price resolution, category
+    // checks) for the common case of an obvious replay (e.g. the UI didn't
+    // visibly update in time and the user clicked "Lưu bill" again).
+    if (data.idempotency_key) {
+      const [[existing]] = await pool.query(
+        `SELECT id, order_code FROM orders WHERE idempotency_key = ? LIMIT 1`,
+        [data.idempotency_key]
+      );
+      if (existing) return { message: 'Đã tạo bill', order_id: existing.id, order_code: existing.order_code };
+    }
+
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
@@ -305,12 +319,37 @@ return await this.loadLegacyDirectPayments(orderId);
       const paid = 0; // V65.47: Bill không xử lý tiền. Tiền chỉ ghi ở menu Thu tiền.
       const debt = Math.max(0,total-paid);
       const pstatus = paid<=0?'UNPAID':paid>=total?'PAID':'PARTIAL';
-      const [r] = await conn.query(
-        `INSERT INTO orders(order_code,customer_id,order_date,delivery_date,status,payment_status,total_amount,paid_amount,debt_amount,private_token,note,created_by)
-         VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-        [code,data.customer_id,billSolarDate,data.delivery_date||null,'DELIVERED',pstatus,total,paid,debt,nanoid(24),data.note||'',user.id]
-      );
-      
+      let r;
+      try {
+        [r] = await conn.query(
+          `INSERT INTO orders(order_code,customer_id,order_date,delivery_date,status,payment_status,total_amount,paid_amount,debt_amount,private_token,note,created_by,idempotency_key)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [code,data.customer_id,billSolarDate,data.delivery_date||null,'DELIVERED',pstatus,total,paid,debt,nanoid(24),data.note||'',user.id,data.idempotency_key||null]
+        );
+      } catch (e) {
+        // S6.5: a genuine concurrent duplicate (same idempotency_key, two requests
+        // racing) hits the UNIQUE constraint here — the loser rolls back and returns
+        // the winner's order instead of erroring or creating a second bill. Same
+        // proven pattern as stock_transactions.receive_dedup_key.
+        //
+        // Deliberately not narrowed to "only if the error mentions idempotency":
+        // nextCode() (order_code generation, a separate pre-existing utility, not
+        // touched here) has its own unrelated read-then-increment race, so a
+        // genuine concurrent idempotency_key collision can sometimes surface as an
+        // order_code duplicate instead, depending on which unique index MySQL
+        // reports first. Any duplicate-key error is treated as "maybe this was our
+        // own race" — if an order with this exact idempotency_key exists after
+        // rolling back, return it; if not, this duplicate was for an unrelated
+        // reason and the original error is rethrown unchanged.
+        const isDupKey = e && (e.code === 'ER_DUP_ENTRY' || e.errno === 1062);
+        if (data.idempotency_key && isDupKey) {
+          await conn.rollback();
+          const [[existing]] = await pool.query(`SELECT id, order_code FROM orders WHERE idempotency_key = ? LIMIT 1`, [data.idempotency_key]);
+          if (existing) return { message: 'Đã tạo bill', order_id: existing.id, order_code: existing.order_code };
+        }
+        throw e;
+      }
+
 const orderId = r.insertId;
     // V6.51: persist bill calendar and installment fields so POS, payment, print, and reports use the same values.
     try{

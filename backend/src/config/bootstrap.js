@@ -1134,6 +1134,43 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       }
     }
 
+    // S6.6: add ADJUSTMENT to stock_transactions.reference_type ENUM — standalone
+    // Inventory Adjustment now has its own header table (inventory_adjustments)
+    // instead of the order-edit side effect using reference_type='MANUAL'.
+    {
+      const [[rtInfo]] = await conn.query(
+        `SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'stock_transactions' AND COLUMN_NAME = 'reference_type'`
+      );
+      if (rtInfo && !String(rtInfo.COLUMN_TYPE).includes('ADJUSTMENT')) {
+        await conn.query(
+          `ALTER TABLE stock_transactions MODIFY reference_type ENUM('LOT','SALE','MANUAL','RECEIVE_VOUCHER','OPENING_BALANCE','ADJUSTMENT') NOT NULL`
+        );
+      }
+    }
+
+    // S6.6: Standalone Inventory Adjustment header — one row per adjustment
+    // action (Increase/Decrease + reason + remark), referenced from
+    // stock_transactions via reference_type='ADJUSTMENT'. The actual balance
+    // write still goes through InventoryMovementService.postAdjustmentIncrease/
+    // Decrease (untouched) — this table only adds the business context that a
+    // bare 'MANUAL' reference could never carry (adjustment_code, reason, remark).
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS inventory_adjustments (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        adjustment_code VARCHAR(50) NOT NULL UNIQUE,
+        product_id BIGINT NOT NULL,
+        direction ENUM('INCREASE','DECREASE') NOT NULL,
+        quantity DECIMAL(15,3) NOT NULL,
+        reason ENUM('BROKEN','LOST','EXPIRED','FOUND','STOCK_COUNT','OTHER') NOT NULL,
+        remark VARCHAR(500) NULL,
+        created_by BIGINT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_inv_adj_product (product_id),
+        INDEX idx_inv_adj_created (created_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+
     // S5.1-C: Inventory Movement Idempotency IN — scoped dedup key so one
     // inventory_receives.id can post at most one IN movement per product_id.
     // Generated column evaluates to NULL for every row except
@@ -1508,6 +1545,7 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       ['inventory-purchases','Phiếu mua hàng','Lập phiếu mua hàng theo nhà cung cấp, quy cách và tồn kho.','inventory-purchases','Package','purchase',4,0,1,'InventoryPurchases'],
       ['inventory-receives','Phiếu nhận hàng','Tạo và xác nhận phiếu nhận hàng từ phiếu mua hàng đã xác nhận.','inventory-receives','PackageCheck','purchase',5,0,1,'InventoryReceives'],
       ['stock-ledger','Sổ kho','Xem lịch sử nhập/xuất/điều chỉnh tồn kho theo từng dòng chứng từ (chỉ xem, không sửa).','stock-ledger','BookOpen','purchase',6,0,1,'StockLedger'],
+      ['inventory-adjustments','Điều chỉnh tồn kho','Tạo phiếu điều chỉnh tăng/giảm tồn kho độc lập (hỏng, mất, hết hạn, kiểm kê) — chỉ Admin.','inventory-adjustments','Package','purchase',7,0,1,'InventoryAdjustments'],
       ['revenue','Doanh thu','Xem doanh thu, đã thu và công nợ theo thời gian.','revenue','BarChart3','report',1,0,1,'Revenue'],
       ['profit','Lợi nhuận','Thống kê lợi nhuận theo ngày/tháng/năm, giá vốn FIFO và ngày nhập NCC.','profit','BarChart3','report',2,0,1,'Profit'],
       ['agents','Agent AI','Các kỹ năng AI phục vụ vận hành bán sỉ.','agents','Bot','ai',1,0,1,'Agents'],

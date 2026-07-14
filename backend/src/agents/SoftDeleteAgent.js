@@ -1,21 +1,35 @@
 const pool = require('../config/db');
 
 const ENTITY = {
+  // S7.0/S7.1: refChecks completed against the S7.0 Business Guard Matrix audit —
+  // customer/product/category/supplier previously missed Customer Price
+  // Category/Price Book references entirely (no DB-level FK exists for any of
+  // these tables, so this array is the only protection there is).
   customer: { table:'customers', code:'customer_code', name:'name', refChecks:[
     {table:'orders', column:'customer_id', label:'bill bán'},
     {table:'payments', column:'customer_id', label:'phiếu thu'},
-    {table:'debt_transactions', column:'customer_id', label:'công nợ'}
+    {table:'debt_transactions', column:'customer_id', label:'công nợ'},
+    {table:'customer_price_books', column:'customer_id', label:'bảng giá riêng'},
+    {table:'customer_price_categories', column:'customer_id', label:'danh mục giá khách hàng'},
+    {table:'customer_product_catalogs', column:'customer_id', label:'danh mục mặt hàng khách hàng'},
+    {table:'customer_product_prices', column:'customer_id', label:'giá riêng (cũ)'}
   ]},
   product: { table:'products', code:'product_code', name:'name', refChecks:[
     {table:'order_items', column:'product_id', label:'dòng bill'},
     {table:'stock_transactions', column:'product_id', label:'lịch sử kho'},
-    {table:'customer_product_prices', column:'product_id', label:'giá riêng'}
+    {table:'customer_product_prices', column:'product_id', label:'giá riêng'},
+    {table:'customer_price_book_items', column:'product_id', label:'bảng giá riêng khách hàng'}
   ]},
   category: { table:'product_categories', code:'id', name:'name', refChecks:[
-    {table:'products', column:'category_id', label:'mặt hàng'}
+    {table:'products', column:'category_id', label:'mặt hàng'},
+    {table:'customer_price_categories', column:'category_id', label:'danh mục giá khách hàng'},
+    {table:'customer_price_books', column:'category_id', label:'bảng giá riêng'}
   ]},
   supplier: { table:'suppliers', code:'supplier_code', name:'name', refChecks:[
-    {table:'purchase_lots', column:'supplier_id', label:'lô nhập'}
+    {table:'purchase_lots', column:'supplier_id', label:'lô nhập'},
+    {table:'supplier_purchase_options', column:'supplier_id', label:'quy cách nhập hàng'},
+    {table:'purchase_orders', column:'supplier_id', label:'phiếu mua hàng'},
+    {table:'inventory_receives', column:'supplier_id', label:'phiếu nhận hàng'}
   ]},
   lot: { table:'purchase_lots', code:'lot_code', name:'lot_name', refChecks:[
     {table:'supplier_payments', column:'lot_id', label:'thanh toán NCC'}

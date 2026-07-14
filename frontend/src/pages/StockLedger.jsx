@@ -23,6 +23,7 @@ const REF_TYPE_LABEL = {
   MANUAL: 'Thủ công',
   RECEIVE_VOUCHER: 'Phiếu nhận hàng',
   OPENING_BALANCE: 'Tồn đầu kỳ',
+  ADJUSTMENT: 'Điều chỉnh tồn kho',
 };
 // S5.2-B — direct bò xô/carcass sales never touch products.stock_quantity;
 // default view hides those rows so the running balance reads as a true stock
@@ -39,6 +40,7 @@ const REF_TYPE_PAGE = {
   SALE: 'orders',
   RECEIVE_VOUCHER: 'inventory-receives',
   LOT: 'lots',
+  ADJUSTMENT: 'inventory-adjustments',
 };
 
 const LBL = { fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 3, color: '#374151' };

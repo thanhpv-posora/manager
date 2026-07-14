@@ -15,6 +15,7 @@ import SupplierPurchaseOptions from'./pages/SupplierPurchaseOptions';
 import InventoryPurchases from'./pages/InventoryPurchases';
 import InventoryReceives from'./pages/InventoryReceives';
 import StockLedger from'./pages/StockLedger';
+import InventoryAdjustments from'./pages/InventoryAdjustments';
 import Revenue from'./pages/Revenue';
 import Profit from'./pages/Profit';
 import RetailDailySummary from'./pages/RetailDailySummary';
@@ -115,6 +116,7 @@ export default function App(){
     'inventory-purchases':<InventoryPurchases/>,
     'inventory-receives':<InventoryReceives/>,
     'stock-ledger':<StockLedger setPage={setPage}/>,
+    'inventory-adjustments':<InventoryAdjustments/>,
     revenue:<Revenue/>,
     profit:<Profit/>,
     'retail-daily-summary':<RetailDailySummary/>,

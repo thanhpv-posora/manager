@@ -19,7 +19,7 @@ const pool = require('../config/db');
 // never re-derives it.
 
 const MOVEMENT_TYPES = ['IN', 'OUT', 'ADJUSTMENT_INCREASE', 'ADJUSTMENT_DECREASE'];
-const REFERENCE_TYPES = ['LOT', 'SALE', 'MANUAL', 'RECEIVE_VOUCHER', 'OPENING_BALANCE'];
+const REFERENCE_TYPES = ['LOT', 'SALE', 'MANUAL', 'RECEIVE_VOUCHER', 'OPENING_BALANCE', 'ADJUSTMENT'];
 const STOCK_EFFECTS = ['AFFECTING', 'NOT_AFFECTING', 'ALL'];
 
 class StockLedgerAgent {

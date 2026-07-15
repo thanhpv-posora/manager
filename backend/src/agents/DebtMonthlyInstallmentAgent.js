@@ -38,23 +38,34 @@ class DebtMonthlyInstallmentAgent{
     return {day:solar.day,month:solar.month,year:solar.year,calendar_type:safeCalendarType};
   }
 
+  // S8.2d: a daily-contribution configuration is effective FROM its configured
+  // date and remains effective until a newer configuration replaces it — it is
+  // NOT scoped to the exact (month, year) it was entered under. The previous
+  // exact-month-match query made a May config invisible to a June bill, even
+  // though nothing newer had been configured since. This resolves the latest
+  // ACTIVE row at or before the requested (year, month, day), regardless of
+  // which month/year it was originally configured under.
   async getActiveInstallment(customerId,month,year,calendarType='SOLAR',day=31){
     if(!customerId)return {installment_amount:0};
     const safeCalendarType=this.normalizeCalendarType(calendarType);
     const safeDay=Math.max(1,Math.min(31,Number(day||31)));
+    const safeMonth=Number(month);
+    const safeYear=Number(year);
     const [rows]=await pool.query(
       `SELECT * FROM debt_monthly_installments
        WHERE customer_id=?
-         AND installment_month=?
-         AND installment_year=?
          AND calendar_type=?
          AND status='ACTIVE'
-         AND COALESCE(installment_day,1)<=?
-       ORDER BY COALESCE(installment_day,1) DESC,id DESC
+         AND (
+           installment_year<?
+           OR (installment_year=? AND installment_month<?)
+           OR (installment_year=? AND installment_month=? AND COALESCE(installment_day,1)<=?)
+         )
+       ORDER BY installment_year DESC, installment_month DESC, COALESCE(installment_day,1) DESC, id DESC
        LIMIT 1`,
-      [customerId,Number(month),Number(year),safeCalendarType,safeDay]
+      [customerId,safeCalendarType,safeYear,safeYear,safeMonth,safeYear,safeMonth,safeDay]
     );
-    return rows[0]||{customer_id:customerId,installment_day:safeDay,installment_month:Number(month),installment_year:Number(year),calendar_type:safeCalendarType,installment_amount:0,status:'ACTIVE'};
+    return rows[0]||{customer_id:customerId,installment_day:safeDay,installment_month:safeMonth,installment_year:safeYear,calendar_type:safeCalendarType,installment_amount:0,status:'ACTIVE'};
   }
 
   async activeByDate(customerId,dateText,calendarType='SOLAR',lunarDateText=''){

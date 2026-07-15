@@ -21,7 +21,9 @@ export default function POSBillSummary({
       <div className="pos-summary-totals">
         <div className="pos-summary-row pos-summary-row-sl"><span>SL</span><b>{formatQty(totalQty)}</b></div>
         <div className="pos-summary-row pos-summary-row-total"><span>Tiền</span><b>{money(total)}</b></div>
-        <div className="pos-summary-row pos-summary-row-installment"><span>Góp/ngày</span><b>{money(monthlyInstallment)}</b></div>
+        {Number(monthlyInstallment) > 0 && (
+          <div className="pos-summary-row pos-summary-row-installment"><span>Góp/ngày</span><b>{money(monthlyInstallment)}</b></div>
+        )}
       </div>
       <div className="actions pos-summary-actions">
         <button type="button" className="btn" disabled={saving || !cid || !selectedCategoryId || !selectedCount} onClick={onSave}>

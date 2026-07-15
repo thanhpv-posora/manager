@@ -605,6 +605,16 @@ async function confirmOrderDraft(payload) {
     throw new Error('Thiếu items');
   }
 
+  // F3: quantity must be > 0 — rejects 0, negative, and null/undefined. The
+  // "backward compatible" confirm path (order.agent.js) lets a caller post a
+  // full draft object directly, bypassing createOrderDraft()'s own check
+  // (line ~498 above), so it must be re-validated here too.
+  for (const item of items) {
+    if (!(normalizeAmount(item.quantity) > 0)) {
+      throw new Error(`Số lượng không hợp lệ cho sản phẩm ${item.product_name || item.input_name || ''}`);
+    }
+  }
+
   const customer = await getFreshCustomer(inputCustomer);
   const paymentPolicy = customerPolicyService.getCustomerPolicy(customer);
   const orderDate = bill_date || todayYmd();
@@ -710,7 +720,28 @@ async function confirmOrderDraft(payload) {
 
     const orderId = orderResult.insertId;
 
+    // F5: run inventory first and reuse its per-item result for order_items.
+    // inventory_mode/stock_checked, matching the POS path (OrderAgent.create()),
+    // instead of hardcoding null/null/0. No duplicate policy logic — action is
+    // exactly what InventoryService (the single writer) decided for this item;
+    // 'OUT' is the only action where stock was actually checked against a real
+    // balance (TRACK_STOCK), matching InventoryService.out()'s own
+    // stock_checked semantics for 'SKIP_STOCK_CHECK'/'NO_STOCK_SKIP'.
+    const inventoryResults = await inventoryService.applyOrderInventory(
+      conn,
+      orderId,
+      items,
+      {
+        user_id: null,
+        order_date: orderDate
+      }
+    );
+    const inventoryByProduct = new Map(inventoryResults.map(r => [Number(r.product_id), r]));
+
     for (const item of resolvedItems) {
+      const invResult = inventoryByProduct.get(Number(item.product_id));
+      const inventoryMode = invResult ? invResult.inventory_mode : null;
+      const stockChecked = invResult ? (invResult.action === 'OUT' ? 1 : 0) : 0;
       await conn.query(`
         INSERT INTO order_items (
           order_id,
@@ -737,8 +768,8 @@ async function confirmOrderDraft(payload) {
         item.price_type,
         item.price_book_id,
         null,
-        null,
-        0
+        inventoryMode,
+        stockChecked
       ]);
 
       await saveProductAlias(
@@ -748,16 +779,6 @@ async function confirmOrderDraft(payload) {
         item.product_id
       );
     }
-
-    const inventoryResults = await inventoryService.applyOrderInventory(
-      conn,
-      orderId,
-      items,
-      {
-        user_id: null,
-        order_date: orderDate
-      }
-    );
 
     if (debtAmount > 0) {
       await conn.query(`

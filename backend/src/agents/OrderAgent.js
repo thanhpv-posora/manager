@@ -257,6 +257,13 @@ return await this.loadLegacyDirectPayments(orderId);
 
   async create(data, user) {
     if (!data.items || !data.items.length) throw new Error('Bill phải có ít nhất 1 mặt hàng');
+    // F3: quantity must be > 0 — rejects 0, negative, and null/undefined (Number(null||undefined)
+    // is 0/NaN, both fail the `> 0` check) before any price resolution or inventory write.
+    for (const it of data.items) {
+      if (!(Number(it.quantity) > 0)) {
+        throw new Error(`Số lượng "${it.product_name || ('ID ' + it.product_id)}" phải lớn hơn 0`);
+      }
+    }
     await assertCustomerScope(user, data.customer_id);
 
     // S6.5: idempotency fast path. Optimistic, outside any transaction — the real
@@ -533,6 +540,7 @@ const orderId = r.insertId;
       if (!items.length) throw new Error('Không tìm thấy dòng bill');
       const old = items[0];
       const newQty = Number(data.quantity);
+      if (!(newQty > 0)) throw new Error('Số lượng phải lớn hơn 0');
       const newPrice = Number(data.sale_price);
       const newTotal = newQty * newPrice;
       await conn.query(`UPDATE order_items SET quantity=?, sale_price=?, total_price=? WHERE id=?`, [newQty,newPrice,newTotal,itemId]);

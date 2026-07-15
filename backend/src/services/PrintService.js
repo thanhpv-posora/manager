@@ -68,6 +68,17 @@ function allocationSummary(order, payableTotal){
   const remaining = Math.max(0, Number(payableTotal || 0) - paid);
   return {allocs, paid, cash, bank, remaining};
 }
+// S8.2: minimal visual patch only — print never blocked or specially marked
+// CANCELLED bills before this (order.status was never referenced in either
+// template). Line items and totals stay exactly as printed for any other bill;
+// only this banner is conditional.
+function cancelledBannerHtml(order, style) {
+  if (String(order?.status || '').toUpperCase() !== 'CANCELLED') return '';
+  return style === 'k80'
+    ? `<div class="center" style="border:2px solid #b91c1c;color:#b91c1c;font-weight:900;padding:4px;margin:6px 0;font-size:14px">ĐÃ HỦY</div>`
+    : `<div style="border:3px solid #b91c1c;color:#b91c1c;font-weight:900;text-align:center;padding:10px;margin:14px 0;font-size:22px;letter-spacing:2px">ĐÃ HỦY</div>`;
+}
+
 function ymd(v){
   if(!v) return '';
   const raw = String(v).slice(0,10);
@@ -153,6 +164,7 @@ table{width:100%;border-collapse:collapse;margin-top:10px}th{background:#7f1d1d;
 .sign{display:flex;justify-content:space-between;margin-top:45px;text-align:center}@media print{.print-btn{display:none}body{margin:10px}}</style></head><body>
 <button class="print-btn" onclick="window.print()">IN BILL</button>
 <div class="header"><div><div class="logo">${settings.shop_name||"MEATBIZ FOOD"}</div><div class="sub">${settings.shop_address||""} ${settings.shop_phone? " - " + settings.shop_phone : ""}</div><div class="sub">Phiếu giao hàng / Bill bán hàng</div><div>Mã bill: <b>${order.order_code}</b></div><div>Ngày lập phiếu: ${createdDate}</div><div>Ngày xuất hàng: ${billDate}</div></div><div><img class="qr" src="${qr}"><div class="sub">Quét QR xem bill</div></div></div>
+${cancelledBannerHtml(order)}
 <div class="info"><div><b>Khách hàng:</b> ${order.customer_name}<br><b>SĐT:</b> ${order.phone || ''}<br><b>Địa chỉ:</b> ${order.address || ''}</div><div><b>Trạng thái:</b> ${order.payment_status}<br><b>Ghi chú:</b> ${order.note || ''}</div></div>
 <table><thead><tr><th>STT</th><th>Mặt hàng</th><th>ĐVT</th><th>Số lượng</th><th>Đơn giá (VND)</th><th>Thành tiền (VND)</th></tr></thead><tbody>${rows}</tbody></table>
 <div class="section-title">THÔNG TIN THANH TOÁN</div>
@@ -225,6 +237,7 @@ table{width:100%;border-collapse:collapse}td{padding:3px 0;vertical-align:top}.r
   <div><b>PHIẾU BÁN HÀNG</b></div>
   <div class="muted">Đơn vị tiền: VND</div>
 </div>
+${cancelledBannerHtml(order, 'k80')}
 <hr>
 <div>Mã bill: <b>${order.order_code}</b></div>
 <div>Ngày lập: ${createdDate}</div>

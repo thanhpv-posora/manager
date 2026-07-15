@@ -25,6 +25,8 @@ router.get('/:id/qrcode', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,nex
 }catch(e){next(e)}});
 router.get('/:id/print', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.setHeader('Content-Type','text/html; charset=utf-8');res.send(await OrderAgent.printHtmlById(req.params.id,req.user))}catch(e){next(e)}});
 router.post('/:id/lock', auth(['ADMIN','STAFF']), async (req,res,next)=>{try{res.json(await OrderAgent.lock(req.params.id,req.body,req.user))}catch(e){next(e)}});
+// S8.2: ADMIN only per CEO directive — not STAFF (despite PaymentAgent's cancel precedent), not CUSTOMER.
+router.post('/:id/cancel', auth(['ADMIN']), async (req,res,next)=>{try{res.json(await OrderAgent.cancel(req.params.id,req.body,req.user))}catch(e){next(e)}});
 router.post('/:id/items', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await OrderAgent.addItem(req.params.id,req.body,req.user))}catch(e){next(e)}});
 router.put('/:id/items/:itemId', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await OrderAgent.updateItem(req.params.id,req.params.itemId,req.body,req.user))}catch(e){next(e)}});
 module.exports=router;

@@ -123,6 +123,123 @@ class OrderAgent {
     } catch(e) { await conn.rollback(); throw e; } finally { conn.release(); }
   }
 
+  // S8.2 Order Cancel + Reversal.
+  //
+  // Never delete: cancellation is status-change + append-only compensating
+  // ledger events (debt_transactions, stock_transactions), matching the ledger
+  // contracts already established for debt (S8.1A) and inventory (INV-004/S5.2-C).
+  // orders / order_items rows are never touched beyond flipping status and the
+  // dedicated cancel_* audit columns — the bill remains a historical document
+  // (original quantity/price/total/price_book/inventory_mode/stock_checked
+  // untouched, total_amount untouched).
+  //
+  // Concurrency: SELECT ... FOR UPDATE on the orders row is the single
+  // concurrency guard, same proven idiom as lock()/ensureOrderEditable()/
+  // PaymentAgent.revertPaymentEffects() elsewhere in this codebase — the
+  // status check happens only after the row lock is held, inside this
+  // transaction, so a second concurrent cancel() call blocks until the first
+  // commits, then re-reads status='CANCELLED' fresh and is rejected. This also
+  // makes a retried/duplicate client request (e.g. after a timeout) safe: if
+  // the first attempt already committed, the retry sees CANCELLED and is
+  // rejected — no second reversal is ever posted.
+  async cancel(orderId, data = {}, user = {}) {
+    const reason = String(data.reason || data.cancel_reason || '').trim();
+    if (!reason) throw Object.assign(new Error('Vui lòng nhập lý do hủy bill'), { status: 400 });
+
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [rows] = await conn.query(
+        `SELECT id,status,is_locked,locked_at,customer_id,order_code,paid_amount
+         FROM orders WHERE id=? FOR UPDATE`,
+        [orderId]
+      );
+      if (!rows.length) throw Object.assign(new Error('Không tìm thấy bill'), { status: 404 });
+      const o = rows[0];
+
+      if (String(o.status || '').toUpperCase() === 'CANCELLED')
+        throw Object.assign(new Error('Bill đã hủy, không thể hủy lại'), { status: 400 });
+      if (Number(o.is_locked || 0) === 1 || o.locked_at)
+        throw Object.assign(new Error('Bill đã chốt sổ, không thể hủy'), { status: 400 });
+
+      await assertCustomerScope(user, o.customer_id);
+
+      // Guard: payment_allocations — any bill this receipt was actually applied to.
+      const [allocs] = await conn.query(
+        `SELECT COUNT(*) cnt FROM payment_allocations WHERE order_id=?`, [orderId]
+      ).catch(async e => { if (e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146)) return [[{ cnt: 0 }]]; throw e; });
+      if (Number(allocs[0]?.cnt || 0) > 0)
+        throw Object.assign(new Error('Bill đã có thu tiền/phân bổ, không thể hủy. Vui lòng hủy phiếu thu liên quan trước.'), { status: 400 });
+
+      // Guard: legacy direct payments (payments.order_id, pre-payment_allocations bills).
+      let directPayCount = 0;
+      try {
+        const [r] = await conn.query(
+          `SELECT COUNT(*) cnt FROM payments WHERE order_id=? AND COALESCE(status,'ACTIVE')<>'CANCELLED'`, [orderId]
+        );
+        directPayCount = Number(r[0]?.cnt || 0);
+      } catch (e) {
+        if (!(e && (e.code === 'ER_BAD_FIELD_ERROR' || e.errno === 1054))) throw e;
+        const [r] = await conn.query(`SELECT COUNT(*) cnt FROM payments WHERE order_id=?`, [orderId]);
+        directPayCount = Number(r[0]?.cnt || 0);
+      }
+      if (directPayCount > 0)
+        throw Object.assign(new Error('Bill đã có phiếu thu áp dụng, không thể hủy. Vui lòng hủy phiếu thu liên quan trước.'), { status: 400 });
+
+      // Guard: any money already recorded against this bill, regardless of path.
+      if (Number(o.paid_amount || 0) > 0)
+        throw Object.assign(new Error('Bill đã ghi nhận tiền đã thu, không thể hủy.'), { status: 400 });
+
+      // Debt reversal — append-only compensation, never rewrite the original SALE row.
+      await this._reverseOrderDebt(conn, orderId, o.customer_id, user?.id || null);
+
+      // Inventory reversal — through the single-writer boundary (InventoryService),
+      // decided from order_items' frozen historical facts, not the product's
+      // current config. Bò Xô / NON_STOCK lines post no row (see method doc).
+      await InventoryService.reverseOrderInventory(
+        conn, orderId, user?.id || null,
+        `Hoàn tồn kho do hủy bill ${o.order_code}: ${reason}`
+      );
+
+      await conn.query(
+        `UPDATE orders SET status='CANCELLED', debt_amount=0, cancelled_at=NOW(), cancelled_by=?, cancel_reason=? WHERE id=?`,
+        [user?.id || null, reason, orderId]
+      );
+
+      await conn.commit();
+      return { message: 'Đã hủy bill', order_id: Number(orderId), order_code: o.order_code };
+    } catch (e) { await conn.rollback(); throw e; } finally { conn.release(); }
+  }
+
+  // S8.2: mirrors PaymentAgent.reverseDebtLedgerForPayment (S8.1A) exactly —
+  // never DELETE/UPDATE a posted debt_transactions row; net the order's current
+  // signed ledger contribution to zero with one compensating row, computed from
+  // a fresh SUM (not assumed to be a single SALE row) so it stays correct
+  // whichever ADJUSTMENT_INCREASE/DECREASE delta rows Add Item/Edit Item (S8.1)
+  // may have appended since creation. The guards in cancel() above already
+  // guarantee no PAYMENT row exists for this order_id before this runs, so net
+  // is always >=0 in practice — computed generically anyway, matching the
+  // S8.1A precedent, rather than hardcoded to a single direction.
+  async _reverseOrderDebt(conn, orderId, customerId, userId) {
+    const [[row]] = await conn.query(
+      `SELECT COALESCE(SUM(CASE
+          WHEN type IN ('SALE','ADJUSTMENT_INCREASE') THEN amount
+          WHEN type IN ('PAYMENT','ADJUSTMENT_DECREASE') THEN -amount
+          ELSE 0 END),0) net_effect
+       FROM debt_transactions WHERE order_id=?`,
+      [orderId]
+    );
+    const net = Number(row.net_effect || 0);
+    if (Math.abs(net) < 0.01) return 0;
+    const reverseType = net < 0 ? 'ADJUSTMENT_INCREASE' : 'ADJUSTMENT_DECREASE';
+    await conn.query(
+      `INSERT INTO debt_transactions(customer_id,order_id,transaction_date,type,amount,note,created_by)
+       VALUES(?,?,?,?,?,?,?)`,
+      [customerId, orderId, new Date().toISOString().slice(0, 10), reverseType, Math.abs(net), `Đảo bút toán công nợ do hủy bill #${orderId}`, userId || null]
+    );
+    return net;
+  }
+
   async loadLegacyDirectPayments(orderId) {
     const [rows] = await pool.query(
       `SELECT p.id payment_id, p.order_id, p.amount allocated_amount, 'LEGACY_DIRECT_PAYMENT' allocation_type,

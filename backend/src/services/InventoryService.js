@@ -85,6 +85,59 @@ class InventoryService {
     }
   }
 
+  /**
+   * S8.2 — Reverse the inventory effect of every line on a cancelled order.
+   *
+   * Historical-fact only: the decision to reverse a line comes from
+   * order_items.stock_checked (frozen at write time by postOut's return value),
+   * NEVER from the product's current inventory_mode/allow_negative_stock — those
+   * may have been reconfigured after the sale. stock_checked=1 is the only
+   * reliable record that a line's OUT actually decremented products.stock_quantity;
+   * stock_checked=0 means it never did (CARCASS_PART / NON_STOCK / allow_negative_stock
+   * at the time of sale), matching the Bò Xô rule: never add stock back for a line
+   * that never took stock away, regardless of what the product looks like today.
+   *
+   * Reuses the same primitive adjustOrderItem() already uses for "quantity
+   * decreased, stock returned" (postAdjustmentIncrease) — cancelling is exactly
+   * that case carried to its conclusion (effective quantity -> 0). No new
+   * stock_transactions.type/reference_type value is introduced: reference_type
+   * stays 'SALE' (schema-safe, already valid) and reference_id=orderId so the
+   * reversal is clearly traceable to the cancelled order; type='ADJUSTMENT_INCREASE'
+   * is the existing "balance corrected upward" semantic, distinguished from the
+   * original OUT row by its type + note text, not a dedicated enum value.
+   *
+   * Lines are processed in ascending product_id order (deterministic) to avoid
+   * lock-ordering deadlocks against any other transaction touching the same
+   * products, matching postOut()'s FOR UPDATE convention.
+   *
+   * @returns {Array<{product_id:number, action:'REVERSED'|'NO_REVERSAL', qty?:number, reason?:string}>}
+   */
+  async reverseOrderInventory(conn, orderId, userId, reasonNote) {
+    const [items] = await conn.query(
+      `SELECT product_id, quantity, inventory_mode, stock_checked
+       FROM order_items WHERE order_id=? ORDER BY product_id ASC`,
+      [orderId]
+    );
+    const results = [];
+    for (const item of items) {
+      const qty = normalizeNumber(item.quantity);
+      if (qty <= 0) continue;
+      if (Number(item.stock_checked) !== 1) {
+        results.push({
+          product_id: item.product_id, action: 'NO_REVERSAL',
+          reason: `stock_checked=0 at sale time (inventory_mode was ${item.inventory_mode || 'unknown'}) — balance was never affected, so nothing to reverse`
+        });
+        continue;
+      }
+      await InventoryMovementService.postAdjustmentIncrease(
+        conn, item.product_id, qty, new Date(), 'SALE', orderId,
+        reasonNote || `Hoàn tồn kho do hủy bill #${orderId}`, userId
+      );
+      results.push({ product_id: item.product_id, action: 'REVERSED', qty });
+    }
+    return results;
+  }
+
   // ── applyOrderInventory — mode branching stays here; writes delegate to postOut() ──
   //
   // NON_STOCK: no write (unchanged — see call-graph note above).

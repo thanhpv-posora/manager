@@ -1378,6 +1378,14 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
     await safeAddColumn(conn, 'orders', 'idempotency_key', 'idempotency_key VARCHAR(64) NULL');
     await safeAddIndex(conn, 'orders', 'uq_orders_idempotency_key', 'UNIQUE KEY uq_orders_idempotency_key (idempotency_key)');
 
+    // S8.2: Order Cancel + Reversal audit fields. Same minimal-additive-columns
+    // pattern already approved for purchase_orders short-close (short_close_reason/
+    // short_closed_by/short_closed_at) — the terminal-state event is recorded
+    // directly on the parent row rather than through generic audit_logs.
+    await safeAddColumn(conn, 'orders', 'cancelled_at', 'cancelled_at DATETIME NULL');
+    await safeAddColumn(conn, 'orders', 'cancelled_by', 'cancelled_by BIGINT NULL');
+    await safeAddColumn(conn, 'orders', 'cancel_reason', 'cancel_reason TEXT NULL');
+
     // V6.50 payment one receipt cash/bank + installment columns
     await safeAddColumn(conn, 'payments', 'cash_amount', 'cash_amount DECIMAL(15,2) NOT NULL DEFAULT 0');
     await safeAddColumn(conn, 'payments', 'bank_amount', 'bank_amount DECIMAL(15,2) NOT NULL DEFAULT 0');

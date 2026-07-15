@@ -412,12 +412,20 @@ const orderId = r.insertId;
   }
 
 
-  async recalcOrderTotals(conn, orderId) {
+  // S8.1: userId is only used to attribute the debt_transactions delta row
+  // below (created_by) — recalculation itself is unaffected by who triggered it.
+  async recalcOrderTotals(conn, orderId, userId = null) {
     const [sumRows] = await conn.query(`SELECT COALESCE(SUM(total_price),0) total FROM order_items WHERE order_id=?`, [orderId]);
     const itemTotal = Number(sumRows[0].total || 0);
-    const [orderRows] = await conn.query(`SELECT paid_amount, installment_amount FROM orders WHERE id=? FOR UPDATE`, [orderId]);
-    const paid = Number(orderRows[0]?.paid_amount || 0);
-    const installmentAmount = Number(orderRows[0]?.installment_amount || 0);
+    const [orderRows] = await conn.query(
+      `SELECT customer_id, order_code, order_date, paid_amount, installment_amount, debt_amount
+       FROM orders WHERE id=? FOR UPDATE`,
+      [orderId]
+    );
+    const o = orderRows[0] || {};
+    const paid = Number(o.paid_amount || 0);
+    const installmentAmount = Number(o.installment_amount || 0);
+    const oldDebt = Number(o.debt_amount || 0);
     const total = itemTotal + installmentAmount;
     const debt = Math.max(0, total - paid);
     const status = paid <= 0 ? 'UNPAID' : paid >= total ? 'PAID' : 'PARTIAL';
@@ -425,6 +433,24 @@ const orderId = r.insertId;
       `UPDATE orders SET current_bill_amount=?, total_amount=?, debt_amount=?, payment_status=? WHERE id=?`,
       [itemTotal, total, debt, status, orderId]
     );
+
+    // S8.1 debt sync: debt_transactions is an immutable append-only ledger
+    // (type ENUM mirrors stock_transactions' IN/OUT/ADJUSTMENT_INCREASE/
+    // DECREASE design, and PaymentAgent already posts ADJUSTMENT_INCREASE
+    // rows for installment top-ups) — never rewrite the original SALE row.
+    // Add Item / Edit Item must post a delta row here so SUM(amount) keeps
+    // matching orders.debt_amount, the same way InventoryMovementService
+    // posts a delta row for every inventory-affecting edit.
+    const delta = debt - oldDebt;
+    if (Math.abs(delta) >= 0.01 && o.customer_id) {
+      const adjType = delta > 0 ? 'ADJUSTMENT_INCREASE' : 'ADJUSTMENT_DECREASE';
+      await conn.query(
+        `INSERT INTO debt_transactions(customer_id,order_id,transaction_date,type,amount,note,created_by)
+         VALUES(?,?,?,?,?,?,?)`,
+        [o.customer_id, orderId, o.order_date, adjType, Math.abs(delta), `Điều chỉnh công nợ theo thay đổi dòng hàng bill ${o.order_code} (trước: ${oldDebt}, sau: ${debt})`, userId || null]
+      );
+    }
+
     return { item_total:itemTotal, total_amount:total, debt_amount:debt, payment_status:status };
   }
 
@@ -524,7 +550,7 @@ const orderId = r.insertId;
           [orderId, p.product_id, p.product_name, p.unit || data.unit || 'kg', qty, salePrice, line, safePriceType, data.note || null, inv.inventory_mode, inv.stock_checked?1:0]
         );
       }
-      const totals = await this.recalcOrderTotals(conn, orderId);
+      const totals = await this.recalcOrderTotals(conn, orderId, user?.id || null);
       await conn.commit();
       return {message:'Đã thêm mặt hàng vào bill', ...totals};
     } catch(e) { await conn.rollback(); throw e; } finally { conn.release(); }
@@ -541,11 +567,22 @@ const orderId = r.insertId;
       const old = items[0];
       const newQty = Number(data.quantity);
       if (!(newQty > 0)) throw new Error('Số lượng phải lớn hơn 0');
-      const newPrice = Number(data.sale_price);
+      // S8.1: same threshold addItem() already uses for an existing product
+      // (>=0 — zero price is allowed, matching that approved rule; create()'s
+      // stricter >0 only applies to initial bill creation, not editing an
+      // existing line). Unlike addItem()'s fallback chain (data.sale_price ||
+      // data.price || p.sale_price || 0), an edit has no legitimate fallback
+      // source — null/undefined/non-numeric must be rejected outright rather
+      // than silently coerced to 0.
+      const rawPrice = data.sale_price;
+      const newPrice = Number(rawPrice);
+      if (rawPrice === null || rawPrice === undefined || rawPrice === '' || !Number.isFinite(newPrice) || newPrice < 0) {
+        throw new Error('Giá bán không hợp lệ');
+      }
       const newTotal = newQty * newPrice;
       await conn.query(`UPDATE order_items SET quantity=?, sale_price=?, total_price=? WHERE id=?`, [newQty,newPrice,newTotal,itemId]);
       await InventoryService.adjustOrderItem(conn, old.product_id, Number(old.quantity), newQty);
-      await this.recalcOrderTotals(conn, orderId);
+      await this.recalcOrderTotals(conn, orderId, user?.id || null);
       await conn.commit();
       return {message:'Đã sửa dòng bill'};
     } catch(e) { await conn.rollback(); throw e; } finally { conn.release(); }

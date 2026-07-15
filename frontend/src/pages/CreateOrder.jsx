@@ -9,6 +9,7 @@ import POSBillSummary from'../components/pos/POSBillSummary';
 import AIBusinessPanel from'../components/ai/AIBusinessPanel';
 import AIVoicePOSPanel from'../components/ai/AIVoicePOSPanel';
 import {calcQtyExpression}from'../utils/qtyExpression';
+import {isQtyOverStock}from'../utils/inventoryStockWarning';
 import {formatLunarDate,solarToLunar,parseLunarText,lunarToSolarDate}from'../utils/lunarDate';
 import {createSpeechRecognition,parseVoiceBillCommand,voiceSupported} from'../utils/voiceBillParser';
 import {matchImportedRows,parseOrderText,rematchOne} from'../utils/orderImportParser';
@@ -632,6 +633,13 @@ export default function CreateOrder({setPage}){
     if(!checkedDate.ok)return;
     if(checkedDate.solarDate&&checkedDate.solarDate!==orderDate)setOrderDate(checkedDate.solarDate);
     if(!selected.length)return showWarning('Nhập số lượng ít nhất 1 mặt hàng');
+
+    // S9: non-blocking nudge only — row highlight + inline warning already show
+    // live in POSProductTableAgent as the cashier types. Save is NEVER blocked
+    // here; InventoryService/postOut() remains the sole authority on whether a
+    // sale is actually allowed.
+    const overStockItem=selected.find(i=>isQtyOverStock(i.inventory_mode,i.allow_negative_stock,i.stock_quantity,i.quantity));
+    if(overStockItem)qtyRefs.current[overStockItem.product_id]?.focus();
 
     const needManualPrice=walkInCustomer||noPrivatePrice;
     const wasNoPrivatePrice=noPrivatePrice;

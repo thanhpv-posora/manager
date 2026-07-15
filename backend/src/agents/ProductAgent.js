@@ -4,6 +4,11 @@ const PriceBookService = require('../services/PriceBookService');
 const InventoryService = require('../services/InventoryService');
 const { normalizeInventoryMode } = require('../utils/inventoryMode');
 
+// The 3 real inventory_mode values a caller-supplied filter may ask for.
+// Kept separate from normalizeInventoryMode()'s legacy-alias/fallback
+// behavior (see products() below) — a filter is validated, never coerced.
+const VALID_INVENTORY_MODE_FILTERS = ['NON_STOCK', 'TRACK_STOCK', 'CARCASS_PART'];
+
 class ProductAgent {
   async nextProductCode(categoryId) {
     const [cats] = await pool.query(`SELECT id,name FROM product_categories WHERE id=?`, [categoryId]);
@@ -102,16 +107,50 @@ class ProductAgent {
     return SoftDeleteAgent.softDelete('category', id, reason, userId);
   }
 
-  async products(q='') {
+  // inventoryMode: optional exact-match filter (e.g. 'TRACK_STOCK'), used by
+  // callers like the Inventory Count page that must never receive
+  // CARCASS_PART/NON_STOCK rows from the server, not just filter them client-
+  // side. Omitted (default '') behaves exactly as before — every existing
+  // caller of GET /products without the query param is unaffected.
+  //
+  // Deliberately NOT run through normalizeInventoryMode() here: that helper's
+  // job is to coerce a stored/legacy product value (falling back to NON_STOCK
+  // for anything unrecognized), which is correct for reading a product row but
+  // wrong for a caller-supplied filter — silently treating a typo'd or unknown
+  // value as "NON_STOCK" would return misleadingly filtered data instead of
+  // an error. A filter value must be exactly one of the 3 real modes or reject.
+  //
+  // When inventoryMode is supplied, also joins the latest inventory_adjustments
+  // row per product (one aggregate subquery, no N+1) so the Inventory Count
+  // grid can show "Lần kiểm kê cuối" without a separate request per product.
+  async products(q='', inventoryMode='') {
     const like = `%${q}%`;
+    const conds = ['p.del_flg=0','p.is_active=1','(p.name LIKE ? OR p.product_code LIKE ?)'];
+    const params = [like,like];
+    let lastCountJoin = '';
+    let lastCountSelect = '';
+    if (inventoryMode) {
+      const normalized = String(inventoryMode).toUpperCase();
+      if (!VALID_INVENTORY_MODE_FILTERS.includes(normalized)) {
+        throw Object.assign(
+          new Error(`Chế độ tồn kho không hợp lệ: "${inventoryMode}". Chỉ chấp nhận NON_STOCK, TRACK_STOCK, CARCASS_PART.`),
+          { status: 400, statusCode: 400 }
+        );
+      }
+      conds.push('p.inventory_mode=?');
+      params.push(normalized);
+      lastCountJoin = `LEFT JOIN (SELECT product_id, MAX(created_at) last_count_at FROM inventory_adjustments GROUP BY product_id) la ON la.product_id=p.id`;
+      lastCountSelect = ', la.last_count_at';
+    }
     const [rows] = await pool.query(
-      `SELECT p.*,pc.name category_name, pp.name parent_product_name
+      `SELECT p.*,pc.name category_name, pp.name parent_product_name${lastCountSelect}
        FROM products p
        LEFT JOIN product_categories pc ON pc.id=p.category_id
        LEFT JOIN products pp ON pp.id=p.parent_product_id
-       WHERE p.del_flg=0 AND p.is_active=1 AND (p.name LIKE ? OR p.product_code LIKE ?)
+       ${lastCountJoin}
+       WHERE ${conds.join(' AND ')}
        ORDER BY pc.sort_order,p.name`,
-      [like,like]
+      params
     );
     return rows;
   }

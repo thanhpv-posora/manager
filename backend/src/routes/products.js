@@ -8,7 +8,7 @@ router.post('/categories', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,ne
 router.put('/categories/:id', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await ProductAgent.updateCategory(req.params.id,req.body))}catch(e){next(e)}});
 router.delete('/categories/:id', auth(['ADMIN']), async (req,res,next)=>{try{res.json(await ProductAgent.removeCategory(req.params.id,req.body.reason,req.user.id))}catch(e){next(e)}});
 router.post('/mark-carcass-parts', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await ProductAgent.markCarcassParts())}catch(e){next(e)}});
-router.get('/', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await ProductAgent.products(req.query.q||''))}catch(e){next(e)}});
+router.get('/', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await ProductAgent.products(req.query.q||'',req.query.inventory_mode||''))}catch(e){next(e)}});
 router.post('/', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await ProductAgent.addProduct(req.body))}catch(e){next(e)}});
 router.put('/:id', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await ProductAgent.updateProduct(req.params.id,req.body))}catch(e){next(e)}});
 router.put('/:id/price', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await ProductAgent.updatePrice(req.params.id,req.body))}catch(e){next(e)}});

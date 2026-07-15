@@ -1545,7 +1545,7 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       ['inventory-purchases','Phiếu mua hàng','Lập phiếu mua hàng theo nhà cung cấp, quy cách và tồn kho.','inventory-purchases','Package','purchase',4,0,1,'InventoryPurchases'],
       ['inventory-receives','Phiếu nhận hàng','Tạo và xác nhận phiếu nhận hàng từ phiếu mua hàng đã xác nhận.','inventory-receives','PackageCheck','purchase',5,0,1,'InventoryReceives'],
       ['stock-ledger','Sổ kho','Xem lịch sử nhập/xuất/điều chỉnh tồn kho theo từng dòng chứng từ (chỉ xem, không sửa).','stock-ledger','BookOpen','purchase',6,0,1,'StockLedger'],
-      ['inventory-adjustments','Điều chỉnh tồn kho','Tạo phiếu điều chỉnh tăng/giảm tồn kho độc lập (hỏng, mất, hết hạn, kiểm kê) — chỉ Admin.','inventory-adjustments','Package','purchase',7,0,1,'InventoryAdjustments'],
+      ['inventory-adjustments','Kiểm kê tồn kho','Nhập số lượng thực tế sau khi kiểm kê. Hệ thống tự tính chênh lệch và tạo điều chỉnh tăng/giảm tồn kho — chỉ Admin.','inventory-adjustments','Package','purchase',7,0,1,'InventoryAdjustments'],
       ['revenue','Doanh thu','Xem doanh thu, đã thu và công nợ theo thời gian.','revenue','BarChart3','report',1,0,1,'Revenue'],
       ['profit','Lợi nhuận','Thống kê lợi nhuận theo ngày/tháng/năm, giá vốn FIFO và ngày nhập NCC.','profit','BarChart3','report',2,0,1,'Profit'],
       ['agents','Agent AI','Các kỹ năng AI phục vụ vận hành bán sỉ.','agents','Bot','ai',1,0,1,'Agents'],
@@ -1612,6 +1612,16 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
     await conn.query(
       `UPDATE app_menus SET title='Mặt hàng', subtitle='Quản lý mặt hàng, mã hàng, danh mục, đơn vị và giá bán mặc định.'
        WHERE menu_key='products'`
+    );
+
+    // INVENTORY-COUNT-NAMING-STD-001: rename 'inventory-adjustments' menu label to
+    // 'Kiểm kê tồn kho' — this screen is a stock-count workflow (enter actual counted
+    // quantity, system computes the adjustment), not primarily an "adjustment entry"
+    // screen. Same idempotent-rename pattern as CATALOG-NAMING-STD-001/002 above.
+    // Labels only — menu_key/route/component/permissions untouched, safe to re-run.
+    await conn.query(
+      `UPDATE app_menus SET title='Kiểm kê tồn kho', subtitle='Nhập số lượng thực tế sau khi kiểm kê. Hệ thống tự tính chênh lệch và tạo điều chỉnh tăng/giảm tồn kho — chỉ Admin.'
+       WHERE menu_key='inventory-adjustments'`
     );
 
     // QTY-DECIMAL/MENU-CLEANUP-001 — CTO final audit: deactivate the stale 'product-categories'

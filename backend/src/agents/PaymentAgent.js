@@ -748,7 +748,32 @@ class PaymentAgent {
     await conn.query(`UPDATE orders SET paid_amount=?, debt_amount=?, payment_status=? WHERE id=?`, [paid, debt, status, orderId]);
   }
 
-  async revertPaymentEffects(conn, paymentId) {
+  // S8.1A: debt_transactions is append-only — never DELETE or UPDATE a posted
+  // row. To undo a payment's ledger effect (edit/cancel), post a compensating
+  // ADJUSTMENT row sized to net the payment's current contribution to zero.
+  // Computing the net from a fresh SUM (rather than assuming exactly one row)
+  // keeps this correct even if the same payment_id is reverted more than once
+  // across repeated edits.
+  async reverseDebtLedgerForPayment(conn, paymentId, customerId, userId) {
+    const [[row]] = await conn.query(
+      `SELECT COALESCE(SUM(CASE
+          WHEN type IN ('SALE','ADJUSTMENT_INCREASE') THEN amount
+          WHEN type IN ('PAYMENT','ADJUSTMENT_DECREASE') THEN -amount
+          ELSE 0 END),0) net_effect
+       FROM debt_transactions WHERE payment_id=?`,
+      [paymentId]
+    );
+    const net = Number(row.net_effect || 0);
+    if (Math.abs(net) < 0.01) return;
+    const reverseType = net < 0 ? 'ADJUSTMENT_INCREASE' : 'ADJUSTMENT_DECREASE';
+    await conn.query(
+      `INSERT INTO debt_transactions(customer_id,order_id,payment_id,transaction_date,type,amount,note,created_by)
+       VALUES(?,NULL,?,?,?,?,?,?)`,
+      [customerId, paymentId, new Date().toISOString().slice(0,10), reverseType, Math.abs(net), `Đảo bút toán công nợ do sửa/hủy phiếu thu #${paymentId}`, userId || null]
+    );
+  }
+
+  async revertPaymentEffects(conn, paymentId, userId = null) {
     const [payments] = await conn.query(`SELECT * FROM payments WHERE id=? FOR UPDATE`, [paymentId]);
     if (!payments.length) throw new Error('Không tìm thấy phiếu thu');
     const p = payments[0];
@@ -790,7 +815,7 @@ class PaymentAgent {
 
     try { await conn.query(`DELETE FROM payment_allocations WHERE payment_id=?`, [paymentId]); } catch(e) { if (!(e && (e.code==='ER_NO_SUCH_TABLE'||e.errno===1146))) throw e; }
     try { await conn.query(`DELETE FROM payment_unapplied_credits WHERE payment_id=?`, [paymentId]); } catch(e) { if (!(e && (e.code==='ER_NO_SUCH_TABLE'||e.errno===1146))) throw e; }
-    try { await conn.query(`DELETE FROM debt_transactions WHERE payment_id=?`, [paymentId]); } catch(e) { if (!(e && (e.code==='ER_BAD_FIELD_ERROR'||e.errno===1054))) throw e; }
+    try { await this.reverseDebtLedgerForPayment(conn, paymentId, p.customer_id, userId); } catch(e) { if (!(e && (e.code==='ER_BAD_FIELD_ERROR'||e.errno===1054))) throw e; }
     return p;
   }
 
@@ -808,7 +833,7 @@ class PaymentAgent {
       await this.ensurePaymentAllocationSplitColumns(conn);
       await this.ensurePaymentUnappliedCreditsTable(conn);
       await conn.beginTransaction();
-      const old = await this.revertPaymentEffects(conn, paymentId);
+      const old = await this.revertPaymentEffects(conn, paymentId, user?.id || null);
 
       const customerId = Number(data.customer_id || old.customer_id);
       const orderId = Number(data.order_id || old.order_id || 0) || null;
@@ -866,7 +891,7 @@ class PaymentAgent {
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
-      const old = await this.revertPaymentEffects(conn, paymentId);
+      const old = await this.revertPaymentEffects(conn, paymentId, user?.id || null);
       if (user?.role === 'CUSTOMER' && Number(user.customer_id) !== Number(old.customer_id)) throw new Error('Không có quyền');
       const note = data.note || data.reason || 'Hủy phiếu thu nhập sai';
       try {

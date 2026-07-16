@@ -10,6 +10,13 @@ function normalizeRowsV636(rows){
 
 const pool = require('../config/db');
 const PriceBookService = require('../services/PriceBookService');
+const { normalizeInventoryMode } = require('../utils/inventoryMode');
+
+// S11: same enum contract as ProductAgent.js's VALID_INVENTORY_MODE_FILTERS.
+const CATALOG_VALID_INVENTORY_MODES = ['NON_STOCK', 'TRACK_STOCK', 'CARCASS_PART'];
+
+// Phase 1B: Dual Price Category + Price Isolation per sales_flow.
+const PRICE_CATEGORY_SALES_FLOW_REQUIRED_MODE = { CARCASS_POS: 'CARCASS_PART', INVENTORY_SALE: 'TRACK_STOCK' };
 
 function normalizeEffectiveFrom(value){
   const s=String(value||new Date().toISOString().slice(0,10)).slice(0,10);
@@ -45,11 +52,24 @@ async function assertCalendarMatchesCustomer(conn, customerId, calendarType) {
 // S4.2: category is the pricing scope. A book may only contain products whose
 // products.category_id matches the book's category — never trust the frontend
 // for this, always re-check server-side against the database.
-async function assertItemsMatchCategory(conn, categoryId, items) {
+//
+// Phase 1B Task 2: additionally, when this customer's price category has been
+// explicitly classified (customer_price_categories.sales_flow IS NOT NULL), every
+// product saved into it must have the matching current products.inventory_mode —
+// CARCASS_POS category -> CARCASS_PART products only, INVENTORY_SALE category ->
+// TRACK_STOCK only (which also rejects NON_STOCK in either flow, since NON_STOCK
+// matches neither required mode). Re-read fresh from the DB, never trusted from
+// the frontend. Deliberately gated on sales_flow being set: every pre-existing
+// category today is NULL/unclassified and, per production data, several already
+// mix CARCASS_PART/TRACK_STOCK/NON_STOCK products — enforcing this unconditionally
+// would immediately break existing Bò Xô price-book saves. NULL stays fully
+// unrestricted (unchanged legacy behavior); only categories that opt into a flow
+// via Task 2/3's creation path are ever guarded.
+async function assertItemsMatchCategory(conn, customerId, categoryId, items) {
   const productIds = [...new Set((items || []).map(p => Number(p.product_id)).filter(Boolean))];
   if (!productIds.length) return;
   const [rows] = await conn.query(
-    `SELECT id, name, category_id FROM products WHERE id IN (?)`,
+    `SELECT id, name, category_id, inventory_mode FROM products WHERE id IN (?)`,
     [productIds]
   );
   const mismatched = rows.filter(r => Number(r.category_id) !== Number(categoryId));
@@ -59,6 +79,26 @@ async function assertItemsMatchCategory(conn, categoryId, items) {
       new Error(`Sản phẩm không thuộc danh mục của bảng giá này: ${names}`),
       { status: 400 }
     );
+  }
+
+  const [[cpc]] = await conn.query(
+    `SELECT sales_flow FROM customer_price_categories WHERE customer_id=? AND category_id=? LIMIT 1`,
+    [customerId, categoryId]
+  );
+  const requiredMode = cpc ? PRICE_CATEGORY_SALES_FLOW_REQUIRED_MODE[cpc.sales_flow] : null;
+  if (requiredMode) {
+    const wrongMode = rows.filter(r => normalizeInventoryMode(r.inventory_mode) !== requiredMode);
+    if (wrongMode.length) {
+      const names = wrongMode.map(r => r.name).join(', ');
+      throw Object.assign(
+        new Error(
+          (cpc.sales_flow === 'CARCASS_POS'
+            ? `Danh mục giá này chỉ dành cho hàng Bò Xô (CARCASS_PART). Mặt hàng không đúng: ${names}`
+            : `Danh mục giá này chỉ dành cho hàng quản lý tồn kho (TRACK_STOCK). Mặt hàng không đúng: ${names}`)
+        ),
+        { status: 400, statusCode: 400, code: 'PRICE_CATEGORY_SALES_FLOW_MISMATCH' }
+      );
+    }
   }
 }
 
@@ -81,7 +121,7 @@ async function upsertBook(conn, customerId, categoryId, meta, { bookName, note, 
   // check) can't delete the category out from under a book being created right now.
   await conn.query(`SELECT id FROM customer_price_categories WHERE id=? FOR UPDATE`, [customerPriceCategoryId]);
 
-  await assertItemsMatchCategory(conn, categoryId, priceItems);
+  await assertItemsMatchCategory(conn, customerId, categoryId, priceItems);
 
   const [existing] = await conn.query(
     `SELECT id FROM customer_price_books
@@ -135,15 +175,34 @@ class PriceMatrixAgent {
   // ── S4.3: Customer Price Category (Customer + Product Category, the pricing-scope entity
   //         a price book version belongs to) ──────────────────────────────────────────────
 
-  async listCustomerPriceCategories(customerId) {
+  // Phase 1B Task 3: optional exact-match sales_flow filter — same
+  // omitted-param-keeps-old-behavior contract as customerCatalogForOrder()'s
+  // inventoryMode filter. Omitted (null/undefined) returns every category for
+  // the customer, unfiltered, exactly as before. A NULL/unclassified legacy
+  // category is never returned when a specific flow is requested — it simply
+  // doesn't match cpc.sales_flow=? — so it can never be auto-selected for a
+  // flow-specific caller either (see resolveCustomerCategorySelection below).
+  async listCustomerPriceCategories(customerId, salesFlow = null) {
+    const where = ['cpc.customer_id=?'];
+    const params = [customerId];
+    if (salesFlow) {
+      if (!PRICE_CATEGORY_SALES_FLOW_REQUIRED_MODE[salesFlow]) {
+        throw Object.assign(
+          new Error(`sales_flow không hợp lệ: "${salesFlow}". Chỉ chấp nhận CARCASS_POS hoặc INVENTORY_SALE.`),
+          { status: 400, statusCode: 400, code: 'INVALID_PRICE_CATEGORY_SALES_FLOW' }
+        );
+      }
+      where.push('cpc.sales_flow=?');
+      params.push(salesFlow);
+    }
     const [rows] = await pool.query(
-      `SELECT cpc.id, cpc.customer_id, cpc.category_id, pc.name category_name,
+      `SELECT cpc.id, cpc.customer_id, cpc.category_id, pc.name category_name, cpc.sales_flow,
               cpc.is_default, cpc.display_order, cpc.note, cpc.created_at, cpc.updated_at
        FROM customer_price_categories cpc
        LEFT JOIN product_categories pc ON pc.id=cpc.category_id
-       WHERE cpc.customer_id=?
+       WHERE ${where.join(' AND ')}
        ORDER BY cpc.display_order, cpc.id`,
-      [customerId]
+      params
     );
     return rows;
   }
@@ -153,8 +212,14 @@ class PriceMatrixAgent {
   //   1 category                 -> auto-select it
   //   2+ categories, one default -> auto-select the default
   //   2+ categories, no default  -> requires_selection (Case 3)
-  async resolveCustomerCategorySelection(customerId) {
-    const categories = await this.listCustomerPriceCategories(customerId);
+  //
+  // Phase 1B Task 3: optional salesFlow narrows the candidate set to only that
+  // flow's categories before the same 0/1/2+ resolution runs — so "auto-select
+  // the only category" or "auto-select the default" can never land on a category
+  // belonging to a different flow, or on a NULL/unclassified legacy one, when the
+  // caller explicitly asked for CARCASS_POS or INVENTORY_SALE.
+  async resolveCustomerCategorySelection(customerId, salesFlow = null) {
+    const categories = await this.listCustomerPriceCategories(customerId, salesFlow);
     if (!categories.length) {
       return { categories, auto_selected_category_id: null, requires_selection: false, needs_initialization: true };
     }
@@ -174,8 +239,23 @@ class PriceMatrixAgent {
   // user-confirmed action. is_default/display_order are decided here, not by the caller:
   // the customer's first-ever category becomes the default (display_order=1); any later one
   // is never default and goes to the end of the list.
-  async createCustomerPriceCategory(customerId, categoryId, { note } = {}) {
+  // Phase 1B Task 2: optional sales_flow classifies the new category as
+  // CARCASS_POS or INVENTORY_SALE at creation time (validated against the real
+  // enum, 400 on garbage input). Omitted/null keeps the category unclassified —
+  // identical to every category created before Phase 1B — so existing callers
+  // that don't pass it are fully unaffected.
+  async createCustomerPriceCategory(customerId, categoryId, { note, sales_flow } = {}) {
     if (!categoryId) throw Object.assign(new Error('Thiếu danh mục hàng hóa'), { status: 400 });
+    let normalizedSalesFlow = null;
+    if (sales_flow !== undefined && sales_flow !== null && sales_flow !== '') {
+      if (!PRICE_CATEGORY_SALES_FLOW_REQUIRED_MODE[sales_flow]) {
+        throw Object.assign(
+          new Error(`sales_flow không hợp lệ: "${sales_flow}". Chỉ chấp nhận CARCASS_POS hoặc INVENTORY_SALE.`),
+          { status: 400, statusCode: 400, code: 'INVALID_PRICE_CATEGORY_SALES_FLOW' }
+        );
+      }
+      normalizedSalesFlow = sales_flow;
+    }
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
@@ -208,13 +288,13 @@ class PriceMatrixAgent {
         displayOrder = Number(maxRow.mx) + 1;
       }
       const [r] = await conn.query(
-        `INSERT INTO customer_price_categories(customer_id, category_id, is_default, display_order, note) VALUES(?,?,?,?,?)`,
-        [customerId, categoryId, isFirst ? 1 : 0, displayOrder, note || null]
+        `INSERT INTO customer_price_categories(customer_id, category_id, is_default, display_order, note, sales_flow) VALUES(?,?,?,?,?,?)`,
+        [customerId, categoryId, isFirst ? 1 : 0, displayOrder, note || null, normalizedSalesFlow]
       );
       await conn.commit();
       return {
         id: r.insertId, customer_id: Number(customerId), category_id: Number(categoryId),
-        is_default: isFirst, display_order: displayOrder, message: 'Đã tạo danh mục giá cho khách hàng'
+        is_default: isFirst, display_order: displayOrder, sales_flow: normalizedSalesFlow, message: 'Đã tạo danh mục giá cho khách hàng'
       };
     } catch (e) { await conn.rollback(); throw e; }
     finally { conn.release(); }
@@ -328,7 +408,7 @@ class PriceMatrixAgent {
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
-      await assertItemsMatchCategory(conn, categoryId, items);
+      await assertItemsMatchCategory(conn, customerId, categoryId, items);
 
       for(const it of items || []) {
         const productId = it.product_id;
@@ -388,10 +468,29 @@ class PriceMatrixAgent {
     }
   }
 
-  async customerCatalogForOrder(customerId, categoryId) {
+  // S11: optional exact-match inventory_mode filter — same validation contract
+  // as ProductAgent.products()'s VALID_INVENTORY_MODE_FILTERS (uppercase,
+  // reject anything outside the real enum with 400). Omitted param keeps
+  // existing behavior unchanged for every current caller.
+  async customerCatalogForOrder(customerId, categoryId, inventoryMode = null) {
     // S4.2: 1 POS bill = 1 customer + 1 category. The catalog and its prices must
     // never span multiple categories, or a bill could mix Bò and Gà products.
     if (!categoryId) throw Object.assign(new Error('Thiếu danh mục hàng hóa'), { status: 400 });
+
+    let modeFilterSql = '';
+    const modeFilterParams = [];
+    if (inventoryMode) {
+      const normalized = String(inventoryMode).toUpperCase();
+      if (!CATALOG_VALID_INVENTORY_MODES.includes(normalized)) {
+        throw Object.assign(
+          new Error(`Chế độ tồn kho không hợp lệ: "${inventoryMode}". Chỉ chấp nhận NON_STOCK, TRACK_STOCK, CARCASS_PART.`),
+          { status: 400 }
+        );
+      }
+      modeFilterSql = ' AND p.inventory_mode=?';
+      modeFilterParams.push(normalized);
+    }
+
     const [customers] = await pool.query(`SELECT * FROM customers WHERE id=? AND del_flg=0`, [customerId]);
     if(!customers.length) throw new Error('Không tìm thấy khách hàng');
 
@@ -425,11 +524,11 @@ class PriceMatrixAgent {
               p.inventory_mode, p.allow_negative_stock, pc.name category_name, p.default_sale_price,
               cpc.sort_order
        FROM customer_product_catalogs cpc
-       JOIN products p ON p.id=cpc.product_id AND p.del_flg=0 AND p.is_active=1 AND p.category_id=?
+       JOIN products p ON p.id=cpc.product_id AND p.del_flg=0 AND p.is_active=1 AND p.category_id=?${modeFilterSql}
        LEFT JOIN product_categories pc ON pc.id=p.category_id
        WHERE cpc.customer_id=? AND cpc.del_flg=0 AND cpc.is_active=1 AND cpc.is_default=1
        ORDER BY cpc.sort_order, pc.sort_order, p.name`,
-      [categoryId, customerId]
+      [categoryId, ...modeFilterParams, customerId]
     );
 
     // A product with a valid effective price in this customer's current Price Book must never
@@ -447,8 +546,8 @@ class PriceMatrixAgent {
                 p.id sort_order
          FROM products p
          LEFT JOIN product_categories pc ON pc.id=p.category_id
-         WHERE p.del_flg=0 AND p.is_active=1 AND p.category_id=? AND p.id IN (?)`,
-        [categoryId, pricedMissingIds]
+         WHERE p.del_flg=0 AND p.is_active=1 AND p.category_id=? AND p.id IN (?)${modeFilterSql}`,
+        [categoryId, pricedMissingIds, ...modeFilterParams]
       );
       mergedRows = [...catalogRows, ...pricedMissingRows];
     }
@@ -469,9 +568,9 @@ class PriceMatrixAgent {
               p.id sort_order
        FROM products p
        LEFT JOIN product_categories pc ON pc.id=p.category_id
-       WHERE p.del_flg=0 AND p.is_active=1 AND p.category_id=?
+       WHERE p.del_flg=0 AND p.is_active=1 AND p.category_id=?${modeFilterSql}
        ORDER BY pc.sort_order, p.name`,
-      [categoryId]
+      [categoryId, ...modeFilterParams]
     );
     applyPriceMap(fallback);
     const hasPrivate = fallback.some(r => r.price_type && r.price_type !== 'COMMON_PRICE');
@@ -696,7 +795,7 @@ class PriceMatrixAgent {
       );
       const headerLocked = Number(paid[0]?.cnt||0)>0;
 
-      if(Array.isArray(data.items)) await assertItemsMatchCategory(conn, bookCategoryId, data.items);
+      if(Array.isArray(data.items)) await assertItemsMatchCategory(conn, curBookRows[0].customer_id, bookCategoryId, data.items);
 
       if (!headerLocked) {
         const meta = await resolvePriceBookMeta(conn, curBookRows[0].customer_id, data);

@@ -24,12 +24,12 @@ async function assertBookScope(bookId, user) {
 // S4.3: Customer Price Category (Customer + Product Category) endpoints.
 router.get('/:customerId/categories', auth(['ADMIN','STAFF','CUSTOMER']), async(req,res,next)=>{try{
   await assertCustomerScope(req.user, req.params.customerId);
-  res.json(await PriceMatrixAgent.resolveCustomerCategorySelection(req.params.customerId))
+  res.json(await PriceMatrixAgent.resolveCustomerCategorySelection(req.params.customerId, req.query.sales_flow || null))
 }catch(e){next(e)}});
 
 router.post('/:customerId/categories', auth(['ADMIN','STAFF','CUSTOMER']), async(req,res,next)=>{try{
   await assertCustomerScope(req.user, req.params.customerId);
-  res.json(await PriceMatrixAgent.createCustomerPriceCategory(req.params.customerId, req.body.category_id, {note:req.body.note}))
+  res.json(await PriceMatrixAgent.createCustomerPriceCategory(req.params.customerId, req.body.category_id, {note:req.body.note, sales_flow:req.body.sales_flow || null}))
 }catch(e){next(e)}});
 
 router.put('/:customerId/categories/reorder', auth(['ADMIN','STAFF','CUSTOMER']), async(req,res,next)=>{try{
@@ -108,7 +108,7 @@ router.put('/:customerId', auth(['ADMIN','STAFF','CUSTOMER']), async(req,res,nex
 
 router.get('/:customerId/catalog/order', auth(['ADMIN','STAFF','CUSTOMER']), async(req,res,next)=>{try{
   await assertCustomerScope(req.user, req.params.customerId);
-  res.json(await PriceMatrixAgent.customerCatalogForOrder(req.params.customerId, req.query.category_id))
+  res.json(await PriceMatrixAgent.customerCatalogForOrder(req.params.customerId, req.query.category_id, req.query.inventory_mode || null))
 }catch(e){next(e)}});
 
 router.post('/copy', auth(['ADMIN','STAFF','CUSTOMER']), async(req,res,next)=>{try{

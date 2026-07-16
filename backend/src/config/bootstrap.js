@@ -1378,6 +1378,39 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
     await safeAddColumn(conn, 'orders', 'idempotency_key', 'idempotency_key VARCHAR(64) NULL');
     await safeAddIndex(conn, 'orders', 'uq_orders_idempotency_key', 'UNIQUE KEY uq_orders_idempotency_key (idempotency_key)');
 
+    // S11: records which screen originated this bill (Tạo bill POS vs Bán hàng
+    // kho) for traceability/audit only. NULL for every caller that doesn't send
+    // it (legacy clients, AI order path) — purely additive, no behavior change.
+    await safeAddColumn(conn, 'orders', 'sales_flow', 'sales_flow VARCHAR(30) NULL');
+
+    // Mixed Sales Phase 1A: order_items.sales_flow — per-line branch, since one
+    // mixed bill (orders.sales_flow='MIXED') can contain both CARCASS_POS and
+    // INVENTORY_SALE items. Deliberately nullable (schema-only step; write-time
+    // derivation lands separately) — no NOT NULL, no index, no backfill here.
+    await safeAddColumn(conn, 'order_items', 'sales_flow', 'sales_flow VARCHAR(30) NULL');
+
+    // Mixed Sales Phase 1B Task 6: order_items.customer_price_category_id — the
+    // resolved price-category snapshot for the item, alongside the existing
+    // sales_flow/price_book_id/price_type/inventory_mode/stock_checked facts.
+    // Not explicitly listed in Phase 1B Task 1's schema list (which named only
+    // customer_price_categories.sales_flow), but required by Task 6 ("persist
+    // customer_price_category_id") and by assertItemsCategoryPerFlow()'s
+    // addItem() cross-item check — there is no other column to hold this fact.
+    // Flagged here and in the final report rather than added silently. Nullable,
+    // no backfill, no index — same idempotent additive pattern as every other
+    // column in this migration.
+    await safeAddColumn(conn, 'order_items', 'customer_price_category_id', 'customer_price_category_id BIGINT NULL');
+
+    // Mixed Sales Phase 1B: customer_price_categories.sales_flow — classifies an
+    // existing Customer Price Category into CARCASS_POS or INVENTORY_SALE so the
+    // dual-price-category write/read guards can enforce "at most one category per
+    // flow" and "category products must match the flow's inventory_mode". NULL
+    // means legacy/unclassified — every pre-existing row starts NULL (no blanket
+    // backfill here; classification is a proposal-only audit, done separately) and
+    // is treated permissively by the read-side guards, never rejected solely for
+    // being NULL.
+    await safeAddColumn(conn, 'customer_price_categories', 'sales_flow', 'sales_flow VARCHAR(30) NULL');
+
     // S8.2: Order Cancel + Reversal audit fields. Same minimal-additive-columns
     // pattern already approved for purchase_orders short-close (short_close_reason/
     // short_closed_by/short_closed_at) — the terminal-state event is recorded

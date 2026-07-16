@@ -7,6 +7,7 @@ const DebtMonthlyInstallmentAgent=require('./DebtMonthlyInstallmentAgent');
 const { resolveBillSolarDate }=require('../utils/lunarDate');
 const PriceBookService = require('../services/PriceBookService');
 const { assertCustomerScope, customerScopeWhere }=require('../middleware/scope');
+const { normalizeInventoryMode } = require('../utils/inventoryMode');
 
 function parseLunarDateParts(text){
   const m=String(text||'').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
@@ -38,41 +39,195 @@ async function buildMissingPriceError(conn, customerId, billDate, missingIds) {
   return err;
 }
 
-// S4.2: 1 POS bill = 1 customer + 1 category. Category is never trusted from the
-// frontend — it is derived here from products.category_id for every item on the bill.
-async function assertItemsSingleCategory(conn, items) {
-  const productIds = [...new Set((items || []).map(it => Number(it.product_id)).filter(Boolean))];
-  if (productIds.length < 2) return;
-  const [rows] = await conn.query(`SELECT id, name, category_id FROM products WHERE id IN (?)`, [productIds]);
-  const categoryIds = new Set(rows.map(r => Number(r.category_id)));
-  if (categoryIds.size > 1) {
-    const err = new Error(`Bill chỉ được chứa 1 danh mục hàng hóa. Mặt hàng đang thuộc nhiều danh mục khác nhau: ${rows.map(r => r.name).join(', ')}`);
-    err.status = 400;
-    err.statusCode = 400;
-    err.code = 'MIXED_CATEGORY_ITEMS';
-    throw err;
-  }
+function businessError(message, code) {
+  const err = new Error(message);
+  err.status = 400; err.statusCode = 400; err.code = code;
+  return err;
 }
 
-// Adding a line to an existing bill must not smuggle in a product from another
-// category — the product's category is checked against the categories already on the bill.
-async function assertItemMatchesOrderCategory(conn, orderId, newProductId) {
-  const [[newProduct]] = await conn.query(`SELECT id, name, category_id FROM products WHERE id=?`, [newProductId]);
-  if (!newProduct) return;
-  const [existingRows] = await conn.query(
-    `SELECT DISTINCT p.category_id, p.name
-     FROM order_items oi JOIN products p ON p.id=oi.product_id
-     WHERE oi.order_id=?`,
-    [orderId]
+// Mixed Sales Phase 1A: sales_flow is a DERIVED value, never trusted from the
+// frontend — neither data.sales_flow nor any item.inventory_mode/item.sales_flow
+// sent in the request body is read here. Every item's product row is re-read
+// fresh from the DB inside the transaction, and both the per-item branch and
+// the order-header branch are computed from that alone.
+//
+//   CARCASS_PART -> item sales_flow = CARCASS_POS
+//   TRACK_STOCK  -> item sales_flow = INVENTORY_SALE (unless allow_negative_stock=1 — see below)
+//   NON_STOCK    -> rejects the whole bill; out of scope for both branches until
+//                   separately approved (V1 of mixed sales only models CARCASS_PART/TRACK_STOCK)
+//
+// allow_negative_stock=1 on a TRACK_STOCK item rejects the whole bill for the
+// same reason V1 never supports negative stock: InventoryPolicyResolver.resolve()
+// (unchanged, see OrderAgent's own S11 audit) treats allow_negative_stock=1 as
+// needStockCheck=false, meaning postOut() SKIPS the stock check and the balance
+// update entirely rather than deducting below zero — Bán hàng kho must never
+// silently take that skip-path.
+//
+// Order header: one distinct item branch -> that branch; two distinct branches
+// (CARCASS_POS + INVENTORY_SALE both present) -> MIXED; zero items classified
+// (shouldn't happen — create() already requires at least one item) -> null.
+async function deriveItemsSalesFlow(conn, items) {
+  const productIds = [...new Set((items || []).map(it => Number(it.product_id)).filter(Boolean))];
+  const itemFlowByProductId = new Map();
+  if (!productIds.length) return { itemFlowByProductId, orderSalesFlow: null };
+
+  const [rows] = await conn.query(
+    `SELECT id, name, inventory_mode, allow_negative_stock FROM products WHERE id IN (?)`,
+    [productIds]
   );
-  const mismatched = existingRows.find(r => Number(r.category_id) !== Number(newProduct.category_id));
-  if (mismatched) {
-    const err = new Error(`Bill chỉ được chứa 1 danh mục hàng hóa. Không thể thêm "${newProduct.name}" vì bill đang thuộc danh mục khác.`);
-    err.status = 400;
-    err.statusCode = 400;
-    err.code = 'MIXED_CATEGORY_ITEMS';
+  const byId = new Map(rows.map(r => [Number(r.id), r]));
+
+  const nonStockNames = [];
+  const negativeStockNames = [];
+  const flows = new Set();
+
+  for (const pid of productIds) {
+    const p = byId.get(pid);
+    // A product_id that doesn't resolve here is left unclassified — the existing
+    // price-resolution step later in create() is what surfaces "product not found"
+    // for a genuinely bad product_id; this function must not duplicate that error.
+    if (!p) continue;
+    const mode = normalizeInventoryMode(p.inventory_mode);
+    if (mode === 'NON_STOCK') { nonStockNames.push(p.name); continue; }
+    if (mode === 'TRACK_STOCK' && Number(p.allow_negative_stock) === 1) { negativeStockNames.push(p.name); continue; }
+    const flow = mode === 'TRACK_STOCK' ? 'INVENTORY_SALE' : 'CARCASS_POS';
+    itemFlowByProductId.set(pid, flow);
+    flows.add(flow);
+  }
+
+  if (nonStockNames.length) {
+    const err = new Error(`Mặt hàng không quản lý tồn kho (NON_STOCK) chưa được hỗ trợ trong bán hàng kết hợp: ${nonStockNames.join(', ')}`);
+    err.status = 400; err.statusCode = 400; err.code = 'SALES_FLOW_NON_STOCK_NOT_SUPPORTED';
     throw err;
   }
+  if (negativeStockNames.length) {
+    const err = new Error(`Bán hàng kho không hỗ trợ mặt hàng cho phép bán âm: ${negativeStockNames.join(', ')}`);
+    err.status = 400; err.statusCode = 400; err.code = 'SALES_FLOW_NEGATIVE_STOCK_NOT_ALLOWED';
+    throw err;
+  }
+
+  const orderSalesFlow = flows.size === 0 ? null : (flows.size === 1 ? [...flows][0] : 'MIXED');
+  return { itemFlowByProductId, orderSalesFlow };
+}
+
+// Mixed Sales Phase 1B Task 5: replaces the old "1 bill = 1 products.category_id"
+// rule (assertItemsSingleCategory / assertItemMatchesOrderCategory, both removed)
+// with "each sales_flow may use at most one Customer Price Category" — a mixed
+// bill may span two product_categories (one per flow) as long as neither flow's
+// non-null category count exceeds 1.
+//
+// For every item with a resolved price_book_id, the book -> category chain is
+// re-read fresh from the DB (never trusted from the frontend) and validated:
+//   - the price book belongs to this customer (PRICE_BOOK_WRONG_CUSTOMER)
+//   - the product is actually a line in that price book (PRODUCT_NOT_IN_PRICE_BOOK)
+//   - the category belongs to this customer (PRICE_CATEGORY_WRONG_CUSTOMER)
+//   - when the category has been explicitly classified (sales_flow IS NOT NULL),
+//     it still matches the item's freshly-derived sales_flow — a mismatch here is
+//     Hidden Risk 2: products.inventory_mode was changed after the category was
+//     set up (e.g. CARCASS_PART -> TRACK_STOCK), so a category that used to fit
+//     no longer does. NULL category.sales_flow (every pre-existing category today)
+//     skips this check entirely — backward compatible, never rejected solely for
+//     being unclassified.
+//
+// Items with no price_book_id (NULL category — Hidden Risk 1) are allowed and
+// excluded from the per-flow category count only when their resolved price_type
+// proves the price came from an unambiguous non-category source (legacy private
+// price, product default, or an explicit manual override). Any other combination
+// (e.g. price_type claims PRICE_BOOK but price_book_id is somehow null) is
+// rejected with a clear Vietnamese business error — never a crash.
+//
+// seedFlowCategorySets lets addItem() pre-populate the categories already
+// committed on this order (from its existing order_items rows) so a second item
+// can't smuggle in a second category for a flow that's already locked in.
+const NULL_CATEGORY_UNAMBIGUOUS_PRICE_TYPES = new Set(['PRIVATE_PRICE', 'COMMON_PRICE', 'MANUAL_PRICE']);
+async function assertItemsCategoryPerFlow(conn, customerId, items, itemFlowByProductId, seedFlowCategorySets) {
+  const categoryByProductId = new Map();
+  const flowCategorySets = {
+    CARCASS_POS: new Set(seedFlowCategorySets?.CARCASS_POS || []),
+    INVENTORY_SALE: new Set(seedFlowCategorySets?.INVENTORY_SALE || []),
+  };
+
+  for (const it of items || []) {
+    const pid = Number(it.product_id);
+    const flow = itemFlowByProductId.get(pid);
+    if (!flow) continue; // unresolved product_id — surfaced elsewhere (price resolution / "not found")
+    const label = it.product_name || `ID ${pid}`;
+
+    if (it.price_book_id) {
+      const [[book]] = await conn.query(
+        `SELECT id, customer_id, customer_price_category_id FROM customer_price_books WHERE id=? LIMIT 1`,
+        [it.price_book_id]
+      );
+      if (!book) throw businessError(`Bảng giá không hợp lệ cho mặt hàng "${label}".`, 'PRICE_BOOK_NOT_FOUND');
+      if (Number(book.customer_id) !== Number(customerId)) {
+        throw businessError(`Bảng giá của mặt hàng "${label}" không thuộc khách hàng này.`, 'PRICE_BOOK_WRONG_CUSTOMER');
+      }
+      const [[lineItem]] = await conn.query(
+        `SELECT id FROM customer_price_book_items WHERE price_book_id=? AND product_id=? LIMIT 1`,
+        [it.price_book_id, pid]
+      );
+      if (!lineItem) throw businessError(`Mặt hàng "${label}" không có trong bảng giá đã chọn.`, 'PRODUCT_NOT_IN_PRICE_BOOK');
+
+      let categoryId = book.customer_price_category_id ? Number(book.customer_price_category_id) : null;
+      if (categoryId) {
+        const [[cat]] = await conn.query(
+          `SELECT id, customer_id, sales_flow FROM customer_price_categories WHERE id=? LIMIT 1`,
+          [categoryId]
+        );
+        if (!cat || Number(cat.customer_id) !== Number(customerId)) {
+          throw businessError(`Danh mục giá của mặt hàng "${label}" không thuộc khách hàng này.`, 'PRICE_CATEGORY_WRONG_CUSTOMER');
+        }
+        // Phase 1B Gate Fix: NULL is its own logical state (LEGACY/UNKNOWN), never an
+        // implicit CARCASS_POS. CARCASS_POS keeps the pre-existing legacy-compat
+        // allowance (a NULL/unclassified category is accepted for it, unchanged).
+        // INVENTORY_SALE gets no such allowance — it may resolve ONLY through a
+        // category explicitly classified INVENTORY_SALE. The prior
+        // `cat.sales_flow && cat.sales_flow !== flow` check silently passed whenever
+        // cat.sales_flow was NULL (falsy short-circuit), regardless of flow — that
+        // was the bypass: an INVENTORY_SALE item could resolve price through any
+        // unclassified Legacy category. Closed here without touching the CARCASS_POS
+        // branch's existing behavior or wording.
+        if (flow === 'INVENTORY_SALE') {
+          if (!cat.sales_flow) {
+            throw businessError('Danh mục giá chưa được phân loại cho bán hàng kho.', 'PRICE_CATEGORY_NOT_CLASSIFIED_FOR_INVENTORY_SALE');
+          }
+          if (cat.sales_flow !== 'INVENTORY_SALE') {
+            throw businessError('Danh mục giá không thuộc phân hệ bán hàng kho.', 'PRICE_CATEGORY_NOT_INVENTORY_SALE');
+          }
+        } else if (cat.sales_flow && cat.sales_flow !== flow) {
+          throw businessError(
+            `Sản phẩm '${label}' đã thay đổi tính chất kho và không còn phù hợp với danh mục giá này.`,
+            'PRICE_CATEGORY_SALES_FLOW_MISMATCH'
+          );
+        }
+        const flowSet = flowCategorySets[flow];
+        if (flowSet && flowSet.size >= 1 && !flowSet.has(categoryId)) {
+          throw businessError(
+            flow === 'CARCASS_POS'
+              ? 'Bill chỉ được dùng 1 danh mục giá Bò Xô. Đang phát hiện nhiều danh mục giá khác nhau.'
+              : 'Bill chỉ được dùng 1 danh mục giá Bán hàng kho. Đang phát hiện nhiều danh mục giá khác nhau.',
+            'MULTIPLE_PRICE_CATEGORIES_PER_FLOW'
+          );
+        }
+        if (flowSet) flowSet.add(categoryId);
+      }
+      categoryByProductId.set(pid, categoryId);
+    } else {
+      // Same default create()/addItem() already apply at INSERT time (it.price_type
+      // || 'MANUAL_PRICE') — an explicit manual entry with no price_type field sent
+      // at all is exactly as unambiguous as one that spells out 'MANUAL_PRICE'.
+      const effectivePriceType = it.price_type || 'MANUAL_PRICE';
+      if (!NULL_CATEGORY_UNAMBIGUOUS_PRICE_TYPES.has(effectivePriceType)) {
+        throw businessError(
+          `Không xác định được nguồn giá cho mặt hàng "${label}". Vui lòng kiểm tra lại bảng giá hoặc nhập giá thủ công.`,
+          'AMBIGUOUS_PRICE_SOURCE'
+        );
+      }
+      categoryByProductId.set(pid, null);
+    }
+  }
+
+  return { categoryByProductId };
 }
 
 function solarDateParts(dateText){
@@ -399,7 +554,7 @@ return await this.loadLegacyDirectPayments(orderId);
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
-      await assertItemsSingleCategory(conn, data.items);
+      const { itemFlowByProductId, orderSalesFlow } = await deriveItemsSalesFlow(conn, data.items);
       const code = await nextCode(conn,'orders','order_code','BILL');
       const safeCalendarType=data.calendar_type==='LUNAR'?'LUNAR':'SOLAR';
       const safeLunarDateText=safeCalendarType==='LUNAR'?(data.lunar_date_text||''):'';
@@ -435,6 +590,12 @@ return await this.loadLegacyDirectPayments(orderId);
         }
       }
       if (missingPriceProductIds.length) throw await buildMissingPriceError(conn, data.customer_id, billSolarDate, missingPriceProductIds);
+
+      // Mixed Sales Phase 1B: dual price category / price isolation per sales_flow,
+      // validated only after every item's price_book_id/price_type is server-resolved
+      // above — this check depends on those resolved values, not raw frontend input.
+      const { categoryByProductId } = await assertItemsCategoryPerFlow(conn, data.customer_id, data.items, itemFlowByProductId, null);
+
       const itemTotal = data.items.reduce((s,it)=>s+Number(it.quantity||0)*Number(it.sale_price||0),0);
       // V6.51 critical fix: order total must include the effective daily installment.
       // Otherwise a bill paid only for today's items is incorrectly marked PAID and the installment debt disappears.
@@ -446,9 +607,9 @@ return await this.loadLegacyDirectPayments(orderId);
       let r;
       try {
         [r] = await conn.query(
-          `INSERT INTO orders(order_code,customer_id,order_date,delivery_date,status,payment_status,total_amount,paid_amount,debt_amount,private_token,note,created_by,idempotency_key)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-          [code,data.customer_id,billSolarDate,data.delivery_date||null,'DELIVERED',pstatus,total,paid,debt,nanoid(24),data.note||'',user.id,data.idempotency_key||null]
+          `INSERT INTO orders(order_code,customer_id,order_date,delivery_date,status,payment_status,total_amount,paid_amount,debt_amount,private_token,note,created_by,idempotency_key,sales_flow)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [code,data.customer_id,billSolarDate,data.delivery_date||null,'DELIVERED',pstatus,total,paid,debt,nanoid(24),data.note||'',user.id,data.idempotency_key||null,orderSalesFlow]
         );
       } catch (e) {
         // S6.5: a genuine concurrent duplicate (same idempotency_key, two requests
@@ -488,11 +649,16 @@ const orderId = r.insertId;
       for (const it of data.items) {
         const line = Number(it.quantity||0)*Number(it.sale_price||0);
         const inv = await InventoryService.out(conn,it.product_id,it.quantity,billSolarDate,'SALE',orderId,`Xuất bill ${code}`,user.id);
+        // Mixed Sales Phase 1A/1B: per-item sales_flow and customer_price_category_id,
+        // computed by deriveItemsSalesFlow()/assertItemsCategoryPerFlow() above from
+        // freshly-read DB facts — never from the request body.
+        const itemSalesFlow = itemFlowByProductId.get(Number(it.product_id)) || null;
+        const itemCategoryId = categoryByProductId.has(Number(it.product_id)) ? categoryByProductId.get(Number(it.product_id)) : null;
         try {
           await conn.query(
-            `INSERT INTO order_items(order_id,product_id,product_name,unit,quantity,sale_price,total_price,price_type,price_book_id,note,inventory_mode,stock_checked)
-             VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-            [orderId,it.product_id,it.product_name,it.unit||'kg',it.quantity,it.sale_price,line,it.price_type||'MANUAL_PRICE',it.price_book_id||null,it.note||null,inv.inventory_mode,inv.stock_checked?1:0]
+            `INSERT INTO order_items(order_id,product_id,product_name,unit,quantity,sale_price,total_price,price_type,price_book_id,note,inventory_mode,stock_checked,sales_flow,customer_price_category_id)
+             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            [orderId,it.product_id,it.product_name,it.unit||'kg',it.quantity,it.sale_price,line,it.price_type||'MANUAL_PRICE',it.price_book_id||null,it.note||null,inv.inventory_mode,inv.stock_checked?1:0,itemSalesFlow,itemCategoryId]
           );
         } catch (e) {
           // Backward compatibility if production DB has not run V65.44.1 migration yet.
@@ -633,6 +799,23 @@ const orderId = r.insertId;
     return {product_id:newId, product_name:name, unit, sale_price:salePrice, price_type:'MANUAL_PRICE', inventory_mode:data.inventory_mode || 'CARCASS_PART', allow_negative_stock:1};
   }
 
+  // Mixed Sales Phase 1B Task 7: applies the same shared derive/validate resolver
+  // create() uses — deriveItemsSalesFlow() + assertItemsCategoryPerFlow() — to a
+  // single new item, seeded with the categories already committed on this order's
+  // existing lines (so a second Add Item can't smuggle in a second category for a
+  // flow that's already locked in). Recomputes the order header's sales_flow
+  // afterward from the full, now-updated item set.
+  async recomputeOrderSalesFlow(conn, orderId) {
+    const [rows] = await conn.query(
+      `SELECT DISTINCT sales_flow FROM order_items WHERE order_id=? AND sales_flow IS NOT NULL`,
+      [orderId]
+    );
+    const flows = rows.map(r => r.sales_flow);
+    const headerFlow = flows.length === 0 ? null : (flows.length === 1 ? flows[0] : 'MIXED');
+    await conn.query(`UPDATE orders SET sales_flow=? WHERE id=?`, [headerFlow, orderId]);
+    return headerFlow;
+  }
+
   async addItem(orderId, data, user={}) {
     const conn = await pool.getConnection();
     try {
@@ -645,7 +828,30 @@ const orderId = r.insertId;
       await this.ensureOrderEditable(conn, orderId);
 
       const p = await this.resolveAddItemProduct(conn, order, data);
-      await assertItemMatchesOrderCategory(conn, orderId, p.product_id);
+
+      const { itemFlowByProductId } = await deriveItemsSalesFlow(conn, [{ product_id: p.product_id }]);
+      const itemFlow = itemFlowByProductId.get(Number(p.product_id)) || null;
+
+      const [existingFlowRows] = await conn.query(
+        `SELECT DISTINCT sales_flow, customer_price_category_id FROM order_items
+         WHERE order_id=? AND sales_flow IS NOT NULL AND customer_price_category_id IS NOT NULL`,
+        [orderId]
+      );
+      const seedFlowCategorySets = { CARCASS_POS: [], INVENTORY_SALE: [] };
+      for (const r of existingFlowRows) {
+        if (seedFlowCategorySets[r.sales_flow]) seedFlowCategorySets[r.sales_flow].push(Number(r.customer_price_category_id));
+      }
+      // p.price_type/p.price_book_id are already backend-resolved by
+      // resolveAddItemProduct() (via PriceBookService.getEffectivePrice for an
+      // existing product, or an explicit MANUAL_PRICE for a brand-new quick-add
+      // product) — validated here, not data.price_type/data.price_book_id.
+      const { categoryByProductId } = await assertItemsCategoryPerFlow(
+        conn, order.customer_id,
+        [{ product_id: p.product_id, product_name: p.product_name, price_book_id: p.price_book_id || null, price_type: p.price_type }],
+        itemFlowByProductId, seedFlowCategorySets
+      );
+      const itemCategoryId = categoryByProductId.has(Number(p.product_id)) ? categoryByProductId.get(Number(p.product_id)) : null;
+
       const qty = Number(data.quantity || data.qty || 0);
       if(!(qty > 0)) throw new Error('Số lượng phải lớn hơn 0');
       const salePrice = Number(data.sale_price || data.price || p.sale_price || 0);
@@ -654,19 +860,19 @@ const orderId = r.insertId;
       const inv = await InventoryService.out(conn, p.product_id, qty, order.order_date, 'SALE', orderId, `Thêm hàng vào bill ${order.order_code}`, user.id || order.created_by || null);
       try {
         await conn.query(
-          `INSERT INTO order_items(order_id,product_id,product_name,unit,quantity,sale_price,total_price,price_type,price_book_id,note,inventory_mode,stock_checked)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-          [orderId, p.product_id, p.product_name, p.unit || data.unit || 'kg', qty, salePrice, line, data.price_type || p.price_type || 'MANUAL_PRICE', data.price_book_id || p.price_book_id || null, data.note || null, inv.inventory_mode, inv.stock_checked?1:0]
+          `INSERT INTO order_items(order_id,product_id,product_name,unit,quantity,sale_price,total_price,price_type,price_book_id,note,inventory_mode,stock_checked,sales_flow,customer_price_category_id)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [orderId, p.product_id, p.product_name, p.unit || data.unit || 'kg', qty, salePrice, line, p.price_type || 'MANUAL_PRICE', p.price_book_id || null, data.note || null, inv.inventory_mode, inv.stock_checked?1:0, itemFlow, itemCategoryId]
         );
       } catch (e) {
-        const rawPriceType = data.price_type || p.price_type || 'MANUAL_PRICE';
-        const safePriceType = rawPriceType === 'PRICE_BOOK' ? 'PRIVATE_PRICE' : rawPriceType;
+        const safePriceType = p.price_type === 'PRICE_BOOK' ? 'PRIVATE_PRICE' : (p.price_type || 'MANUAL_PRICE');
         await conn.query(
           `INSERT INTO order_items(order_id,product_id,product_name,unit,quantity,sale_price,total_price,price_type,note,inventory_mode,stock_checked)
            VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
           [orderId, p.product_id, p.product_name, p.unit || data.unit || 'kg', qty, salePrice, line, safePriceType, data.note || null, inv.inventory_mode, inv.stock_checked?1:0]
         );
       }
+      await this.recomputeOrderSalesFlow(conn, orderId);
       const totals = await this.recalcOrderTotals(conn, orderId, user?.id || null);
       await conn.commit();
       return {message:'Đã thêm mặt hàng vào bill', ...totals};

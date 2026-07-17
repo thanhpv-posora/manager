@@ -203,10 +203,41 @@ class ProductAgent {
     } catch(e) { await conn.rollback(); throw e; } finally { conn.release(); }
   }
 
+  // S1H: Product Domain Integrity Guard. Once a product has participated in
+  // any business transaction, sales_flow and inventory_mode become immutable —
+  // changing either would silently reinterpret historical order/purchase/stock
+  // rows under a domain they were never recorded against. Price Book rows
+  // alone do NOT count as business history (books can still be rebuilt before
+  // Go-live), so this deliberately does not query price_books/price_book_items.
+  async hasBusinessHistory(productId) {
+    const tables = ['order_items', 'purchase_order_items', 'inventory_receive_items', 'stock_transactions'];
+    for (const table of tables) {
+      const [[row]] = await pool.query(`SELECT 1 FROM ${table} WHERE product_id=? LIMIT 1`, [productId]);
+      if (row) return true;
+    }
+    return false;
+  }
+
+  async assertDomainImmutable(id, salesFlow, inventoryMode) {
+    const [[current]] = await pool.query(`SELECT sales_flow,inventory_mode FROM products WHERE id=? AND del_flg=0`, [id]);
+    if (!current) return;
+    const currentSalesFlow = String(current.sales_flow || '').toUpperCase();
+    const currentInventoryMode = normalizeInventoryMode(current.inventory_mode);
+    const isChanging = currentSalesFlow !== salesFlow || currentInventoryMode !== inventoryMode;
+    if (!isChanging) return;
+    if (await this.hasBusinessHistory(id)) {
+      throw Object.assign(
+        new Error('Sản phẩm đã phát sinh giao dịch.\nKhông được thay đổi Luồng bán hoặc Chế độ tồn.\nVui lòng tạo sản phẩm mới.'),
+        { status: 400, statusCode: 400, code: 'PRODUCT_DOMAIN_LOCKED' }
+      );
+    }
+  }
+
   async updateProduct(id,data) {
     if(!data.name) throw new Error('Thiếu tên hàng');
     await this.assertUniqueProductName(data.name,id);
     const { salesFlow, inventoryMode } = this.assertProductClassification(data);
+    await this.assertDomainImmutable(id, salesFlow, inventoryMode);
     await pool.query(
       `UPDATE products SET category_id=?,name=?,unit=?,default_sale_price=?,default_purchase_price=?,low_stock_threshold=?,note=?,is_active=?,inventory_mode=?,parent_product_id=?,carcass_group=?,allow_negative_stock=?,sales_flow=? WHERE id=? AND del_flg=0`,
       [data.category_id||null,data.name,data.unit||'kg',data.default_sale_price||0,data.default_purchase_price||0,data.low_stock_threshold||5,data.note||'',data.is_active?1:0,inventoryMode,data.parent_product_id||null,data.carcass_group||null,data.allow_negative_stock?1:0,salesFlow,id]

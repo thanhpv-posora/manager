@@ -136,7 +136,15 @@ export default function CreateOrder({setPage}){
     return text.includes('walk')||text.includes('vang lai')||text.includes('khach le')||text.includes('khach vang');
   };
 
-  const currentCustomer=useMemo(()=>customers.find(c=>String(c.id)===String(cid)),[customers,cid]);
+  // S1I Patch A: monthlyInstallment (fetched separately via loadMonthlyInstallment,
+  // backend snake_case installment_amount already converted to a number above) is
+  // normalized onto currentCustomer here — the single adapter boundary — so every
+  // consumer reads the canonical camelCase currentCustomer.monthlyInstallment
+  // instead of threading a second, disconnected prop through the tree.
+  const currentCustomer=useMemo(()=>{
+    const base=customers.find(c=>String(c.id)===String(cid));
+    return base?{...base,monthlyInstallment}:base;
+  },[customers,cid,monthlyInstallment]);
   const assignedCategoryIds=useMemo(()=>new Set((categorySelection.categories||[]).map(c=>String(c.category_id))),[categorySelection]);
   const unassignedCategories=useMemo(()=>categories.filter(c=>!assignedCategoryIds.has(String(c.id))),[categories,assignedCategoryIds]);
   const walkInCustomer=isWalkInCustomer(currentCustomer);
@@ -1523,7 +1531,7 @@ export default function CreateOrder({setPage}){
           <POSBillSummary
             totalQty={totalQty}
             total={total}
-            monthlyInstallment={monthlyInstallment}
+            monthlyInstallment={currentCustomer?.monthlyInstallment}
             saving={saving}
             cid={cid}
             selectedCategoryId={selectedCategoryId}

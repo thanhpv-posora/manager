@@ -3,6 +3,7 @@ const SoftDeleteAgent = require('./SoftDeleteAgent');
 const PriceBookService = require('../services/PriceBookService');
 const InventoryService = require('../services/InventoryService');
 const { normalizeInventoryMode } = require('../utils/inventoryMode');
+const { assertSalesFlowInventoryModeCombo } = require('../utils/productSalesFlow');
 
 // The 3 real inventory_mode values a caller-supplied filter may ask for.
 // Kept separate from normalizeInventoryMode()'s legacy-alias/fallback
@@ -155,17 +156,43 @@ class ProductAgent {
     return rows;
   }
 
+  // S1G: shared by addProduct()/updateProduct() — sales_flow and inventory_mode
+  // are both mandatory for every new or edited product (never silently defaulted
+  // to TRACK_STOCK/CARCASS_PART anymore), and must be an approved combination.
+  // Legacy products already stored with sales_flow=NULL are unaffected by this
+  // (they're simply never routed through addProduct/updateProduct again until
+  // someone explicitly edits them, at which point classification becomes required).
+  assertProductClassification(data) {
+    const salesFlow = String(data.sales_flow || '').toUpperCase() || null;
+    if (!salesFlow) {
+      throw Object.assign(
+        new Error('Vui lòng chọn Luồng bán (Bò Xô hoặc Hàng Kho) cho mặt hàng.'),
+        { status: 400, statusCode: 400, code: 'PRODUCT_SALES_FLOW_REQUIRED' }
+      );
+    }
+    const inventoryMode = String(data.inventory_mode || '').toUpperCase();
+    if (!VALID_INVENTORY_MODE_FILTERS.includes(inventoryMode)) {
+      throw Object.assign(
+        new Error('Vui lòng chọn Chế độ tồn kho hợp lệ cho mặt hàng.'),
+        { status: 400, statusCode: 400, code: 'PRODUCT_INVENTORY_MODE_REQUIRED' }
+      );
+    }
+    assertSalesFlowInventoryModeCombo(salesFlow, inventoryMode);
+    return { salesFlow, inventoryMode };
+  }
+
   async addProduct(data) {
     if(!data.name) throw new Error('Thiếu tên hàng');
     await this.assertUniqueProductName(data.name);
     if(!data.product_code) data.product_code = await this.nextProductCode(data.category_id);
+    const { salesFlow, inventoryMode } = this.assertProductClassification(data);
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
       const [r] = await conn.query(
-        `INSERT INTO products(category_id,product_code,name,unit,default_sale_price,default_purchase_price,low_stock_threshold,note,is_active,del_flg,inventory_mode,parent_product_id,carcass_group,allow_negative_stock)
-         VALUES(?,?,?,?,?,?,?,?,1,0,?,?,?,?)`,
-        [data.category_id||null,data.product_code,data.name,data.unit||'kg',data.default_sale_price||0,data.default_purchase_price||0,data.low_stock_threshold||5,data.note||'',normalizeInventoryMode(data.inventory_mode||'TRACK_STOCK'),data.parent_product_id||null,data.carcass_group||null,data.allow_negative_stock?1:0]
+        `INSERT INTO products(category_id,product_code,name,unit,default_sale_price,default_purchase_price,low_stock_threshold,note,is_active,del_flg,inventory_mode,parent_product_id,carcass_group,allow_negative_stock,sales_flow)
+         VALUES(?,?,?,?,?,?,?,?,1,0,?,?,?,?,?)`,
+        [data.category_id||null,data.product_code,data.name,data.unit||'kg',data.default_sale_price||0,data.default_purchase_price||0,data.low_stock_threshold||5,data.note||'',inventoryMode,data.parent_product_id||null,data.carcass_group||null,data.allow_negative_stock?1:0,salesFlow]
       );
       const initialQty = Number(data.stock_quantity || 0);
       if (initialQty > 0) {
@@ -179,9 +206,10 @@ class ProductAgent {
   async updateProduct(id,data) {
     if(!data.name) throw new Error('Thiếu tên hàng');
     await this.assertUniqueProductName(data.name,id);
+    const { salesFlow, inventoryMode } = this.assertProductClassification(data);
     await pool.query(
-      `UPDATE products SET category_id=?,name=?,unit=?,default_sale_price=?,default_purchase_price=?,low_stock_threshold=?,note=?,is_active=?,inventory_mode=?,parent_product_id=?,carcass_group=?,allow_negative_stock=? WHERE id=? AND del_flg=0`,
-      [data.category_id||null,data.name,data.unit||'kg',data.default_sale_price||0,data.default_purchase_price||0,data.low_stock_threshold||5,data.note||'',data.is_active?1:0,normalizeInventoryMode(data.inventory_mode),data.parent_product_id||null,data.carcass_group||null,data.allow_negative_stock?1:0,id]
+      `UPDATE products SET category_id=?,name=?,unit=?,default_sale_price=?,default_purchase_price=?,low_stock_threshold=?,note=?,is_active=?,inventory_mode=?,parent_product_id=?,carcass_group=?,allow_negative_stock=?,sales_flow=? WHERE id=? AND del_flg=0`,
+      [data.category_id||null,data.name,data.unit||'kg',data.default_sale_price||0,data.default_purchase_price||0,data.low_stock_threshold||5,data.note||'',data.is_active?1:0,inventoryMode,data.parent_product_id||null,data.carcass_group||null,data.allow_negative_stock?1:0,salesFlow,id]
     );
     return {message:'Đã sửa mặt hàng'};
   }
@@ -262,13 +290,20 @@ class ProductAgent {
     if(!data.name) throw new Error('Thiếu tên hàng');
     await this.assertUniqueProductName(data.name);
     const code = data.product_code || await this.nextProductCode(data.category_id);
+    // S1G: quick-add is only ever invoked from the Bò Xô POS screen (CreateOrder.jsx),
+    // so its sales_flow default is CARCASS_POS — an explicit caller-supplied
+    // sales_flow still wins, and the combination is still validated (a caller
+    // that mistakenly asks for TRACK_STOCK here still gets rejected with 400).
+    const salesFlow = String(data.sales_flow || 'CARCASS_POS').toUpperCase();
+    const inventoryMode = normalizeInventoryMode(data.inventory_mode || 'CARCASS_PART');
+    assertSalesFlowInventoryModeCombo(salesFlow, inventoryMode);
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
       const [r] = await conn.query(
-        `INSERT INTO products(category_id,product_code,name,unit,default_sale_price,default_purchase_price,low_stock_threshold,inventory_mode,allow_negative_stock,del_flg)
-         VALUES(?,?,?,?,?,?,?,?,?,0)`,
-        [data.category_id||null,code,data.name,data.unit||'kg',data.sale_price||0,0,5,normalizeInventoryMode(data.inventory_mode||'TRACK_STOCK'),data.allow_negative_stock?1:0]
+        `INSERT INTO products(category_id,product_code,name,unit,default_sale_price,default_purchase_price,low_stock_threshold,inventory_mode,allow_negative_stock,del_flg,sales_flow)
+         VALUES(?,?,?,?,?,?,?,?,?,0,?)`,
+        [data.category_id||null,code,data.name,data.unit||'kg',data.sale_price||0,0,5,inventoryMode,data.allow_negative_stock?1:0,salesFlow]
       );
       if (data.customer_id) {
         await conn.query(

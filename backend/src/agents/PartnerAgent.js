@@ -20,9 +20,15 @@ class PartnerAgent {
       where.push(clause);
       params.push(...sp);
     }
+    // Customer Default Model: default_sales_flow is exposed here (not just on
+    // CustomerAgent.list()) because CreateOrder.jsx's customer picker loads its
+    // list from this endpoint, not /customers — without this column, the UI-only
+    // default-tab hint would have no way to reach the frontend. A hard, proven
+    // dependency of the allowed "CreateOrder default tab initialization" scope,
+    // not a broadening of it — PartnerAgent itself is otherwise untouched.
     const [rows] = await pool.query(
       `SELECT id, customer_code, name, phone, address, note,
-              partner_type, billing_calendar_type, is_active
+              partner_type, billing_calendar_type, is_active, default_sales_flow
        FROM customers
        WHERE ${where.join(' AND ')}
        ORDER BY name ASC`,

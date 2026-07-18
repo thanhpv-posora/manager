@@ -26,6 +26,31 @@ function cleanName(data){
   return String(data.name||data.customer_name||data.full_name||'').trim();
 }
 
+// Customer Default Model: customers.default_sales_flow is a UI-only hint (which
+// screen CreateOrder should default to for this customer) — never used for
+// pricing, inventory, ledger, or reports. Required when creating a brand new
+// customer; optional when editing an existing one, so a legacy customer can stay
+// NULL indefinitely or be classified later without that being forced.
+const VALID_DEFAULT_SALES_FLOW = ['CARCASS_POS', 'INVENTORY_SALE'];
+function normalizeDefaultSalesFlow(value, { required }){
+  if (value === undefined || value === null || value === '') {
+    if (required) {
+      throw Object.assign(
+        new Error('Vui lòng chọn luồng bán hàng mặc định (Bò Xô hoặc Bán hàng kho) cho khách hàng mới.'),
+        { status: 400, statusCode: 400, code: 'DEFAULT_SALES_FLOW_REQUIRED' }
+      );
+    }
+    return null;
+  }
+  if (!VALID_DEFAULT_SALES_FLOW.includes(value)) {
+    throw Object.assign(
+      new Error(`default_sales_flow không hợp lệ: "${value}". Chỉ chấp nhận CARCASS_POS hoặc INVENTORY_SALE.`),
+      { status: 400, statusCode: 400, code: 'INVALID_DEFAULT_SALES_FLOW' }
+    );
+  }
+  return value;
+}
+
 class CustomerAgent{
   constructor(){
     this.version='6.28.0';
@@ -119,10 +144,14 @@ class CustomerAgent{
     const parentCustomerId=(user&&user.role==='CUSTOMER')?user.customer_id:(data.parent_customer_id||null);
 
     const partner_type = Number(data.partner_type) === 1 ? 1 : 2;
+    // Customer Default Model Rule 3: required for every NEW customer — a
+    // partner_type=1 (supplier-only) row is not sold to via CreateOrder at all,
+    // so it is exempt from this requirement.
+    const defaultSalesFlow = normalizeDefaultSalesFlow(data.default_sales_flow, { required: partner_type !== 1 });
     const [ins]=await pool.query(
-      `INSERT INTO customers(customer_code,name,phone,address,price_mode,billing_calendar_type,note,is_active,del_flg,parent_customer_id,partner_type)
-       VALUES(?,?,?,?,?,?,?,1,0,?,?)`,
-      [code,name,data.phone||'',data.address||'',normalizePriceMode(data.price_mode),normalizeBillingCalendarType(data.billing_calendar_type),data.note||'',parentCustomerId,partner_type]
+      `INSERT INTO customers(customer_code,name,phone,address,price_mode,billing_calendar_type,note,is_active,del_flg,parent_customer_id,partner_type,default_sales_flow)
+       VALUES(?,?,?,?,?,?,?,1,0,?,?,?)`,
+      [code,name,data.phone||'',data.address||'',normalizePriceMode(data.price_mode),normalizeBillingCalendarType(data.billing_calendar_type),data.note||'',parentCustomerId,partner_type,defaultSalesFlow]
     );
     const sync=partner_type===1?await this._syncPartnerToSupplier(ins.insertId):null;
     return {message:'Đã tạo đối tác',customer_code:code,...(sync||{})};
@@ -135,9 +164,13 @@ class CustomerAgent{
     await assertCustomerScope(user,id);
 
     const partner_type = Number(data.partner_type) === 1 ? 1 : 2;
+    // Customer Default Model Rule 3: never required on edit — a legacy customer
+    // may stay NULL indefinitely (no backfill, no forced classification), or be
+    // classified now if the form explicitly sends a value.
+    const defaultSalesFlow = normalizeDefaultSalesFlow(data.default_sales_flow, { required: false });
     await pool.query(
-      `UPDATE customers SET name=?,phone=?,address=?,price_mode=?,billing_calendar_type=?,note=?,is_active=?,partner_type=? WHERE id=? AND del_flg=0`,
-      [name,data.phone||'',data.address||'',normalizePriceMode(data.price_mode),normalizeBillingCalendarType(data.billing_calendar_type),data.note||'',data.is_active?1:0,partner_type,id]
+      `UPDATE customers SET name=?,phone=?,address=?,price_mode=?,billing_calendar_type=?,note=?,is_active=?,partner_type=?,default_sales_flow=? WHERE id=? AND del_flg=0`,
+      [name,data.phone||'',data.address||'',normalizePriceMode(data.price_mode),normalizeBillingCalendarType(data.billing_calendar_type),data.note||'',data.is_active?1:0,partner_type,defaultSalesFlow,id]
     );
     const sync=partner_type===1?await this._syncPartnerToSupplier(id):null;
     return {message:'Đã cập nhật đối tác',...(sync||{})};

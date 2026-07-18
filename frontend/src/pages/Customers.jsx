@@ -57,6 +57,10 @@ export default function Customers(){
       showWarning('Nhập tên khách hàng');
       return;
     }
+    if(!editing&&Number(form.partner_type)!==1&&!form.default_sales_flow){
+      showWarning('Vui lòng chọn luồng bán hàng mặc định (Bò Xô hoặc Bán hàng kho) cho khách hàng mới');
+      return;
+    }
     try{
       if(editing) await api.put('/customers/'+editing,form);
       else await api.post('/customers',form);
@@ -139,6 +143,14 @@ export default function Customers(){
             <option value={1}>Nhà cung cấp</option>
           </select>
           <input className="input" placeholder="Ghi chú" value={form.note||''} onChange={e=>setForm({...form,note:e.target.value})} ref={el=>fieldRefs.current[7]=el} onKeyDown={e=>handleFormKey(e,7)}/>
+          <label className="field-label">
+            <span>Luồng bán hàng mặc định{!editing&&Number(form.partner_type)!==1?' *':''}</span>
+            <select className="select" value={form.default_sales_flow||''} onChange={e=>setForm({...form,default_sales_flow:e.target.value||null})} ref={el=>fieldRefs.current[8]=el} onKeyDown={e=>handleFormKey(e,8)}>
+              <option value="">-- Chưa phân loại (khách cũ) --</option>
+              <option value="CARCASS_POS">Bò Xô (Tạo bill POS)</option>
+              <option value="INVENTORY_SALE">Bán hàng kho</option>
+            </select>
+          </label>
         </div>
         <div className="actions" style={{marginTop:12}}>
           <button className="btn" onClick={save}>{editing?'Cập nhật đối tác':'Thêm đối tác'}</button>

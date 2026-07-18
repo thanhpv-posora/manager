@@ -35,7 +35,7 @@ class InventoryMovementService {
    * Post a stock IN movement.
    *
    * TRACK_STOCK → UPDATE stock_quantity += qty, INSERT type='IN'
-   * NON_STOCK / CARCASS_PART → INSERT type='IN' only (no balance update)
+   * NON_STOCK → INSERT type='IN' only (no balance update)
    *
    * @param {object} conn   — active MySQL connection (within a transaction)
    * @param {number} productId
@@ -116,7 +116,7 @@ class InventoryMovementService {
   /**
    * Post a stock OUT movement.
    *
-   * NON_STOCK / CARCASS_PART / allow_negative_stock → INSERT type='OUT', no balance check
+   * NON_STOCK / allow_negative_stock → INSERT type='OUT', no balance check
    * TRACK_STOCK → validate stock >= qty, UPDATE stock_quantity −= qty, INSERT type='OUT'
    *
    * @param {object} conn
@@ -163,7 +163,7 @@ class InventoryMovementService {
     if (Number(p.stock_quantity) < qty) {
       throw new Error(
         `Không đủ tồn kho cho "${p.name}". Tồn hiện tại: ${formatQty(p.stock_quantity)}, cần xuất: ${formatQty(qty)}.` +
-        ` Nếu đây là hàng bò xô/pha lóc, vào Mặt hàng / sửa giá đổi mode sang CARCASS_PART hoặc bật Cho phép không kiểm tồn.`
+        ` Nếu đây là hàng bò xô/pha lóc, vào Mặt hàng / sửa giá đổi mode sang Không kiểm tồn (NON_STOCK) hoặc bật Cho phép không kiểm tồn.`
       );
     }
 

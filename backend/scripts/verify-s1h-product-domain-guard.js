@@ -18,6 +18,16 @@
 // Bonus: Product used in a Purchase Order (purchase_order_items) — the 4th
 // history table named in the ticket's Business History section.
 //
+// S1J note: CARCASS_PART is retired as a current inventory_mode, which
+// collapses SALES_FLOW_INVENTORY_MODE_COMPAT to a 1:1 mapping (CARCASS_POS
+// only pairs with NON_STOCK, INVENTORY_SALE only with TRACK_STOCK). There is
+// therefore no longer any way to change inventory_mode alone while holding
+// sales_flow fixed — assertSalesFlowInventoryModeCombo() rejects that combo
+// before the S1H guard is ever reached. The "change inventory_mode" cases
+// below now flip both fields together (the only route left), which still
+// exercises the exact same S1H guard code path (assertDomainImmutable's
+// isChanging OR-condition doesn't distinguish a partial vs. full change).
+//
 // Self-cleaning: throwaway products only, removed in `finally`. No shared
 // fixtures (customers/categories) are touched.
 
@@ -124,11 +134,11 @@ async function main() {
     {
       const p = await makeProduct('CARCASS_POS', 'NON_STOCK');
       await expectAllow(
-        'PASS: new product (no history) — change inventory_mode NON_STOCK -> CARCASS_PART',
-        () => ProductAgent.updateProduct(p.id, { name: p.name, unit: 'kg', sales_flow: 'CARCASS_POS', inventory_mode: 'CARCASS_PART' })
+        'PASS: new product (no history) — change inventory_mode NON_STOCK -> TRACK_STOCK',
+        () => ProductAgent.updateProduct(p.id, { name: p.name, unit: 'kg', sales_flow: 'INVENTORY_SALE', inventory_mode: 'TRACK_STOCK' })
       );
       const [[after]] = await pool.query(`SELECT sales_flow,inventory_mode FROM products WHERE id=?`, [p.id]);
-      check('  -> inventory_mode actually persisted as CARCASS_PART', after.inventory_mode === 'CARCASS_PART', after);
+      check('  -> inventory_mode actually persisted as TRACK_STOCK', after.inventory_mode === 'TRACK_STOCK', after);
     }
 
     // --- FAIL: Product used in Order, change sales_flow ---
@@ -157,8 +167,8 @@ async function main() {
         [receiveId, p.id]
       );
       await expectReject(
-        'FAIL: product used in inventory_receive_items — change inventory_mode NON_STOCK -> CARCASS_PART',
-        () => ProductAgent.updateProduct(p.id, { name: p.name, unit: 'kg', sales_flow: 'CARCASS_POS', inventory_mode: 'CARCASS_PART' })
+        'FAIL: product used in inventory_receive_items — change inventory_mode NON_STOCK -> TRACK_STOCK',
+        () => ProductAgent.updateProduct(p.id, { name: p.name, unit: 'kg', sales_flow: 'INVENTORY_SALE', inventory_mode: 'TRACK_STOCK' })
       );
       const [[after]] = await pool.query(`SELECT inventory_mode FROM products WHERE id=?`, [p.id]);
       check('  -> inventory_mode unchanged in DB', after.inventory_mode === 'NON_STOCK', after);
@@ -173,8 +183,8 @@ async function main() {
         [p.id]
       );
       await expectReject(
-        'FAIL: product with stock_transactions ledger — change inventory_mode NON_STOCK -> CARCASS_PART',
-        () => ProductAgent.updateProduct(p.id, { name: p.name, unit: 'kg', sales_flow: 'CARCASS_POS', inventory_mode: 'CARCASS_PART' })
+        'FAIL: product with stock_transactions ledger — change inventory_mode NON_STOCK -> TRACK_STOCK',
+        () => ProductAgent.updateProduct(p.id, { name: p.name, unit: 'kg', sales_flow: 'INVENTORY_SALE', inventory_mode: 'TRACK_STOCK' })
       );
       const [[after]] = await pool.query(`SELECT inventory_mode FROM products WHERE id=?`, [p.id]);
       check('  -> inventory_mode unchanged in DB', after.inventory_mode === 'NON_STOCK', after);
@@ -190,8 +200,8 @@ async function main() {
         [purchaseOrderId, p.id, p.name, 'kg', 1, 1000, 1000]
       );
       await expectReject(
-        'BONUS-FAIL: product used in purchase_order_items — change inventory_mode NON_STOCK -> CARCASS_PART',
-        () => ProductAgent.updateProduct(p.id, { name: p.name, unit: 'kg', sales_flow: 'CARCASS_POS', inventory_mode: 'CARCASS_PART' })
+        'BONUS-FAIL: product used in purchase_order_items — change inventory_mode NON_STOCK -> TRACK_STOCK',
+        () => ProductAgent.updateProduct(p.id, { name: p.name, unit: 'kg', sales_flow: 'INVENTORY_SALE', inventory_mode: 'TRACK_STOCK' })
       );
       await pool.query(`DELETE FROM purchase_order_items WHERE product_id=?`, [p.id]);
     }

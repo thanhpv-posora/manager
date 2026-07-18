@@ -5,10 +5,14 @@ const InventoryService = require('../services/InventoryService');
 const { normalizeInventoryMode } = require('../utils/inventoryMode');
 const { assertSalesFlowInventoryModeCombo } = require('../utils/productSalesFlow');
 
-// The 3 real inventory_mode values a caller-supplied filter may ask for.
-// Kept separate from normalizeInventoryMode()'s legacy-alias/fallback
-// behavior (see products() below) — a filter is validated, never coerced.
-const VALID_INVENTORY_MODE_FILTERS = ['NON_STOCK', 'TRACK_STOCK', 'CARCASS_PART'];
+// S1J: the 2 current inventory_mode values a caller-supplied filter may ask
+// for. CARCASS_PART is retired as a current classification (legacy rows/
+// order_items snapshots still carrying it are handled by
+// normalizeInventoryMode()'s historical-read compatibility boundary, never
+// accepted here as a valid filter or write value). Kept separate from
+// normalizeInventoryMode()'s legacy-alias/fallback behavior (see products()
+// below) — a filter is validated, never coerced.
+const VALID_INVENTORY_MODE_FILTERS = ['NON_STOCK', 'TRACK_STOCK'];
 
 class ProductAgent {
   async nextProductCode(categoryId) {
@@ -109,17 +113,18 @@ class ProductAgent {
   }
 
   // inventoryMode: optional exact-match filter (e.g. 'TRACK_STOCK'), used by
-  // callers like the Inventory Count page that must never receive
-  // CARCASS_PART/NON_STOCK rows from the server, not just filter them client-
-  // side. Omitted (default '') behaves exactly as before — every existing
-  // caller of GET /products without the query param is unaffected.
+  // callers like the Inventory Count page that must never receive NON_STOCK
+  // rows from the server, not just filter them client-side. Omitted (default
+  // '') behaves exactly as before — every existing caller of GET /products
+  // without the query param is unaffected.
   //
   // Deliberately NOT run through normalizeInventoryMode() here: that helper's
   // job is to coerce a stored/legacy product value (falling back to NON_STOCK
-  // for anything unrecognized), which is correct for reading a product row but
-  // wrong for a caller-supplied filter — silently treating a typo'd or unknown
-  // value as "NON_STOCK" would return misleadingly filtered data instead of
-  // an error. A filter value must be exactly one of the 3 real modes or reject.
+  // for anything unrecognized, including the retired CARCASS_PART), which is
+  // correct for reading a product row but wrong for a caller-supplied filter —
+  // silently treating a typo'd or unknown value as "NON_STOCK" would return
+  // misleadingly filtered data instead of an error. A filter value must be
+  // exactly one of the 2 current modes or reject.
   //
   // When inventoryMode is supplied, also joins the latest inventory_adjustments
   // row per product (one aggregate subquery, no N+1) so the Inventory Count
@@ -134,7 +139,7 @@ class ProductAgent {
       const normalized = String(inventoryMode).toUpperCase();
       if (!VALID_INVENTORY_MODE_FILTERS.includes(normalized)) {
         throw Object.assign(
-          new Error(`Chế độ tồn kho không hợp lệ: "${inventoryMode}". Chỉ chấp nhận NON_STOCK, TRACK_STOCK, CARCASS_PART.`),
+          new Error(`Chế độ tồn kho không hợp lệ: "${inventoryMode}". Chỉ chấp nhận NON_STOCK, TRACK_STOCK.`),
           { status: 400, statusCode: 400 }
         );
       }
@@ -158,7 +163,7 @@ class ProductAgent {
 
   // S1G: shared by addProduct()/updateProduct() — sales_flow and inventory_mode
   // are both mandatory for every new or edited product (never silently defaulted
-  // to TRACK_STOCK/CARCASS_PART anymore), and must be an approved combination.
+  // to TRACK_STOCK anymore), and must be an approved combination.
   // Legacy products already stored with sales_flow=NULL are unaffected by this
   // (they're simply never routed through addProduct/updateProduct again until
   // someone explicitly edits them, at which point classification becomes required).
@@ -293,30 +298,6 @@ class ProductAgent {
     return PriceBookService.createOrReplaceBook(customerId, items, effectiveFrom || new Date().toISOString().slice(0,10), userId, 'Update single customer product price', categoryId);
   }
 
-  async markCarcassParts() {
-    await pool.query(
-      `UPDATE products
-       SET inventory_mode='CARCASS_PART', allow_negative_stock=1
-       WHERE del_flg=0
-         AND (
-           product_code LIKE 'BO_%'
-           OR name LIKE '%bò%'
-           OR name LIKE '%Đùi%'
-           OR name LIKE '%đùi%'
-           OR name LIKE '%Búp%'
-           OR name LIKE '%búp%'
-           OR name LIKE '%Nạm%'
-           OR name LIKE '%nạm%'
-           OR name LIKE '%Sườn%'
-           OR name LIKE '%sườn%'
-           OR name LIKE '%Thăn%'
-           OR name LIKE '%thăn%'
-         )
-         AND inventory_mode='STOCK'`
-    );
-    return {message:'Đã chuyển nhóm bò/pha lóc sang CARCASS_PART, không kiểm tồn từng phần'};
-  }
-
   async quickProduct(data) {
     if(!data.name) throw new Error('Thiếu tên hàng');
     await this.assertUniqueProductName(data.name);
@@ -325,8 +306,24 @@ class ProductAgent {
     // so its sales_flow default is CARCASS_POS — an explicit caller-supplied
     // sales_flow still wins, and the combination is still validated (a caller
     // that mistakenly asks for TRACK_STOCK here still gets rejected with 400).
+    // S1J: default inventory_mode is NON_STOCK — CARCASS_PART is retired as a
+    // current classification, so CARCASS_POS's only current pairing is NON_STOCK.
+    // Deliberately NOT normalizeInventoryMode() here — that helper is a
+    // historical-READ compatibility boundary (silently maps a legacy
+    // CARCASS_PART value to NON_STOCK), which on a NEW-write path would let a
+    // caller-supplied CARCASS_PART slip through as a silently-coerced NON_STOCK
+    // instead of being rejected. Only the pre-existing 'STOCK' alias (still
+    // sent by CreateOrder.jsx's quick-add dropdown) is normalized; every other
+    // unrecognized value — including CARCASS_PART — is rejected clearly.
     const salesFlow = String(data.sales_flow || 'CARCASS_POS').toUpperCase();
-    const inventoryMode = normalizeInventoryMode(data.inventory_mode || 'CARCASS_PART');
+    const rawInventoryMode = String(data.inventory_mode || 'NON_STOCK').toUpperCase();
+    const inventoryMode = rawInventoryMode === 'STOCK' ? 'TRACK_STOCK' : rawInventoryMode;
+    if (!VALID_INVENTORY_MODE_FILTERS.includes(inventoryMode)) {
+      throw Object.assign(
+        new Error(`Chế độ tồn kho không hợp lệ: "${data.inventory_mode}". Chỉ chấp nhận NON_STOCK, TRACK_STOCK.`),
+        { status: 400, statusCode: 400, code: 'PRODUCT_INVENTORY_MODE_REQUIRED' }
+      );
+    }
     assertSalesFlowInventoryModeCombo(salesFlow, inventoryMode);
     const conn = await pool.getConnection();
     try {

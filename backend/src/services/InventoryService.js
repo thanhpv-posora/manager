@@ -11,7 +11,7 @@ const InventoryPolicyResolver = require('./InventoryPolicyResolver');
 //   InventoryService.in()             → InventoryMovementService.postIn()
 //   InventoryService.out()            → InventoryMovementService.postOut()
 //   InventoryService.adjustOrderItem()→ InventoryMovementService.postAdjustmentIncrease/Decrease()
-//   InventoryService.applyOrderInventory() — S5.1-A: CARCASS_PART/allow_negative_stock/TRACK_STOCK
+//   InventoryService.applyOrderInventory() — S5.1-A: allow_negative_stock/TRACK_STOCK
 //                                           branches now delegate their write to postOut(), making
 //                                           it the single writer of OUT movements. NON_STOCK still
 //                                           performs no write here (unchanged) — postOut() always
@@ -55,7 +55,7 @@ class InventoryService {
    * After  INV-004: emits ADJUSTMENT_INCREASE or ADJUSTMENT_DECREASE — audit trail restored.
    *
    * Only applies to TRACK_STOCK products.
-   * NON_STOCK / CARCASS_PART / allow_negative_stock → no-op (unchanged).
+   * NON_STOCK / allow_negative_stock → no-op (unchanged).
    */
   async adjustOrderItem(conn, productId, oldQty, newQty) {
     const [rows] = await conn.query(
@@ -64,7 +64,7 @@ class InventoryService {
     );
     // S6.2: identical shape to postOut's skip gate — a product skips real balance
     // tracking here for exactly the same reasons it skips the stock-sufficiency
-    // check in postOut (NON_STOCK/CARCASS_PART mode, or allow_negative_stock).
+    // check in postOut (NON_STOCK mode, or allow_negative_stock).
     // resolve({}) when the product row is missing normalizes to NON_STOCK, so a
     // missing productId silently no-ops here — unchanged from the original
     // `rows[0]?.inventory_mode` optional-chaining behavior.
@@ -93,8 +93,9 @@ class InventoryService {
    * NEVER from the product's current inventory_mode/allow_negative_stock — those
    * may have been reconfigured after the sale. stock_checked=1 is the only
    * reliable record that a line's OUT actually decremented products.stock_quantity;
-   * stock_checked=0 means it never did (CARCASS_PART / NON_STOCK / allow_negative_stock
-   * at the time of sale), matching the Bò Xô rule: never add stock back for a line
+   * stock_checked=0 means it never did (NON_STOCK / allow_negative_stock
+   * at the time of sale, or a legacy CARCASS_PART-classified line — same
+   * semantics as NON_STOCK), matching the Bò Xô rule: never add stock back for a line
    * that never took stock away, regardless of what the product looks like today.
    *
    * Reuses the same primitive adjustOrderItem() already uses for "quantity
@@ -141,9 +142,9 @@ class InventoryService {
   // ── applyOrderInventory — mode branching stays here; writes delegate to postOut() ──
   //
   // NON_STOCK: no write (unchanged — see call-graph note above).
-  // CARCASS_PART / allow_negative_stock / TRACK_STOCK: the actual stock_quantity
-  // UPDATE and stock_transactions INSERT now happen inside postOut(), the single
-  // writer of OUT movements shared with Manual POS (InventoryService.out()).
+  // allow_negative_stock / TRACK_STOCK: the actual stock_quantity UPDATE and
+  // stock_transactions INSERT now happen inside postOut(), the single writer
+  // of OUT movements shared with Manual POS (InventoryService.out()).
 
   async applyOrderInventory(conn, orderId, items = [], options = {}) {
     const userId = options.user_id || null;
@@ -169,13 +170,14 @@ class InventoryService {
         continue;
       }
 
-      // CARCASS_PART or allow_negative_stock: log movement, skip balance update.
-      // (mode is guaranteed not NON_STOCK here, so !needStockCheck can only mean
-      // CARCASS_PART or allow_negative_stock — same set postOut's skip gate covers.)
+      // allow_negative_stock: log movement, skip balance update. (mode is
+      // guaranteed TRACK_STOCK here — NON_STOCK already returned above — so
+      // !needStockCheck can only mean allow_negative_stock=1, the same case
+      // postOut's skip gate covers.)
       if (!policy.needStockCheck) {
         await InventoryMovementService.postOut(
           conn, p.id, qty, orderDate || new Date(), 'SALE', orderId,
-          mode === 'CARCASS_PART' ? 'AI sale from carcass part' : 'AI sale stock deduct',
+          'AI sale stock deduct',
           userId
         );
         results.push({

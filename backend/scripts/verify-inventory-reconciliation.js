@@ -1,12 +1,17 @@
 'use strict';
 // Verifies S6.3's read-only Inventory Reconciliation (StockLedgerAgent.reconciliation()).
-// Covers: OK/MISMATCH detection, affect_stock=0 zero-contribution (Bò Xô / CARCASS_PART
+// Covers: OK/MISMATCH detection, affect_stock=0 zero-contribution (Bò Xô / NON_STOCK
 // protection), ADJUSTMENT sign correctness, mode-changed-but-history-preserved
 // reconstruction, decimal tolerance, and summary/items consistency.
 //
 // Self-cleaning: creates throwaway products (+ stock_transactions rows via the real
 // write path, plus a couple of direct test-only manipulations to simulate drift/mode
 // changes), all removed in `finally`. Never touches real product data.
+//
+// S1J: CARCASS_PART is retired as a current inventory_mode — products.inventory_mode
+// is now a tightened ENUM('NON_STOCK','TRACK_STOCK'), so a fresh/simulated CARCASS_PART
+// row can no longer be created, even via direct SQL. Cases that used to exercise
+// CARCASS_PART now use NON_STOCK — the same affect_stock=0 skip semantics apply to both.
 
 const pool = require('../src/config/db');
 const StockLedgerAgent = require('../src/agents/StockLedgerAgent');
@@ -89,14 +94,15 @@ async function main() {
       check('Case 3: status=MISMATCH', item.status === 'MISMATCH', JSON.stringify(item));
     }
 
-    // ── Case 4: CARCASS_PART, affect_stock=0 OUT → contributes zero, ledger unchanged ──
+    // ── Case 4: NON_STOCK, affect_stock=0 OUT → contributes zero, ledger unchanged ──
+    // (S1J: was CARCASS_PART — same affect_stock=0 skip semantics as NON_STOCK.)
     {
-      const id = await makeProduct('CARCASS_PART', 0);
+      const id = await makeProduct('NON_STOCK', 0);
       productIds.push(id);
       const before = await reconcileOne(id);
-      await withConn(conn => InventoryMovementService.postOut(conn, id, 500, new Date(), 'SALE', null, 'test carcass', null));
+      await withConn(conn => InventoryMovementService.postOut(conn, id, 500, new Date(), 'SALE', null, 'test no-stock out', null));
       const after = await reconcileOne(id);
-      check('Case 4: CARCASS_PART OUT writes affect_stock=0', true); // implicitly proven by ledger_qty staying put below
+      check('Case 4: NON_STOCK OUT writes affect_stock=0', true); // implicitly proven by ledger_qty staying put below
       check('Case 4: ledger_qty unchanged by the skip-affect OUT (still 0)', before.ledger_qty === 0 && after.ledger_qty === 0, JSON.stringify({ before, after }));
       check('Case 4: cache_qty unchanged (still 0)', after.cache_qty === 0, JSON.stringify(after));
       check('Case 4: status=OK (Bò Xô never flagged as drifted)', after.status === 'OK', JSON.stringify(after));
@@ -146,7 +152,8 @@ async function main() {
       productIds.push(id);
       await withConn(conn => InventoryMovementService.postIn(conn, id, 10, new Date(), 'MANUAL', null, 'test', null));
       // Simulate a later mode change — test-only manipulation, not an application code path.
-      await pool.query(`UPDATE products SET inventory_mode = 'CARCASS_PART' WHERE id = ?`, [id]);
+      // S1J: was CARCASS_PART; NON_STOCK is now the only other current mode.
+      await pool.query(`UPDATE products SET inventory_mode = 'NON_STOCK' WHERE id = ?`, [id]);
 
       const filtered = await reconcileOne(id); // still resolvable directly by id
       check('Case 8: historical affect_stock=1 row still counted after mode change (ledger_qty=10)', filtered.ledger_qty === 10, JSON.stringify(filtered));
@@ -155,8 +162,8 @@ async function main() {
 
       const all = await StockLedgerAgent.reconciliation({});
       const found = all.items.find(it => it.product_id === id);
-      check('Case 8: product still appears in the DEFAULT (unfiltered) listing despite now being CARCASS_PART', !!found, JSON.stringify({ mode: found && found.inventory_mode }));
-      check('Case 8: default-listing entry reports the current mode (CARCASS_PART), not the historical one', found && found.inventory_mode === 'CARCASS_PART', JSON.stringify(found));
+      check('Case 8: product still appears in the DEFAULT (unfiltered) listing despite now being NON_STOCK', !!found, JSON.stringify({ mode: found && found.inventory_mode }));
+      check('Case 8: default-listing entry reports the current mode (NON_STOCK), not the historical one', found && found.inventory_mode === 'NON_STOCK', JSON.stringify(found));
     }
 
     // ── Case 9: decimal quantities — tolerance applied correctly ──

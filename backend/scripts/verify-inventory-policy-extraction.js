@@ -4,10 +4,16 @@
 // InventoryMovementService (postIn/postOut) and InventoryService
 // (adjustOrderItem/applyOrderInventory).
 //
-// Exercises all 4 call paths directly (no HTTP), across all 4 policy combinations that
-// existed before either extraction, asserting the exact same outcomes the original inline
-// conditionals produced: NON_STOCK, CARCASS_PART, TRACK_STOCK, TRACK_STOCK +
+// Exercises all 4 call paths directly (no HTTP), across the current policy
+// combinations, asserting the exact same outcomes the original inline
+// conditionals produced: NON_STOCK, TRACK_STOCK, TRACK_STOCK +
 // allow_negative_stock. Self-cleaning: creates throwaway products, removed in `finally`.
+//
+// S1J: CARCASS_PART is retired as a current inventory_mode — products.inventory_mode
+// is now a tightened ENUM('NON_STOCK','TRACK_STOCK'), so a fresh CARCASS_PART row can
+// no longer be created even via direct SQL insert. The CARCASS_PART-specific cases this
+// script used to run (proving it behaved identically to NON_STOCK) are retired along with
+// the mode itself — NON_STOCK's own cases below already cover that skip-behavior directly.
 
 const pool = require('../src/config/db');
 const InventoryMovementService = require('../src/services/InventoryMovementService');
@@ -74,29 +80,6 @@ async function main() {
       } finally { conn2.release(); }
       check('NON_STOCK postOut: balance unchanged (still 10)', await getBalance(id) === 10);
       check('NON_STOCK postOut: affect_stock=0 on ledger row', await getLastTxAffectStock(id, 'OUT') === 0);
-    }
-
-    // ── Case 2: CARCASS_PART — same skip behavior as NON_STOCK ──
-    {
-      const id = await makeProduct('CARCASS_PART', false, 10);
-      productIds.push(id);
-      const conn = await pool.getConnection();
-      try {
-        await conn.beginTransaction();
-        const inResult = await InventoryMovementService.postIn(conn, id, 5, new Date(), 'MANUAL', null, 'test', null);
-        check('CARCASS_PART postIn: stock_added=false', inResult.stock_added === false, JSON.stringify(inResult));
-        await conn.commit();
-      } finally { conn.release(); }
-      check('CARCASS_PART postIn: balance unchanged (still 10)', await getBalance(id) === 10);
-
-      const conn2 = await pool.getConnection();
-      try {
-        await conn2.beginTransaction();
-        const outResult = await InventoryMovementService.postOut(conn2, id, 999, new Date(), 'SALE', null, 'test', null);
-        check('CARCASS_PART postOut: stock_checked=false even when qty > balance', outResult.stock_checked === false, JSON.stringify(outResult));
-        await conn2.commit();
-      } finally { conn2.release(); }
-      check('CARCASS_PART postOut: balance unchanged (still 10)', await getBalance(id) === 10);
     }
 
     // ── Case 3: TRACK_STOCK (allow_negative_stock=0) — real check + real balance change ──
@@ -181,20 +164,6 @@ async function main() {
       check('adjustOrderItem NON_STOCK: no ledger row written', await getTxCount(id) === 0);
     }
 
-    // ── CARCASS_PART: no-op regardless of quantity change ──
-    {
-      const id = await makeProduct('CARCASS_PART', false, 10);
-      productIds.push(id);
-      const conn = await pool.getConnection();
-      try {
-        await conn.beginTransaction();
-        await InventoryService.adjustOrderItem(conn, id, 5, 8);
-        await conn.commit();
-      } finally { conn.release(); }
-      check('adjustOrderItem CARCASS_PART: no-op, balance unchanged (still 10)', await getBalance(id) === 10);
-      check('adjustOrderItem CARCASS_PART: no ledger row written', await getTxCount(id) === 0);
-    }
-
     // ── TRACK_STOCK, quantity increased (more consumed) → ADJUSTMENT_DECREASE ──
     {
       const id = await makeProduct('TRACK_STOCK', false, 10);
@@ -223,7 +192,7 @@ async function main() {
       check('adjustOrderItem TRACK_STOCK qty decrease: wrote ADJUSTMENT_INCREASE', await getLastTxAffectStock(id, 'ADJUSTMENT_INCREASE') === 1);
     }
 
-    // ── TRACK_STOCK + allow_negative_stock: no-op, same as NON_STOCK/CARCASS_PART ──
+    // ── TRACK_STOCK + allow_negative_stock: no-op, same as NON_STOCK ──
     {
       const id = await makeProduct('TRACK_STOCK', true, 10);
       productIds.push(id);
@@ -256,24 +225,6 @@ async function main() {
       check('applyOrderInventory NON_STOCK: action=NO_STOCK_SKIP', results[0].action === 'NO_STOCK_SKIP', JSON.stringify(results));
       check('applyOrderInventory NON_STOCK: no ledger row written (Bò Xô asymmetry preserved)', await getTxCount(id) === 0);
       check('applyOrderInventory NON_STOCK: balance unchanged (still 10)', await getBalance(id) === 10);
-    }
-
-    // ── CARCASS_PART: action=SKIP_STOCK_CHECK, ledger row written with affect_stock=0 ──
-    {
-      const id = await makeProduct('CARCASS_PART', false, 10);
-      productIds.push(id);
-      const conn = await pool.getConnection();
-      let results;
-      try {
-        await conn.beginTransaction();
-        results = await InventoryService.applyOrderInventory(conn, FAKE_ORDER_ID, [{ product_id: id, quantity: 3 }], { order_date: new Date() });
-        await conn.commit();
-      } finally { conn.release(); }
-      check('applyOrderInventory CARCASS_PART: action=SKIP_STOCK_CHECK', results[0].action === 'SKIP_STOCK_CHECK', JSON.stringify(results));
-      check('applyOrderInventory CARCASS_PART: ledger row written, affect_stock=0', await getLastTxAffectStock(id, 'OUT') === 0);
-      check('applyOrderInventory CARCASS_PART: balance unchanged (still 10)', await getBalance(id) === 10);
-      const [[lastNote]] = await pool.query(`SELECT note FROM stock_transactions WHERE product_id=? ORDER BY id DESC LIMIT 1`, [id]);
-      check('applyOrderInventory CARCASS_PART: note says "carcass part"', /carcass part/i.test(lastNote.note), lastNote.note);
     }
 
     // ── TRACK_STOCK, sufficient stock: action=OUT, ledger row affect_stock=1 ──

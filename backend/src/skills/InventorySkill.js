@@ -20,8 +20,7 @@ module.exports = {
   },
   rules: {
     NON_STOCK: 'Không kiểm tồn và không trừ kho',
-    TRACK_STOCK: 'Kiểm tồn thật và trừ kho thật',
-    CARCASS_PART: 'Không chặn bán nhưng ghi OUT transaction để phân tích carcass/yield'
+    TRACK_STOCK: 'Kiểm tồn thật và trừ kho thật'
   },
   tools: [
     'inventoryService.validateOrderInventory',

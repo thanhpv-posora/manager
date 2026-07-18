@@ -21,18 +21,22 @@ function resolve(product = {}) {
   const mode = normalizeInventoryMode(product.inventory_mode);
   const allowNegative = Number(product.allow_negative_stock || 0) === 1;
 
-  // Bò Xô rule, unchanged: NON_STOCK and CARCASS_PART products never move the
-  // cached balance — inventory is not the source of every sale.
-  const skipModes = mode === 'NON_STOCK' || mode === 'CARCASS_PART';
+  // S1J: current inventory domain is exactly NON_STOCK/TRACK_STOCK (mode is
+  // always one of these two after normalizeInventoryMode — CARCASS_PART, a
+  // retired legacy value, already reads as NON_STOCK there). Movement is
+  // gated by an explicit positive check for TRACK_STOCK, never a negative
+  // "not NON_STOCK" check — an unrecognized future mode value must never
+  // accidentally trigger stock movement.
+  const isTrackStock = mode === 'TRACK_STOCK';
 
   return {
     mode,
     allowNegative,
     // postIn: whether an IN movement should update products.stock_quantity.
-    affectBalance: !skipModes,
+    affectBalance: isTrackStock,
     // postOut: whether an OUT movement must validate sufficient stock before
     // posting — which, for OUT, is the same gate as whether it affects the balance.
-    needStockCheck: !skipModes && !allowNegative,
+    needStockCheck: isTrackStock && !allowNegative,
   };
 }
 

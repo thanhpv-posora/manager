@@ -3,13 +3,23 @@
 // Canonical inventory mode helper — shared across ProductAgent, InventoryService,
 // InventoryMovementService, and InventoryPurchaseAgent.
 //
-// DB enum: enum('NON_STOCK','TRACK_STOCK','CARCASS_PART')
+// S1J: current Product inventory domain is exactly NON_STOCK / TRACK_STOCK.
+// CARCASS_PART is retired as a current classification — this function is the
+// single centralized compatibility boundary for it: a historical product row
+// or order_items snapshot still carrying the legacy value reads as NON_STOCK
+// (its original runtime semantics — no stock validation, no Inventory OUT, no
+// ledger balance movement — are identical to NON_STOCK, so nothing about
+// historical reads/reversal changes). This is a HISTORICAL-READ boundary only;
+// it must never be used to make CARCASS_PART an acceptable NEW-write value —
+// current-write validation (ProductAgent.assertProductClassification /
+// VALID_INVENTORY_MODE_FILTERS) rejects CARCASS_PART before this is ever
+// reached on a write path.
+//
 // 'STOCK' is a legacy alias for TRACK_STOCK that no longer exists in the DB.
-
 function normalizeInventoryMode(value) {
   const mode = String(value || 'NON_STOCK').toUpperCase();
   if (mode === 'TRACK_STOCK' || mode === 'STOCK') return 'TRACK_STOCK';
-  if (mode === 'CARCASS_PART') return 'CARCASS_PART';
+  if (mode === 'CARCASS_PART') return 'NON_STOCK';
   return 'NON_STOCK';
 }
 

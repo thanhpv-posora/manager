@@ -2,16 +2,7 @@ const db = require('../config/db');
 const { findBestMatch } = require('../utils/textNormalizer');
 const InventoryService = require('./InventoryService');
 const { formatQty } = require('../utils/quantityFormat');
-
-function normalizeInventoryMode(value) {
-  const mode = String(value || 'NON_STOCK').toUpperCase();
-
-  // Backward compatible: older MeatBiz builds used STOCK.
-  // Production rule now uses TRACK_STOCK.
-  if (mode === 'TRACK_STOCK' || mode === 'STOCK') return 'TRACK_STOCK';
-  if (mode === 'CARCASS_PART') return 'CARCASS_PART';
-  return 'NON_STOCK';
-}
+const { normalizeInventoryMode } = require('../utils/inventoryMode');
 
 function normalizeNumber(value) {
   const n = Number(value || 0);
@@ -63,16 +54,6 @@ async function validateOrderInventory(conn, items = []) {
       continue;
     }
 
-    if (product.inventory_mode === 'CARCASS_PART') {
-      warnings.push({
-        product_id: product.id,
-        product_name: product.name,
-        inventory_mode: product.inventory_mode,
-        action: 'SKIP_CHECK_LOG_OUT'
-      });
-      continue;
-    }
-
     if (
       product.inventory_mode === 'TRACK_STOCK' &&
       product.allow_negative_stock !== 1 &&
@@ -107,7 +88,7 @@ async function getInventorySummary(productName = '') {
     FROM products p
     WHERE p.del_flg = 0
       AND p.is_active = 1
-      AND p.inventory_mode IN ('TRACK_STOCK', 'STOCK', 'CARCASS_PART')
+      AND p.inventory_mode IN ('TRACK_STOCK', 'STOCK')
     ORDER BY
       CASE
         WHEN p.low_stock_threshold IS NOT NULL

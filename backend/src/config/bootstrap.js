@@ -838,11 +838,25 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
     await safeAddColumn(conn, 'users', 'locked_until', 'locked_until DATETIME NULL');
     await safeAddColumn(conn, 'users', 'last_failed_login', 'last_failed_login DATETIME NULL');
 
-    await safeAddColumn(conn, 'products', 'inventory_mode', "inventory_mode ENUM('NON_STOCK','TRACK_STOCK','CARCASS_PART') NOT NULL DEFAULT 'NON_STOCK'");
+    // S1J: CARCASS_PART retired — a brand-new install gets the tightened enum
+    // directly. safeAddColumn only ADDs when the column is missing, so this
+    // has no effect on an existing DB; V6_63_S1J_INVENTORY_MODE_SIMPLIFY.sql
+    // is what tightens an already-existing column's enum.
+    await safeAddColumn(conn, 'products', 'inventory_mode', "inventory_mode ENUM('NON_STOCK','TRACK_STOCK') NOT NULL DEFAULT 'NON_STOCK'");
     await safeAddColumn(conn, 'products', 'parent_product_id', 'parent_product_id BIGINT NULL');
     await safeAddColumn(conn, 'products', 'carcass_group', 'carcass_group VARCHAR(100) NULL');
     await safeAddColumn(conn, 'products', 'allow_negative_stock', 'allow_negative_stock TINYINT(1) NOT NULL DEFAULT 0');
     await safeAddColumn(conn, 'products', 'default_supplier_id', 'default_supplier_id BIGINT NULL');
+
+    // S1G: products.sales_flow — the Product Sales Domain, independent of
+    // inventory_mode. Controls which sales catalog/form a product belongs to
+    // (CARCASS_POS | INVENTORY_SALE); inventory_mode continues to control only
+    // stock checking/movement/ledger/reversal. Nullable, no default, no backfill —
+    // every pre-existing product stays NULL (unclassified legacy) until explicitly
+    // classified via the Product Form or the reviewed dry-run migration. Do not
+    // widen to NOT NULL here; that is a later, explicitly-approved step once every
+    // legacy product has been classified.
+    await safeAddColumn(conn, 'products', 'sales_flow', 'sales_flow VARCHAR(30) NULL');
     await safeAddColumn(conn, 'suppliers', 'billing_calendar_type', "billing_calendar_type VARCHAR(10) NOT NULL DEFAULT 'SOLAR'");
     await safeAddColumn(conn, 'suppliers', 'male_price', 'male_price DECIMAL(15,2) NOT NULL DEFAULT 0');
     await safeAddColumn(conn, 'suppliers', 'female_price', 'female_price DECIMAL(15,2) NOT NULL DEFAULT 0');
@@ -1099,6 +1113,56 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
     await safeAddColumn(conn, 'purchase_orders', 'short_closed_by', 'short_closed_by BIGINT NULL');
     await safeAddColumn(conn, 'purchase_orders', 'short_closed_at', 'short_closed_at DATETIME NULL');
 
+    // S10.1: Supplier Payable — separate domain from the legacy lot-based
+    // supplier_payments table (Bò Xô / Purchase Lot, untouched). Append-only
+    // ledger for the PO/Receive engine only. amount is always a positive
+    // magnitude; signed meaning comes from `type`, same convention as
+    // debt_transactions/stock_transactions. One PURCHASE row per receive
+    // voucher (DB-enforced via uq_supplier_payable_receive_purchase — NULL
+    // inventory_receive_id rows, i.e. PAYMENT/manual ADJUSTMENT, are exempt
+    // since MySQL treats NULL as distinct in a UNIQUE index).
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS supplier_payable_transactions (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        supplier_id BIGINT NOT NULL,
+        purchase_order_id BIGINT NULL,
+        inventory_receive_id BIGINT NULL,
+        supplier_payment_id BIGINT NULL,
+        transaction_date DATE NOT NULL,
+        type ENUM('PURCHASE','PAYMENT','ADJUSTMENT_INCREASE','ADJUSTMENT_DECREASE') NOT NULL,
+        amount DECIMAL(15,2) NOT NULL,
+        note TEXT,
+        created_by BIGINT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_supplier_payable_receive_purchase (inventory_receive_id, type),
+        INDEX idx_supplier_payable_supplier_date (supplier_id, transaction_date),
+        INDEX idx_supplier_payable_po (purchase_order_id),
+        INDEX idx_supplier_payable_payment (supplier_payment_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+
+    // S10.1: PO-domain supplier payment header. Deliberately a new table, not
+    // a reuse of the legacy lot_id-keyed supplier_payments table (different
+    // domain, different key — see docs/adr and S10 audit). idempotency_key
+    // follows the exact orders.idempotency_key / stock_transactions dedup-key
+    // convention: insert-first, UNIQUE constraint rejects a genuine concurrent
+    // duplicate atomically; NULL is allowed (multiple NULLs do not collide).
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS supplier_purchase_payments (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        supplier_id BIGINT NOT NULL,
+        payment_date DATE NOT NULL,
+        amount DECIMAL(15,2) NOT NULL,
+        payment_method VARCHAR(50) NOT NULL DEFAULT 'CASH',
+        note TEXT,
+        idempotency_key VARCHAR(64) NULL,
+        created_by BIGINT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_supplier_purchase_payments_idem (idempotency_key),
+        INDEX idx_supplier_purchase_payments_supplier_date (supplier_id, payment_date)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+
     // S4.1-C: Inventory Movement Wiring — stock_transactions now records which
     // warehouse a movement affected. Nullable: only the Receive Voucher path
     // (InventoryReceiveService.receive(), passing inventory_receives.warehouse_id)
@@ -1247,32 +1311,15 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       (3,'GA_TA','Gà ta','kg',95000,20,5,'TRACK_STOCK',0),
       (4,'CHA_LUA','Chả lụa','kg',140000,10,5,'TRACK_STOCK',0),
       (5,'BO_XO','Bò xô nguyên con','kg',200000,0,0,'NON_STOCK',1),
-      (5,'BO_DUI','Đùi bò pha lóc','kg',260000,0,0,'CARCASS_PART',1),
-      (5,'BO_BUP','Búp bò pha lóc','kg',250000,0,0,'CARCASS_PART',1)`);
+      (5,'BO_DUI','Đùi bò pha lóc','kg',260000,0,0,'NON_STOCK',1),
+      (5,'BO_BUP','Búp bò pha lóc','kg',250000,0,0,'NON_STOCK',1)`);
     }
 
-    
-    // V681 beef carcass safety: existing BO_* rows from older versions may still be STOCK and negative.
-    await conn.query(`UPDATE products
-      SET inventory_mode='CARCASS_PART', allow_negative_stock=1
-      WHERE del_flg=0
-        AND (
-          product_code LIKE 'BO_%'
-          OR name LIKE '%bò%'
-          OR name LIKE '%Đùi%'
-          OR name LIKE '%đùi%'
-          OR name LIKE '%Búp%'
-          OR name LIKE '%búp%'
-          OR name LIKE '%Nạm%'
-          OR name LIKE '%nạm%'
-          OR name LIKE '%Sườn%'
-          OR name LIKE '%sườn%'
-          OR name LIKE '%Thăn%'
-          OR name LIKE '%thăn%'
-        )
-        AND inventory_mode='STOCK'`);
-
-    /* V681 beef carcass safety */
+    // S1J: the old "V681 beef carcass safety" auto-migration (converted BO_*
+    // rows to CARCASS_PART on every startup) is removed — CARCASS_PART is
+    // retired as a current inventory_mode. It was already an unreachable no-op
+    // on this schema (its WHERE clause matched inventory_mode='STOCK', a value
+    // the enum has not accepted since 'STOCK' was replaced by 'TRACK_STOCK').
 
     // BP-006B: map beef bulk product names to standard price-resolver codes.
     // Uniqueness guard: skips any mapping where the target code already exists.
@@ -1435,6 +1482,16 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
     // Adds partner_type to customers. Existing rows get DEFAULT 2 (Customer) automatically.
     await safeAddColumn(conn, 'customers', 'partner_type', 'partner_type INT NOT NULL DEFAULT 2');
 
+    // Customer Default Model: customers.default_sales_flow — a UI-only hint for
+    // which screen (Tạo bill POS / Bán hàng kho) CreateOrder should default to when
+    // this customer is selected. Values: CARCASS_POS | INVENTORY_SALE | NULL
+    // (legacy/unclassified). Deliberately nullable, no default, no backfill — every
+    // pre-existing customer stays NULL until explicitly set via the Customer Form.
+    // Never read by pricing, inventory, ledger, or reporting code — those domains
+    // continue to derive sales_flow per-item/per-bill from products.inventory_mode
+    // as before (Mixed Sales Phase 1A/1B), entirely unaffected by this column.
+    await safeAddColumn(conn, 'customers', 'default_sales_flow', 'default_sales_flow VARCHAR(30) NULL');
+
     // BP-003: Domain B — add partner_id to supplier-side tables (dual-write, keep supplier_id for FK safety)
     await safeAddColumn(conn, 'supplier_purchase_options', 'partner_id', 'partner_id BIGINT NULL');
     await safeAddColumn(conn, 'purchase_orders', 'partner_id', 'partner_id BIGINT NULL');
@@ -1571,6 +1628,7 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
     const appMenusSeed = [
       ['dashboard','AI Operating Center','Tổng quan điều hành, cảnh báo và hành động AI trong ngày.','dashboard','Home','sales',1,1,1,'Dashboard'],
       ['create-order','Tạo bill POS','Tạo bill nhanh, kiểm tồn, công nợ và hỗ trợ nhập bằng AI.','create-order','ShoppingCart','sales',2,1,1,'CreateOrder'],
+      ['inventory-sales','Bán hàng kho','Bán hàng có kiểm tồn kho thực tế, dành riêng cho mặt hàng quản lý tồn kho.','inventory-sales','Warehouse','sales',2,0,1,'InventorySales'],
       ['orders','Bill bán hàng','Theo dõi bill, in phiếu và trạng thái thanh toán.','orders','ClipboardList','sales',3,1,1,'Orders'],
       ['retail-daily-summary','Bán lẻ tổng hợp','Ghi nhận tổng tiền bán lẻ theo ngày kinh doanh (không liên kết đơn hàng).','retail-daily-summary','BarChart3','sales',4,0,1,'RetailDailySummary'],
       ['payments','Thu tiền','Ghi nhận tiền mặt, chuyển khoản và lịch sử thu.','payments','CreditCard','sales',5,1,1,'Payments'],
@@ -1733,7 +1791,7 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       `INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled)
        SELECT 'ADMIN', menu_key, 1 FROM app_menus WHERE is_active = 1`
     );
-    for (const mk of ['create-order','orders','retail-daily-summary','payments','customers','products','product-import','ocr-providers','price-matrix','lots','revenue','profit','portal','my-menu','inventory-purchases','inventory-receives','stock-ledger']) {
+    for (const mk of ['create-order','inventory-sales','orders','retail-daily-summary','payments','customers','products','product-import','ocr-providers','price-matrix','lots','revenue','profit','portal','my-menu','inventory-purchases','inventory-receives','stock-ledger']) {
       await conn.query(`INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled) VALUES ('STAFF', ?, 1)`, [mk]);
     }
     for (const mk of ['orders','payments','portal','customers','my-menu']) {

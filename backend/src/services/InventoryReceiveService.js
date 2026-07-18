@@ -4,6 +4,7 @@ const pool = require('../config/db');
 const { nextCode } = require('../utils/code');
 const InventoryService = require('./InventoryService');
 const WarehouseAgent = require('../agents/WarehouseAgent');
+const SupplierPayableAgent = require('../agents/SupplierPayableAgent');
 const { formatQty } = require('../utils/quantityFormat');
 
 class InventoryReceiveService {
@@ -217,6 +218,16 @@ class InventoryReceiveService {
         throw Object.assign(new Error('Phiếu nhận hàng chưa xác định kho hàng hợp lệ, không thể nhận hàng'), { status: 400 });
       }
 
+      // S10.1: accumulated across every line of this voucher, using each line's
+      // FROZEN purchase_order_items.purchase_price (server-resolved at PO time,
+      // S4.2) — never inventory_receive_items.purchase_price, which is
+      // client-submitted at receive time and not re-validated. purchase_price
+      // is a per-kg rate (proved by InventoryPurchaseAgent._buildItemSnapshot's
+      // total_price = expected_stock_qty * price), matching actual_stock_qty's
+      // kg basis, so amount = actual_stock_qty * purchase_price needs no
+      // conversion-factor scaling here.
+      let payableAmount = 0;
+
       for (const item of items) {
         const qty = Number(item.actual_stock_qty);
         if (!(qty > 0)) {
@@ -235,7 +246,7 @@ class InventoryReceiveService {
         // Looked up by purchase_order_item_id, not product_id — a product can
         // appear on more than one PO line.
         const [[poItem]] = await conn.query(
-          `SELECT id, expected_stock_qty, received_stock_qty FROM purchase_order_items
+          `SELECT id, expected_stock_qty, received_stock_qty, purchase_price FROM purchase_order_items
            WHERE id = ? AND purchase_order_id = ? LIMIT 1 FOR UPDATE`,
           [item.purchase_order_item_id, header.purchase_order_id]
         );
@@ -279,12 +290,30 @@ class InventoryReceiveService {
           `UPDATE purchase_order_items SET received_stock_qty = received_stock_qty + ? WHERE id = ?`,
           [qty, poItem.id]
         );
+
+        payableAmount += qty * Number(poItem.purchase_price || 0);
       }
 
       await conn.query(
         `UPDATE inventory_receives SET status = 'RECEIVED', received_by = ?, received_at = NOW() WHERE id = ?`,
         [userId || null, receiveId]
       );
+
+      // S10.1: one PURCHASE payable transaction per receive voucher, same
+      // transaction as the movement + accumulator + status updates above — if
+      // this insert fails, everything above rolls back together (no partial
+      // financial/inventory state). Short Close and cancelling a PENDING
+      // receive never reach this line, so they never create payable — proven
+      // by construction, not a separate guard.
+      await SupplierPayableAgent.postPurchasePayable(conn, {
+        supplierId: header.supplier_id,
+        purchaseOrderId: header.purchase_order_id,
+        inventoryReceiveId: receiveId,
+        transactionDate: header.receive_date || new Date(),
+        amount: payableAmount,
+        note: `Nhận hàng phiếu ${header.receive_code}`,
+        userId,
+      });
 
       // S4.2-B: recompute purchase_orders.status from the just-updated
       // received_stock_qty accumulator, in the same transaction as the

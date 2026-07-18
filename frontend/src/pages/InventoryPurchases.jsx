@@ -142,6 +142,14 @@ export default function InventoryPurchases() {
   const TIMELINE_PAGE_SIZE = 20;
   const [timelineLoading, setTimelineLoading] = useState(false);
 
+  // S10.1: Supplier Payable (Purchase Order / Receive domain only — never the
+  // legacy lot-based supplier payment screen).
+  const [payable, setPayable] = useState(null);
+  const [payableHistory, setPayableHistory] = useState([]);
+  const [payableLoading, setPayableLoading] = useState(false);
+  const [payDlg, setPayDlg] = useState(null);
+  const [paySaving, setPaySaving] = useState(false);
+
   // header form
   const [hdrForm, setHdrForm] = useState(mkHdr());
   const [hdrEditing, setHdrEditing] = useState(false);
@@ -155,6 +163,7 @@ export default function InventoryPurchases() {
   const [catalog, setCatalog]               = useState([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogCalType, setCatalogCalType] = useState('SOLAR');
+  const [catalogCategoryId, setCatalogCategoryId] = useState('');
 
   // "Thêm sản phẩm" dialog state
   const [addDlg, setAddDlg]                       = useState(null);
@@ -163,6 +172,7 @@ export default function InventoryPurchases() {
   const [addDlgSaving, setAddDlgSaving]           = useState(false);
   const [statusSaving, setStatusSaving]           = useState(false);
   const addDlgProductRef                          = useRef();
+  const payDlgKeyRef                              = useRef(null);
 
   // short close dialog
   const [shortCloseDlg, setShortCloseDlg]         = useState(false);
@@ -212,14 +222,16 @@ export default function InventoryPurchases() {
 
   // ── Load supplier catalog (DRAFT orders only) ─────────────────────────────
   useEffect(() => {
-    if (!order?.partner_id || order?.status !== 'DRAFT') { setCatalog([]); return; }
+    // S4.2: category is required before loading the supplier's product/price list —
+    // it is the pricing scope, not just a display filter.
+    if (!order?.partner_id || order?.status !== 'DRAFT' || !catalogCategoryId) { setCatalog([]); return; }
     setCatalogLoading(true);
     const pDate = String(order.purchase_date || todayISO()).slice(0, 10);
-    api.get('/supplier-catalog', { params: { partner_id: order.partner_id, purchase_date: pDate, calendar_type: catalogCalType } })
+    api.get('/supplier-catalog', { params: { partner_id: order.partner_id, purchase_date: pDate, calendar_type: catalogCalType, category_id: catalogCategoryId } })
       .then(r => setCatalog(r.data?.items || []))
       .catch(() => setCatalog([]))
       .finally(() => setCatalogLoading(false));
-  }, [order?.id, order?.partner_id, order?.purchase_date, catalogCalType, order?.status]);
+  }, [order?.id, order?.partner_id, order?.purchase_date, catalogCalType, catalogCategoryId, order?.status]);
 
   // ── Merge catalog + existing items into unified grid ──────────────────────
   useEffect(() => {
@@ -250,6 +262,52 @@ export default function InventoryPurchases() {
     if (order?.id) loadTimeline(order.id, timelinePage);
   }, [order?.id, timelinePage, loadTimeline]);
 
+  // ── Supplier Payable (S10.1, PO/Receive domain only) ──────────────────────
+  const loadPayable = useCallback(async (supplierId) => {
+    if (!supplierId) { setPayable(null); setPayableHistory([]); return; }
+    setPayableLoading(true);
+    try {
+      const [s, h] = await Promise.all([
+        api.get(`/supplier-payable/${supplierId}/summary`),
+        api.get(`/supplier-payable/${supplierId}/history`, { params: { limit: 20 } }),
+      ]);
+      setPayable(s.data || null);
+      setPayableHistory(h.data?.items || []);
+    } catch (e) {
+      setPayable(null);
+      setPayableHistory([]);
+    } finally { setPayableLoading(false); }
+  }, []);
+
+  useEffect(() => {
+    if (order?.supplier_id) loadPayable(order.supplier_id);
+    else { setPayable(null); setPayableHistory([]); }
+  }, [order?.id, order?.supplier_id, order?.status, loadPayable]);
+
+  const openPayDlg = () => { payDlgKeyRef.current = null; setPayDlg({ amount: 0, note: '' }); };
+
+  const submitPayment = async () => {
+    if (!order?.supplier_id || paySaving) return;
+    const amount = Number(payDlg?.amount || 0);
+    if (!(amount > 0)) { showWarning('Nhập số tiền thanh toán lớn hơn 0'); return; }
+    setPaySaving(true);
+    try {
+      if (!payDlgKeyRef.current) payDlgKeyRef.current = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      await api.post('/supplier-payable/payment', {
+        supplier_id: order.supplier_id,
+        amount,
+        note: payDlg?.note || '',
+        idempotency_key: payDlgKeyRef.current,
+      });
+      payDlgKeyRef.current = null;
+      setPayDlg(null);
+      await loadPayable(order.supplier_id);
+      showSuccess('Đã thanh toán NCC');
+    } catch (e) {
+      showError(e.response?.data?.message || e.message || 'Không thanh toán được');
+    } finally { setPaySaving(false); }
+  };
+
   // ── Add-dialog SPO load ────────────────────────────────────────────────────
   useEffect(() => {
     if (!addDlg?.product_id || !order?.partner_id) { setAddDlgOpts([]); return; }
@@ -271,15 +329,16 @@ export default function InventoryPurchases() {
   // ── Navigation ─────────────────────────────────────────────────────────────
   const openNew = () => {
     setView('order'); setOrder(null); setPoRows([]); setDetailTab('detail'); setTimeline([]); setTimelinePage(1);
-    setHdrForm(mkHdr()); setHdrEditing(true);
+    setCatalogCategoryId(''); setHdrForm(mkHdr()); setHdrEditing(true);
   };
 
   const openOrder = async id => {
     setView('order'); setOrder(null); setPoRows([]); setHdrEditing(false); setDetailTab('detail'); setTimeline([]); setTimelinePage(1);
+    setCatalogCategoryId('');
     await loadOrder(id);
   };
 
-  const goList = () => { setView('list'); setOrder(null); setPoRows([]); setDetailTab('detail'); setTimeline([]); setTimelinePage(1); };
+  const goList = () => { setView('list'); setOrder(null); setPoRows([]); setDetailTab('detail'); setTimeline([]); setTimelinePage(1); setCatalogCategoryId(''); };
 
   // ── Header CRUD ────────────────────────────────────────────────────────────
   const saveHeader = async () => {
@@ -382,7 +441,7 @@ export default function InventoryPurchases() {
 
   // ── Add-dialog: open / save ────────────────────────────────────────────────
   const openAddDlg = () => {
-    setAddDlg({ product_id: '', spo_id: '', price: '', qty: '', note: '', saveToCatalog: true });
+    setAddDlg({ category_id: catalogCategoryId || '', product_id: '', spo_id: '', price: '', qty: '', note: '', saveToCatalog: true });
     setAddDlgOpts([]);
     setTimeout(() => addDlgProductRef.current?.focus(), 60);
   };
@@ -592,9 +651,73 @@ export default function InventoryPurchases() {
                     </div>
                   </div>
                 )}
+
+                {/* S10.1: Supplier Payable — PO/Receive domain only, never the legacy
+                    lot-based supplier payment screen. Hidden for DRAFT (nothing to
+                    show yet — payable only ever arises from a RECEIVED voucher). */}
+                {order.status !== 'DRAFT' && (
+                  <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #e5e7eb' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                      <b style={{ fontSize: 14 }}>Công nợ NCC</b>
+                      <button className="btn secondary" disabled={payableLoading || !payable || Number(payable.outstanding) <= 0} onClick={openPayDlg}>
+                        Thanh toán NCC
+                      </button>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '8px 16px', fontSize: 14, marginBottom: 8 }}>
+                      <div><span style={{ color: '#6b7280', fontSize: 12 }}>Công nợ mua hàng</span><div><b>{fmt(payable?.total_purchase)}đ</b></div></div>
+                      <div><span style={{ color: '#6b7280', fontSize: 12 }}>Đã thanh toán</span><div><b style={{ color: '#166534' }}>{fmt(payable?.total_paid)}đ</b></div></div>
+                      <div><span style={{ color: '#6b7280', fontSize: 12 }}>Còn phải trả</span><div><b style={{ color: Number(payable?.outstanding) > 0 ? '#b45309' : '#9ca3af' }}>{fmt(payable?.outstanding)}đ</b></div></div>
+                    </div>
+                    {payableHistory.length > 0 && (
+                      <details>
+                        <summary style={{ cursor: 'pointer', fontSize: 13, color: '#374151' }}>Lịch sử công nợ ({payableHistory.length})</summary>
+                        <div className="table-wrap" style={{ marginTop: 8 }}>
+                          <table className="table" style={{ fontSize: 13 }}>
+                            <thead><tr><th>Ngày</th><th>Loại</th><th>Bill mua hàng</th><th>Phiếu nhận</th><th>Số tiền</th><th>Ghi chú</th></tr></thead>
+                            <tbody>
+                              {payableHistory.map(h => (
+                                <tr key={h.id}>
+                                  <td>{fmtDate(h.transaction_date)}</td>
+                                  <td>{h.type}</td>
+                                  <td>{h.purchase_order_code || '—'}</td>
+                                  <td>{h.inventory_receive_code || '—'}</td>
+                                  <td>{fmt(h.amount)}đ</td>
+                                  <td>{h.note || ''}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </details>
+                    )}
+                  </div>
+                )}
               </>
             )}
           </div>
+
+          {payDlg && (
+            <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1200,
+              display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              onMouseDown={e => { if (e.target === e.currentTarget) setPayDlg(null); }}>
+              <div className="card" style={{ width: 420, maxWidth: '92vw' }}>
+                <h3 style={{ marginTop: 0 }}>Thanh toán NCC</h3>
+                <p className="muted">Còn phải trả: <b>{fmt(payable?.outstanding)}đ</b></p>
+                <div style={{ marginBottom: 10 }}>
+                  <label style={LBL}>Số tiền thanh toán</label>
+                  <MoneyInput value={Number(payDlg.amount || 0)} onChange={v => setPayDlg(d => ({ ...d, amount: v }))} />
+                </div>
+                <div style={{ marginBottom: 10 }}>
+                  <label style={LBL}>Ghi chú</label>
+                  <input className="input" value={payDlg.note} onChange={e => setPayDlg(d => ({ ...d, note: e.target.value }))} />
+                </div>
+                <div className="actions" style={{ justifyContent: 'flex-end' }}>
+                  <button className="btn secondary" onClick={() => setPayDlg(null)} disabled={paySaving}>Đóng</button>
+                  <button className="btn" onClick={submitPayment} disabled={paySaving}>{paySaving ? 'Đang lưu...' : 'Xác nhận thanh toán'}</button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* ── Tabs ── */}
           {order && (
@@ -623,6 +746,12 @@ export default function InventoryPurchases() {
                 </div>
                 {isDraft && (
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <select className="select" style={{ fontSize: 12, width: 160 }}
+                      value={catalogCategoryId}
+                      onChange={e => setCatalogCategoryId(e.target.value)}>
+                      <option value="">Chọn danh mục hàng hóa...</option>
+                      {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    </select>
                     <select className="select" style={{ fontSize: 12, width: 130 }}
                       value={catalogCalType}
                       onChange={e => setCatalogCalType(e.target.value)}>
@@ -656,9 +785,11 @@ export default function InventoryPurchases() {
                     {poRows.length === 0 && !catalogLoading && (
                       <tr><td colSpan={isDraft ? 8 : 7} style={{ textAlign: 'center', padding: '28px 0' }}>
                         <p className="muted">
-                          {order.partner_id
-                            ? 'Nhà cung cấp chưa có sản phẩm trong danh mục. Nhấn "+ Thêm sản phẩm" để thêm.'
-                            : 'Chưa có sản phẩm nào.'}
+                          {!catalogCategoryId
+                            ? 'Chọn danh mục hàng hóa để tải sản phẩm/giá nhập.'
+                            : order.partner_id
+                              ? 'Nhà cung cấp chưa có sản phẩm trong danh mục này. Nhấn "+ Thêm sản phẩm" để thêm.'
+                              : 'Chưa có sản phẩm nào.'}
                         </p>
                       </td></tr>
                     )}
@@ -986,10 +1117,22 @@ export default function InventoryPurchases() {
             <h3 style={{ margin: '0 0 16px' }}>Thêm sản phẩm vào phiếu</h3>
 
             <div style={{ marginBottom: 12 }}>
+              <label style={LBL}>Danh mục hàng hóa{REQ}</label>
+              <select className="select" value={addDlg.category_id}
+                onChange={e => {
+                  setAddDlg(d => ({ ...d, category_id: e.target.value, product_id: '', spo_id: '', price: '' }));
+                  setAddDlgOpts([]);
+                }}>
+                <option value="">Chọn danh mục hàng hóa...</option>
+                {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
               <label style={LBL}>Sản phẩm{REQ}</label>
               <EnterpriseAutocomplete
                 ref={addDlgProductRef}
-                items={allProducts}
+                items={addDlg.category_id ? allProducts.filter(p => String(p.category_id) === String(addDlg.category_id)) : []}
                 value={allProducts.find(p => String(p.id) === String(addDlg.product_id)) || null}
                 onChange={prod => {
                   setAddDlg(d => ({ ...d, product_id: prod ? String(prod.id) : '', spo_id: '', price: prod ? '' : '' }));
@@ -1000,6 +1143,7 @@ export default function InventoryPurchases() {
                 searchFields={PRODUCT_SEARCH_FIELDS}
                 getItemKey={p => p.id}
                 placeholder="Tìm sản phẩm..."
+                disabled={!addDlg.category_id}
               />
             </div>
 

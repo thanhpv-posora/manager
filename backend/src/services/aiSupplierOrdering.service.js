@@ -1,6 +1,9 @@
 const db = require('../config/db');
 const aiInventoryPredictionService = require('./aiInventoryPrediction.service');
 const PurchasePriceResolver = require('./PurchasePriceResolver');
+const SupplierPurchaseCatalogResolver = require('./SupplierPurchaseCatalogResolver');
+const InventoryPurchaseAgent = require('../agents/InventoryPurchaseAgent');
+const { formatQty } = require('../utils/quantityFormat');
 
 function n(value) {
   const number = Number(value || 0);
@@ -13,10 +16,6 @@ function roundQty(qty, multiple = 0) {
   if (value <= 0) return 0;
   if (m > 0) return Math.ceil(value / m) * m;
   return Math.ceil(value * 100) / 100;
-}
-
-function formatQty(value) {
-  return n(value).toLocaleString('vi-VN', { maximumFractionDigits: 2 });
 }
 
 function formatMoney(value) {
@@ -129,8 +128,11 @@ function buildDraftText(items, supplierGroups, canConfirm) {
   return lines.join('\n');
 }
 
+// S4.2-fix: purchase_orders / purchase_order_items are no longer written directly from
+// this service — InventoryPurchaseAgent is the sole approved writer for those tables (it also
+// re-resolves purchase_price server-side). Only audit_logs is still introspected/inserted here.
 async function getTableColumns(conn, tableName) {
-  const allowed = new Set(['purchase_orders', 'purchase_order_items', 'audit_logs']);
+  const allowed = new Set(['audit_logs']);
   if (!allowed.has(tableName)) throw new Error(`Table không được phép introspect: ${tableName}`);
   const [rows] = await conn.query(`SHOW COLUMNS FROM ${tableName}`);
   return new Set(rows.map(r => r.Field));
@@ -148,6 +150,44 @@ async function insertDynamic(conn, tableName, payload) {
   return conn.query(sql, values);
 }
 
+// S4.2-fix: the AI draft's purchase_price (from PurchasePriceResolver.resolveDefaultSupplierRule,
+// computed at forecast time) is only ever a preview shown to the user before confirm. At confirm
+// time there is no human typing a manual price — so unlike the staff-facing manual PO builder,
+// a missing catalog price here must block the item rather than silently reuse the AI's own
+// precomputed number. Checked against the category-scoped catalog resolver, same chain
+// InventoryPurchaseAgent uses, before any purchase order is created.
+async function assertItemsHaveResolvablePrice(items, purchaseDate) {
+  const unresolved = [];
+  for (const item of items) {
+    const supplierId = Number(item.supplier_id);
+    let resolved = null;
+    try {
+      const [[map]] = await db.query(`SELECT partner_id FROM supplier_partner_map WHERE supplier_id=?`, [supplierId]);
+      const [[product]] = await db.query(`SELECT category_id FROM products WHERE id=?`, [item.product_id]);
+      const calendarType = await InventoryPurchaseAgent._resolveCalendarType({
+        partner_id: map ? map.partner_id : null,
+        supplier_id: supplierId
+      });
+      resolved = await SupplierPurchaseCatalogResolver.resolveSinglePrice(
+        map ? map.partner_id : null, supplierId, item.product_id, product ? product.category_id : null, purchaseDate, calendarType
+      );
+    } catch (e) {
+      // Any failure to verify (including suppliers on a LUNAR billing calendar, which the
+      // purchase-catalog resolver cannot yet look up without an explicit lunar date text —
+      // a pre-existing gap, not something this fix should silently work around) means the
+      // price cannot be confirmed as authoritative. Block rather than guess.
+      resolved = null;
+    }
+    if (!resolved) unresolved.push(item.product_name);
+  }
+  if (unresolved.length > 0) {
+    throw new Error(
+      'Chưa có giá nhập xác thực (bảng giá riêng NCC hoặc giá đã chốt) cho: ' + unresolved.join(', ') +
+      '. AI không tự đặt giá — vui lòng tạo phiếu mua hàng thủ công và nhập giá cho các sản phẩm này.'
+    );
+  }
+}
+
 async function confirmSupplierOrderDraft(draft, user = {}) {
   if (!draft || draft.intent !== 'AI_SUPPLIER_ORDER_DRAFT') {
     throw new Error('Dữ liệu nháp nhập hàng không hợp lệ');
@@ -160,102 +200,78 @@ async function confirmSupplierOrderDraft(draft, user = {}) {
     throw new Error('Còn sản phẩm chưa gán nhà cung cấp: ' + unmapped.map(i => i.product_name).join(', '));
   }
 
-  const conn = await db.getConnection();
-  try {
-    await conn.beginTransaction();
+  const userId = user.id || draft.created_by || null;
+  const purchaseDate = new Date().toISOString().slice(0, 10);
 
-    const poiColumns = await getTableColumns(conn, 'purchase_order_items');
-    const auditColumns = await getTableColumns(conn, 'audit_logs').catch(() => new Set());
+  await assertItemsHaveResolvablePrice(items, purchaseDate);
 
-    const createdOrders = [];
-    const groups = new Map();
-    for (const item of items) {
-      const key = String(item.supplier_id);
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(item);
-    }
-
-    for (const [supplierId, groupItems] of groups.entries()) {
-      const orderCode = `PO${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}${Math.floor(Math.random() * 1000)}`;
-      const totalAmount = groupItems.reduce((sum, item) => sum + n(item.total_price), 0);
-      const leadDays = Math.max(...groupItems.map(i => n(i.lead_time_days)), 0);
-      const note = `AI tạo từ dự báo tồn kho: ${draft.params.lookback_days} ngày bán, ${draft.params.forecast_days} ngày tới + ${draft.params.safety_days} ngày an toàn`;
-      const userId = user.id || draft.created_by || null;
-
-      const poPayload = {
-        order_code: orderCode,
-        purchase_code: orderCode,
-        supplier_id: Number(supplierId),
-        order_date: new Date(),
-        purchase_date: new Date(),
-        expected_date: new Date(Date.now() + leadDays * 86400000),
-        status: 'DRAFT',
-        source: 'AI_SUPPLIER_ORDER',
-        total_amount: Number(totalAmount.toFixed(2)),
-        note: note,
-        created_by: userId,
-        del_flg: 0
-      };
-
-      const [poResult] = await insertDynamic(conn, 'purchase_orders', poPayload);
-      const poId = poResult.insertId;
-
-      for (const item of groupItems) {
-        const itemPayload = {};
-        addValueIfColumn(itemPayload, poiColumns, 'purchase_order_id', poId);
-        addValueIfColumn(itemPayload, poiColumns, 'product_id', item.product_id);
-        addValueIfColumn(itemPayload, poiColumns, 'product_name', item.product_name);
-        addValueIfColumn(itemPayload, poiColumns, 'unit', item.unit || 'kg');
-        addValueIfColumn(itemPayload, poiColumns, 'quantity', item.quantity);
-        addValueIfColumn(itemPayload, poiColumns, 'purchase_price', item.purchase_price || 0);
-        addValueIfColumn(itemPayload, poiColumns, 'price', item.purchase_price || 0);
-        addValueIfColumn(itemPayload, poiColumns, 'unit_price', item.purchase_price || 0);
-        addValueIfColumn(itemPayload, poiColumns, 'total_price', item.total_price || 0);
-        addValueIfColumn(itemPayload, poiColumns, 'amount', item.total_price || 0);
-        addValueIfColumn(itemPayload, poiColumns, 'received_quantity', 0);
-        addValueIfColumn(itemPayload, poiColumns, 'note', `AI forecast: tồn ${item.stock_quantity}, TB/ngày ${item.avg_daily_sale}, risk ${item.risk}`);
-
-        if (!poiColumns.has('purchase_order_id') || !poiColumns.has('product_id')) {
-          throw new Error('Bảng purchase_order_items thiếu cột purchase_order_id hoặc product_id');
-        }
-
-        await insertDynamic(conn, 'purchase_order_items', itemPayload);
-      }
-
-      if (auditColumns.size > 0) {
-        const auditPayload = {};
-        addValueIfColumn(auditPayload, auditColumns, 'user_id', userId);
-        addValueIfColumn(auditPayload, auditColumns, 'action', 'AI_CREATE_PURCHASE_ORDER_DRAFT');
-        addValueIfColumn(auditPayload, auditColumns, 'entity_type', 'purchase_orders');
-        addValueIfColumn(auditPayload, auditColumns, 'entity_id', poId);
-        addValueIfColumn(auditPayload, auditColumns, 'note', `Tạo nháp PO ${orderCode} từ AI Supplier Ordering v2`);
-        if (Object.keys(auditPayload).length > 0) {
-          await insertDynamic(conn, 'audit_logs', auditPayload).catch(() => null);
-        }
-      }
-
-      createdOrders.push({
-        purchase_order_id: poId,
-        order_code: orderCode,
-        supplier_id: Number(supplierId),
-        item_count: groupItems.length,
-        total_amount: Number(totalAmount.toFixed(2))
-      });
-    }
-
-    await conn.commit();
-
-    return {
-      intent: 'CONFIRM_AI_SUPPLIER_ORDER_DRAFT',
-      message: `Đã tạo ${createdOrders.length} phiếu mua hàng nháp trong DB.`,
-      purchase_orders: createdOrders
-    };
-  } catch (err) {
-    await conn.rollback();
-    throw err;
-  } finally {
-    conn.release();
+  const groups = new Map();
+  for (const item of items) {
+    const key = String(item.supplier_id);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
   }
+
+  const createdOrders = [];
+  for (const [supplierId, groupItems] of groups.entries()) {
+    const note = `AI tạo từ dự báo tồn kho: ${draft.params.lookback_days} ngày bán, ${draft.params.forecast_days} ngày tới + ${draft.params.safety_days} ngày an toàn`;
+
+    // InventoryPurchaseAgent is the sole approved writer for purchase_orders / purchase_order_items.
+    // Its addItem() re-resolves purchase_price server-side (SupplierPurchaseCatalogResolver,
+    // category-scoped) — the draft's purchase_price below is passed only as the manual-entry
+    // value the agent falls back to if resolution ever comes back empty, which
+    // assertItemsHaveResolvablePrice above has already ruled out for every item in this batch.
+    const po = await InventoryPurchaseAgent.create({
+      supplier_id: Number(supplierId),
+      purchase_date: purchaseDate,
+      note
+    }, userId);
+
+    for (const item of groupItems) {
+      await InventoryPurchaseAgent.addItem(po.id, {
+        product_id: item.product_id,
+        quantity: item.quantity,
+        purchase_price: item.purchase_price || 0,
+        note: `AI forecast: tồn ${formatQty(item.stock_quantity)}, TB/ngày ${formatQty(item.avg_daily_sale)}, risk ${item.risk}`
+      }, userId);
+    }
+
+    const created = await InventoryPurchaseAgent.get(po.id);
+
+    try {
+      const conn = await db.getConnection();
+      try {
+        const auditColumns = await getTableColumns(conn, 'audit_logs').catch(() => new Set());
+        if (auditColumns.size > 0) {
+          const auditPayload = {};
+          addValueIfColumn(auditPayload, auditColumns, 'user_id', userId);
+          addValueIfColumn(auditPayload, auditColumns, 'action', 'AI_CREATE_PURCHASE_ORDER_DRAFT');
+          addValueIfColumn(auditPayload, auditColumns, 'entity_type', 'purchase_orders');
+          addValueIfColumn(auditPayload, auditColumns, 'entity_id', po.id);
+          addValueIfColumn(auditPayload, auditColumns, 'note', `Tạo nháp PO ${po.order_code} từ AI Supplier Ordering v2`);
+          if (Object.keys(auditPayload).length > 0) {
+            await insertDynamic(conn, 'audit_logs', auditPayload);
+          }
+        }
+      } finally {
+        conn.release();
+      }
+    } catch (e) { /* audit log failure must not block PO creation */ }
+
+    createdOrders.push({
+      purchase_order_id: po.id,
+      order_code: po.order_code,
+      supplier_id: Number(supplierId),
+      item_count: groupItems.length,
+      total_amount: Number(created ? created.total_amount : 0)
+    });
+  }
+
+  return {
+    intent: 'CONFIRM_AI_SUPPLIER_ORDER_DRAFT',
+    message: `Đã tạo ${createdOrders.length} phiếu mua hàng nháp trong DB.`,
+    purchase_orders: createdOrders
+  };
 }
 
 module.exports = {

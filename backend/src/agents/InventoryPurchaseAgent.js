@@ -3,6 +3,7 @@ const pool = require('../config/db');
 const { nextCode } = require('../utils/code');
 const { normalizeInventoryMode } = require('../utils/inventoryMode');
 const PurchaseReceiveTimelineService = require('../services/PurchaseReceiveTimelineService');
+const SupplierPurchaseCatalogResolver = require('../services/SupplierPurchaseCatalogResolver');
 
 class InventoryPurchaseAgent {
   constructor() {
@@ -118,8 +119,8 @@ class InventoryPurchaseAgent {
   }
 
   async addItem(orderId, body, userId) {
-    await this._requireDraft(orderId);
-    const snap = await this._buildItemSnapshot(body);
+    const order = await this._requireDraft(orderId);
+    const snap = await this._buildItemSnapshot(body, order);
     const { note } = body;
     const [r] = await pool.query(
       `INSERT INTO purchase_order_items
@@ -136,7 +137,7 @@ class InventoryPurchaseAgent {
   }
 
   async syncItems(orderId, rows, userId) {
-    await this._requireDraft(orderId);
+    const order = await this._requireDraft(orderId);
     rows = Array.isArray(rows) ? rows : [];
 
     const [existing] = await pool.query(
@@ -154,7 +155,7 @@ class InventoryPurchaseAgent {
         supplier_purchase_option_id: row.supplier_purchase_option_id || null,
         quantity:                    qty,
         purchase_price:              Number(row.purchase_price || 0),
-      });
+      }, order);
       if (row.item_id && existingIds.has(Number(row.item_id))) {
         await pool.query(
           `UPDATE purchase_order_items
@@ -193,12 +194,12 @@ class InventoryPurchaseAgent {
   }
 
   async updateItem(orderId, itemId, body, userId) {
-    await this._requireDraft(orderId);
+    const order = await this._requireDraft(orderId);
     const [[ex]] = await pool.query(
       `SELECT id FROM purchase_order_items WHERE id=? AND purchase_order_id=?`, [itemId, orderId]
     );
     if (!ex) throw Object.assign(new Error('Không tìm thấy dòng hàng'), { status: 404 });
-    const snap = await this._buildItemSnapshot(body);
+    const snap = await this._buildItemSnapshot(body, order);
     const { note } = body;
     await pool.query(
       `UPDATE purchase_order_items
@@ -363,12 +364,26 @@ class InventoryPurchaseAgent {
 
   async _requireDraft(id) {
     const [[row]] = await pool.query(
-      `SELECT id, status FROM purchase_orders WHERE id=? AND del_flg=0`, [id]
+      `SELECT id, status, partner_id, supplier_id, purchase_date FROM purchase_orders WHERE id=? AND del_flg=0`, [id]
     );
     if (!row) throw Object.assign(new Error('Không tìm thấy phiếu nhập'), { status: 404 });
     if (row.status !== 'DRAFT')
       throw Object.assign(new Error('Chỉ có thể chỉnh sửa phiếu nhập ở trạng thái DRAFT'), { status: 400 });
     return row;
+  }
+
+  // S4.2: calendar type for price-book lookup follows the partner/supplier's own billing
+  // calendar (same convention as PriceBookService.customerCalendarType), default SOLAR.
+  async _resolveCalendarType(order) {
+    if (order.partner_id) {
+      const [[c]] = await pool.query(`SELECT billing_calendar_type FROM customers WHERE id=?`, [order.partner_id]);
+      if (c) return String(c.billing_calendar_type || 'SOLAR').toUpperCase() === 'LUNAR' ? 'LUNAR' : 'SOLAR';
+    }
+    if (order.supplier_id) {
+      const [[s]] = await pool.query(`SELECT billing_calendar_type FROM suppliers WHERE id=?`, [order.supplier_id]);
+      if (s) return String(s.billing_calendar_type || 'SOLAR').toUpperCase() === 'LUNAR' ? 'LUNAR' : 'SOLAR';
+    }
+    return 'SOLAR';
   }
 
   async _recalcTotal(orderId) {
@@ -380,21 +395,35 @@ class InventoryPurchaseAgent {
     );
   }
 
-  async _buildItemSnapshot(body) {
+  // S4.2: purchase_price from the client is never trusted as authoritative on its own.
+  // We always re-resolve via SupplierPurchaseCatalogResolver (price book primary,
+  // product_supplier_links fallback), scoped to the product's own category. When a
+  // catalog price exists, it overrides whatever the client sent. Only when neither
+  // source has a price do we fall back to accepting the client's manual entry.
+  async _buildItemSnapshot(body, order = null) {
     const { product_id, supplier_purchase_option_id, quantity, purchase_price } = body;
     if (!product_id) throw Object.assign(new Error('Thiếu sản phẩm'), { status: 400 });
-    const qty   = Number(quantity);
-    const price = Number(purchase_price);
-    if (!(qty > 0))               throw Object.assign(new Error('Số lượng phải lớn hơn 0'),  { status: 400 });
-    if (isNaN(price) || price < 0) throw Object.assign(new Error('Giá nhập không hợp lệ'), { status: 400 });
+    const qty        = Number(quantity);
+    const clientPrice = Number(purchase_price);
+    if (!(qty > 0))                     throw Object.assign(new Error('Số lượng phải lớn hơn 0'),  { status: 400 });
+    if (isNaN(clientPrice) || clientPrice < 0) throw Object.assign(new Error('Giá nhập không hợp lệ'), { status: 400 });
 
     const [[prod]] = await pool.query(
-      `SELECT id, name, inventory_mode FROM products WHERE id=? AND del_flg=0`, [product_id]
+      `SELECT id, name, inventory_mode, category_id FROM products WHERE id=? AND del_flg=0`, [product_id]
     );
     if (!prod) throw Object.assign(new Error('Không tìm thấy sản phẩm'), { status: 404 });
     // inventory_mode is not a gate for PO creation; stock movement is recorded at receive confirmation.
     // Store normalised mode on snapshot so receive agent can decide whether to update stock_quantity.
     prod.inventory_mode = normalizeInventoryMode(prod.inventory_mode);
+
+    let price = clientPrice;
+    if (order && (order.partner_id || order.supplier_id)) {
+      const calendarType = await this._resolveCalendarType(order);
+      const resolved = await SupplierPurchaseCatalogResolver.resolveSinglePrice(
+        order.partner_id, order.supplier_id, product_id, prod.category_id, order.purchase_date, calendarType
+      );
+      if (resolved) price = resolved.price;
+    }
 
     let unit = 'kg', expected_conversion_qty = 1, requires_actual_weight = 0;
     const spo_id = supplier_purchase_option_id || null;

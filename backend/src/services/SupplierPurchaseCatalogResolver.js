@@ -24,9 +24,11 @@ class SupplierPurchaseCatalogResolver {
    * @param {number|null} supplierId    suppliers.id (legacy; optional when partner has a price book)
    * @param {string} purchaseDate       ISO 'YYYY-MM-DD'
    * @param {string} calendarType       'SOLAR' | 'LUNAR'
+   * @param {number|null} categoryId    S4.2 — restrict catalog to one product category. UX filter
+   *                                    for the buyer; also the scope boundary the price resolves under.
    * @returns {Promise<{supplier_id, partner_id, catalog_source, effective_from, effective_calendar_type, items[]}>}
    */
-  async resolveCatalog(partnerId, supplierId, purchaseDate, calendarType) {
+  async resolveCatalog(partnerId, supplierId, purchaseDate, calendarType, categoryId = null) {
     const { resolvedSupplierId, resolvedPartnerId } = await this._resolveIds(partnerId, supplierId);
 
     const meta = PriceBookService.resolveEffectiveMeta({
@@ -39,7 +41,7 @@ class SupplierPurchaseCatalogResolver {
     let catalogSource = 'PRICE_BOOK';
 
     if (resolvedPartnerId) {
-      productRows = await this._loadFromPriceBook(resolvedPartnerId, meta);
+      productRows = await this._loadFromPriceBook(resolvedPartnerId, meta, categoryId);
     }
 
     // 2. FALLBACK — product_supplier_links (legacy; used when no price book configured)
@@ -47,7 +49,7 @@ class SupplierPurchaseCatalogResolver {
       if (!resolvedSupplierId) {
         return { supplier_id: null, partner_id: resolvedPartnerId, ...meta, catalog_source: 'NONE', items: [] };
       }
-      productRows = await this._loadFromSupplierLinks(resolvedSupplierId);
+      productRows = await this._loadFromSupplierLinks(resolvedSupplierId, categoryId);
       catalogSource = 'SUPPLIER_LINKS';
     }
 
@@ -110,52 +112,21 @@ class SupplierPurchaseCatalogResolver {
 
   // ── Private ──────────────────────────────────────────────────────────────
 
-  // Query customer_price_books + customer_price_book_items using partner's customer_id.
-  // Returns raw product rows (same shape as _loadFromSupplierLinks) or [].
-  async _loadFromPriceBook(partnerId, meta) {
-    let bookRows;
-    if (meta.effective_calendar_type === 'LUNAR') {
-      [bookRows] = await pool.query(
-        `SELECT id FROM customer_price_books
-         WHERE customer_id = ? AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
-           AND COALESCE(effective_calendar_type, 'SOLAR') = 'LUNAR'
-           AND COALESCE(effective_lunar_sort, 0) <= ?
-         ORDER BY COALESCE(effective_lunar_sort, 0) DESC, id DESC
-         LIMIT 1`,
-        [partnerId, meta.effective_lunar_sort]
-      );
-    } else {
-      [bookRows] = await pool.query(
-        `SELECT id FROM customer_price_books
-         WHERE customer_id = ? AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
-           AND COALESCE(effective_calendar_type, 'SOLAR') = 'SOLAR'
-           AND effective_from <= ?
-         ORDER BY effective_from DESC, id DESC
-         LIMIT 1`,
-        [partnerId, meta.effective_from]
-      );
-    }
-
-    if (!bookRows.length) return [];
-
-    const [rows] = await pool.query(
-      `SELECT bi.product_id, bi.sale_price AS purchase_price,
-              p.name product_name, p.product_code,
-              p.inventory_mode, p.unit default_unit,
-              pc.name category_name,
-              COALESCE(pc.sort_order, 9999) category_sort_order
-       FROM customer_price_book_items bi
-       JOIN products p ON p.id = bi.product_id AND p.del_flg = 0 AND p.is_active = 1
-       LEFT JOIN product_categories pc ON pc.id = p.category_id
-       WHERE bi.price_book_id = ?
-       ORDER BY COALESCE(pc.sort_order, 9999), p.name`,
-      [bookRows[0].id]
-    );
-    return rows;
+  // CTO S4.3 governance: customer_price_books/customer_price_book_items must only ever be
+  // accessed through PriceBookService or PriceMatrixAgent — this resolver delegates instead
+  // of querying those tables itself. Returns raw product rows (same shape as
+  // _loadFromSupplierLinks) or []. A price book belongs to a CustomerPriceCategory (partner +
+  // category); no CustomerPriceCategory yet for this partner+category means no price book can
+  // exist, so PriceBookService.findActiveBookItemsForPartner returns [] and callers fall
+  // through to the product_supplier_links fallback in resolveCatalog.
+  async _loadFromPriceBook(partnerId, meta, categoryId = null) {
+    return PriceBookService.findActiveBookItemsForPartner(partnerId, meta, categoryId, pool);
   }
 
   // Legacy fallback: products linked via product_supplier_links.
-  async _loadFromSupplierLinks(supplierId) {
+  async _loadFromSupplierLinks(supplierId, categoryId = null) {
+    const categoryFilter = categoryId ? 'AND p.category_id = ?' : '';
+    const categoryParam = categoryId ? [categoryId] : [];
     const [rows] = await pool.query(
       `SELECT psl.product_id, psl.purchase_price,
               p.name product_name, p.product_code,
@@ -168,10 +139,43 @@ class SupplierPurchaseCatalogResolver {
          AND (p.inventory_mode = 'TRACK_STOCK' OR p.inventory_mode = 'STOCK')
        LEFT JOIN product_categories pc ON pc.id = p.category_id
        WHERE psl.supplier_id = ? AND psl.is_active = 1
+       ${categoryFilter}
        ORDER BY COALESCE(pc.sort_order, 9999), p.name`,
-      [supplierId]
+      [supplierId, ...categoryParam]
     );
     return rows;
+  }
+
+  /**
+   * S4.2 — Resolve the authoritative purchase price for a single product, used by
+   * InventoryPurchaseAgent to re-validate/override whatever price the client posted.
+   * Same priority chain as resolveCatalog (price book primary, product_supplier_links
+   * fallback), scoped to the product's own category. Returns null when neither source
+   * has a price — manual entry remains allowed in that case (PurchasePriceResolver step 5).
+   *
+   * @returns {Promise<{price:number, source:'PRICE_BOOK'|'SUPPLIER_LINK'}|null>}
+   */
+  async resolveSinglePrice(partnerId, supplierId, productId, categoryId, purchaseDate, calendarType) {
+    // partnerId/supplierId are taken as-is from the purchase order row, which was already
+    // resolved and validated by InventoryPurchaseAgent._resolvePartner at PO creation time.
+    const meta = PriceBookService.resolveEffectiveMeta({
+      effective_from: purchaseDate || new Date().toISOString().slice(0, 10),
+      effective_calendar_type: calendarType || 'SOLAR',
+    });
+
+    if (partnerId) {
+      const rows = await this._loadFromPriceBook(partnerId, meta, categoryId);
+      const hit = rows.find(r => Number(r.product_id) === Number(productId));
+      if (hit) return { price: Number(hit.purchase_price || 0), source: 'PRICE_BOOK' };
+    }
+
+    if (supplierId) {
+      const PurchasePriceResolver = require('./PurchasePriceResolver');
+      const price = await PurchasePriceResolver.resolveSupplierPrice(supplierId, productId, purchaseDate);
+      if (price !== null) return { price, source: 'SUPPLIER_LINK' };
+    }
+
+    return null;
   }
 
   // Resolve partner_id / supplier_id. Does NOT throw if supplier mapping is missing —

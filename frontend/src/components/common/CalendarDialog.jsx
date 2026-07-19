@@ -51,6 +51,7 @@ export default function CalendarDialog({
                 className="input"
                 value={lunarDateText}
                 onChange={e=>onLunarDateTextChange&&onLunarDateTextChange(e.target.value)}
+                onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();onConfirm&&onConfirm();}}}
                 placeholder="VD: 08/01/2026"
                 autoFocus
               />
@@ -69,6 +70,7 @@ export default function CalendarDialog({
                 value={solarDate}
                 max={maxSolarDate}
                 onChange={e=>onSolarDateChange&&onSolarDateChange(e.target.value)}
+                onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();onConfirm&&onConfirm();}}}
                 autoFocus
               />
             </label>

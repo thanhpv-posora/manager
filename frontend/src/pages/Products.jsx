@@ -12,6 +12,15 @@ const LOCAL_KEY='meatbiz_product_defaults';
 const ADD_NEW_CATEGORY_OPTION='__add_new_category__';
 const MANAGE_CATEGORY_OPTION='__manage_category__';
 
+// S1G: Product Sales Domain separation — mirrors backend/src/utils/productSalesFlow.js.
+// sales_flow controls which sales catalog/form a product belongs to; inventory_mode
+// controls stock checking/movement/ledger/reversal. Backend remains authoritative —
+// this only prevents submitting an already-known-invalid combination.
+// S1J: CARCASS_PART retired as a current inventory_mode — final business-facing
+// options are exactly Không kiểm tồn (NON_STOCK) and Kiểm tồn kho (TRACK_STOCK).
+const SALES_FLOW_INVENTORY_MODE_COMPAT={CARCASS_POS:['NON_STOCK'],INVENTORY_SALE:['TRACK_STOCK']};
+const INVENTORY_MODE_LABELS={NON_STOCK:'Không kiểm tồn',TRACK_STOCK:'Kiểm tồn kho'};
+
 function localDefaults(){
   try{return JSON.parse(localStorage.getItem(LOCAL_KEY)||'{}')}catch{return {}}
 }
@@ -27,7 +36,11 @@ function buildEmptyForm(d={}){
     stock_quantity:0,
     low_stock_threshold:5,
     allow_negative_stock:d.allow_negative_stock?1:0,
-    is_active:1
+    is_active:1,
+    // S1G: deliberately NOT defaulted to a value here (e.g. TRACK_STOCK) — a new
+    // product must have both explicitly chosen before it can be saved.
+    sales_flow:'',
+    inventory_mode:''
   };
 }
 
@@ -111,9 +124,31 @@ export default function Products(){
     setForm(buildEmptyForm(defaults));
   };
 
+  // S1G: selecting Luồng bán narrows/locks the Chế độ tồn kho choice — INVENTORY_SALE
+  // has exactly one valid inventory_mode, so it's auto-selected; CARCASS_POS offers
+  // both its valid options but clears an existing choice that's no longer valid
+  // (e.g. switching away from INVENTORY_SALE with TRACK_STOCK still selected).
+  const changeSalesFlow=(salesFlow)=>{
+    const allowed=SALES_FLOW_INVENTORY_MODE_COMPAT[salesFlow]||[];
+    const nextInventoryMode=allowed.length===1?allowed[0]:(allowed.includes(form.inventory_mode)?form.inventory_mode:'');
+    updateForm({sales_flow:salesFlow,inventory_mode:nextInventoryMode});
+  };
+
   const save=async()=>{
     if(!String(form.name||'').trim()){
       showWarning('Nhập tên mặt hàng');
+      return;
+    }
+    if(!form.sales_flow){
+      showWarning('Vui lòng chọn Luồng bán (Bò Xô hoặc Hàng Kho)');
+      return;
+    }
+    if(!form.inventory_mode){
+      showWarning('Vui lòng chọn Chế độ tồn kho');
+      return;
+    }
+    if(!(SALES_FLOW_INVENTORY_MODE_COMPAT[form.sales_flow]||[]).includes(form.inventory_mode)){
+      showWarning('Chế độ tồn kho không tương thích với Luồng bán đã chọn');
       return;
     }
     try{
@@ -378,6 +413,23 @@ export default function Products(){
           </label>
 
           <label className="field-label"><span>Đơn vị tính</span><input className="input" placeholder="kg / con / cái" value={form.unit||'kg'} onChange={e=>updateForm({unit:e.target.value},true)}/></label>
+
+          <label className="field-label">
+            <span>Luồng bán</span>
+            <select className="select" value={form.sales_flow||''} onChange={e=>changeSalesFlow(e.target.value)}>
+              <option value="">Chọn luồng bán</option>
+              <option value="CARCASS_POS">Bò Xô</option>
+              <option value="INVENTORY_SALE">Hàng Kho</option>
+            </select>
+          </label>
+
+          <label className="field-label">
+            <span>Chế độ tồn kho</span>
+            <select className="select" value={form.inventory_mode||''} disabled={!form.sales_flow} onChange={e=>updateForm({inventory_mode:e.target.value})}>
+              <option value="">Chọn chế độ tồn kho</option>
+              {(SALES_FLOW_INVENTORY_MODE_COMPAT[form.sales_flow]||[]).map(m=><option key={m} value={m}>{INVENTORY_MODE_LABELS[m]}</option>)}
+            </select>
+          </label>
 
           <label className="field-label"><span>Giá bán mặc định</span><MoneyInput placeholder="Ví dụ: 120,000" value={form.sale_price??''} onChange={v=>updateForm({sale_price:v})} data-pos-nav="true" onKeyDown={handlePosInputKeyNavigation}/></label>
           <label className="field-label"><span>Giá vốn / giá nhập</span><MoneyInput placeholder="Ví dụ: 90,000" value={form.cost_price??''} onChange={v=>updateForm({cost_price:v})} data-pos-nav="true" onKeyDown={handlePosInputKeyNavigation}/></label>

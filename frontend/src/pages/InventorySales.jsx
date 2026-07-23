@@ -7,7 +7,7 @@ import { showSuccess, showError, showWarning } from '../utils/toast';
 
 // S11 — Bán hàng kho (Warehouse Sales), TRACK_STOCK only.
 //
-// Deliberately NOT a copy of CreateOrder.jsx (the Bò Xô / CARCASS_PART POS
+// Deliberately NOT a copy of CreateOrder.jsx (the Bò Xô / CARCASS_POS
 // screen) — a separate, minimal page per the S11 domain-separation decision.
 // Reuses only: customer/category/catalog APIs, OrderAgent.create() (via
 // POST /orders with sales_flow='INVENTORY_SALE'), formatQty(), toast.

@@ -5,9 +5,11 @@ const InventoryService = require('../services/InventoryService');
 const PrintService = require('../services/PrintService');
 const DebtMonthlyInstallmentAgent=require('./DebtMonthlyInstallmentAgent');
 const { resolveBillSolarDate }=require('../utils/lunarDate');
+const { resolveAuthoritativeCalendar }=require('../utils/billCalendar');
 const PriceBookService = require('../services/PriceBookService');
 const { assertCustomerScope, customerScopeWhere }=require('../middleware/scope');
 const { normalizeInventoryMode } = require('../utils/inventoryMode');
+const { assertSalesFlowInventoryModeCombo } = require('../utils/productSalesFlow');
 
 function parseLunarDateParts(text){
   const m=String(text||'').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
@@ -49,19 +51,32 @@ function businessError(message, code) {
 // frontend — neither data.sales_flow nor any item.inventory_mode/item.sales_flow
 // sent in the request body is read here. Every item's product row is re-read
 // fresh from the DB inside the transaction, and both the per-item branch and
-// the order-header branch are computed from that alone.
+// the order-header branch are computed from that alone. (Superseded by S1G
+// Phase 5 below — sales_flow is read directly from products.sales_flow, never
+// inferred from inventory_mode. S1J additionally retires CARCASS_PART as a
+// current inventory_mode value.)
 //
-//   CARCASS_PART -> item sales_flow = CARCASS_POS
-//   TRACK_STOCK  -> item sales_flow = INVENTORY_SALE (unless allow_negative_stock=1 — see below)
-//   NON_STOCK    -> rejects the whole bill; out of scope for both branches until
-//                   separately approved (V1 of mixed sales only models CARCASS_PART/TRACK_STOCK)
+// S1G Phase 5: retires the old Phase 1A rule that derived sales_flow purely
+// from products.inventory_mode. sales_flow and inventory_mode are now
+// independent product facts, both re-read fresh from the DB here (never
+// trusted from the request body): sales_flow decides the item's branch
+// (CARCASS_POS/INVENTORY_SALE); inventory_mode continues to be read only so
+// InventoryService/InventoryPolicyResolver (unchanged) can act on it, and so
+// the compatibility matrix can be defensively re-checked here even though
+// ProductAgent already enforces it at product create/edit time.
 //
-// allow_negative_stock=1 on a TRACK_STOCK item rejects the whole bill for the
-// same reason V1 never supports negative stock: InventoryPolicyResolver.resolve()
-// (unchanged, see OrderAgent's own S11 audit) treats allow_negative_stock=1 as
-// needStockCheck=false, meaning postOut() SKIPS the stock check and the balance
-// update entirely rather than deducting below zero — Bán hàng kho must never
-// silently take that skip-path.
+// A product with sales_flow=NULL (unclassified legacy) can no longer enter a
+// NEW order at all — no inference, no silent CARCASS_POS default. This is a
+// deliberate behavior change from Phase 1A/1B: NON_STOCK is no longer
+// categorically rejected from mixed sales (CARCASS_POS now legitimately
+// accepts NON_STOCK per the approved compatibility matrix); the previous
+// blanket "NON_STOCK not supported" rejection is gone.
+//
+// allow_negative_stock=1 on an INVENTORY_SALE item still rejects the whole
+// bill for the same reason as before: InventoryPolicyResolver.resolve()
+// (unchanged) treats allow_negative_stock=1 as needStockCheck=false, meaning
+// postOut() SKIPS the stock check and the balance update entirely rather than
+// deducting below zero — Bán hàng kho must never silently take that skip-path.
 //
 // Order header: one distinct item branch -> that branch; two distinct branches
 // (CARCASS_POS + INVENTORY_SALE both present) -> MIXED; zero items classified
@@ -72,12 +87,13 @@ async function deriveItemsSalesFlow(conn, items) {
   if (!productIds.length) return { itemFlowByProductId, orderSalesFlow: null };
 
   const [rows] = await conn.query(
-    `SELECT id, name, inventory_mode, allow_negative_stock FROM products WHERE id IN (?)`,
+    `SELECT id, name, sales_flow, inventory_mode, allow_negative_stock FROM products WHERE id IN (?)`,
     [productIds]
   );
   const byId = new Map(rows.map(r => [Number(r.id), r]));
 
-  const nonStockNames = [];
+  const unclassifiedNames = [];
+  const invalidComboNames = [];
   const negativeStockNames = [];
   const flows = new Set();
 
@@ -87,17 +103,28 @@ async function deriveItemsSalesFlow(conn, items) {
     // price-resolution step later in create() is what surfaces "product not found"
     // for a genuinely bad product_id; this function must not duplicate that error.
     if (!p) continue;
+    const salesFlow = String(p.sales_flow || '').toUpperCase() || null;
     const mode = normalizeInventoryMode(p.inventory_mode);
-    if (mode === 'NON_STOCK') { nonStockNames.push(p.name); continue; }
-    if (mode === 'TRACK_STOCK' && Number(p.allow_negative_stock) === 1) { negativeStockNames.push(p.name); continue; }
-    const flow = mode === 'TRACK_STOCK' ? 'INVENTORY_SALE' : 'CARCASS_POS';
-    itemFlowByProductId.set(pid, flow);
-    flows.add(flow);
+    if (!salesFlow) { unclassifiedNames.push(p.name); continue; }
+    try {
+      assertSalesFlowInventoryModeCombo(salesFlow, mode);
+    } catch (e) {
+      invalidComboNames.push(p.name);
+      continue;
+    }
+    if (salesFlow === 'INVENTORY_SALE' && Number(p.allow_negative_stock) === 1) { negativeStockNames.push(p.name); continue; }
+    itemFlowByProductId.set(pid, salesFlow);
+    flows.add(salesFlow);
   }
 
-  if (nonStockNames.length) {
-    const err = new Error(`Mặt hàng không quản lý tồn kho (NON_STOCK) chưa được hỗ trợ trong bán hàng kết hợp: ${nonStockNames.join(', ')}`);
-    err.status = 400; err.statusCode = 400; err.code = 'SALES_FLOW_NON_STOCK_NOT_SUPPORTED';
+  if (unclassifiedNames.length) {
+    const err = new Error(`Mặt hàng chưa được phân loại Luồng bán (Bò Xô/Hàng Kho): ${unclassifiedNames.join(', ')}. Vui lòng phân loại mặt hàng trong Quản lý Sản phẩm trước khi bán.`);
+    err.status = 400; err.statusCode = 400; err.code = 'PRODUCT_SALES_FLOW_NOT_CLASSIFIED';
+    throw err;
+  }
+  if (invalidComboNames.length) {
+    const err = new Error(`Mặt hàng có tổ hợp Luồng bán/Chế độ tồn kho không hợp lệ: ${invalidComboNames.join(', ')}. Vui lòng sửa lại phân loại mặt hàng.`);
+    err.status = 400; err.statusCode = 400; err.code = 'PRODUCT_SALES_FLOW_INVENTORY_MODE_MISMATCH';
     throw err;
   }
   if (negativeStockNames.length) {
@@ -123,9 +150,10 @@ async function deriveItemsSalesFlow(conn, items) {
 //   - the category belongs to this customer (PRICE_CATEGORY_WRONG_CUSTOMER)
 //   - when the category has been explicitly classified (sales_flow IS NOT NULL),
 //     it still matches the item's freshly-derived sales_flow — a mismatch here is
-//     Hidden Risk 2: products.inventory_mode was changed after the category was
-//     set up (e.g. CARCASS_PART -> TRACK_STOCK), so a category that used to fit
-//     no longer does. NULL category.sales_flow (every pre-existing category today)
+//     Hidden Risk 2: products.sales_flow (S1G: the Product Sales Domain, no
+//     longer inventory_mode) was reclassified after the category was set up
+//     (e.g. CARCASS_POS -> INVENTORY_SALE), so a category that used to fit no
+//     longer does. NULL category.sales_flow (every pre-existing category today)
 //     skips this check entirely — backward compatible, never rejected solely for
 //     being unclassified.
 //
@@ -187,6 +215,10 @@ async function assertItemsCategoryPerFlow(conn, customerId, items, itemFlowByPro
         // was the bypass: an INVENTORY_SALE item could resolve price through any
         // unclassified Legacy category. Closed here without touching the CARCASS_POS
         // branch's existing behavior or wording.
+        //
+        // S1G: `flow` here is now products.sales_flow (Product Sales Domain),
+        // never inventory_mode — so "Hidden Risk 2" below is products.sales_flow
+        // being reclassified after the category was set up, not inventory_mode.
         if (flow === 'INVENTORY_SALE') {
           if (!cat.sales_flow) {
             throw businessError('Danh mục giá chưa được phân loại cho bán hàng kho.', 'PRICE_CATEGORY_NOT_CLASSIFIED_FOR_INVENTORY_SALE');
@@ -556,8 +588,7 @@ return await this.loadLegacyDirectPayments(orderId);
       await conn.beginTransaction();
       const { itemFlowByProductId, orderSalesFlow } = await deriveItemsSalesFlow(conn, data.items);
       const code = await nextCode(conn,'orders','order_code','BILL');
-      const safeCalendarType=data.calendar_type==='LUNAR'?'LUNAR':'SOLAR';
-      const safeLunarDateText=safeCalendarType==='LUNAR'?(data.lunar_date_text||''):'';
+      const { calendarType: safeCalendarType, lunarDateText: safeLunarDateText } = await resolveAuthoritativeCalendar(conn, data.customer_id, data);
       const billSolarDate=resolveBillSolarDate(safeCalendarType,data.order_date,safeLunarDateText);
       const todayIso = new Date(Date.now()+7*60*60*1000).toISOString().slice(0,10);
       if (String(billSolarDate||'').slice(0,10) > todayIso) {
@@ -777,10 +808,20 @@ const orderId = r.insertId;
     if(!(salePrice > 0)) throw new Error('Mặt hàng mới cần nhập giá bán');
     const code = 'QK' + Date.now().toString().slice(-10);
     const unit = data.unit || 'kg';
+    // S1G: this quick-create path is only ever reached from Bò Xô bill editing
+    // (Add Item on an unknown product name), so its sales_flow default is
+    // CARCASS_POS — same reasoning as ProductAgent.quickProduct(). An explicit
+    // caller-supplied sales_flow still wins, and the combination is still
+    // validated (never a silently-created invalid combination).
+    // S1J: default inventory_mode is NON_STOCK — CARCASS_PART is retired as a
+    // current classification, so CARCASS_POS's only current pairing is NON_STOCK.
+    const newSalesFlow = String(data.sales_flow || 'CARCASS_POS').toUpperCase();
+    const newInventoryMode = data.inventory_mode || 'NON_STOCK';
+    assertSalesFlowInventoryModeCombo(newSalesFlow, newInventoryMode);
     const [r] = await conn.query(
-      `INSERT INTO products(category_id,product_code,name,unit,default_sale_price,default_purchase_price,stock_quantity,low_stock_threshold,note,is_active,del_flg,inventory_mode,allow_negative_stock)
-       VALUES(NULL,?,?,?,?,0,0,5,'Tạo nhanh từ sửa bill',1,0,?,1)`,
-      [code, name, unit, salePrice, data.inventory_mode || 'CARCASS_PART']
+      `INSERT INTO products(category_id,product_code,name,unit,default_sale_price,default_purchase_price,stock_quantity,low_stock_threshold,note,is_active,del_flg,inventory_mode,allow_negative_stock,sales_flow)
+       VALUES(NULL,?,?,?,?,0,0,5,'Tạo nhanh từ sửa bill',1,0,?,1,?)`,
+      [code, name, unit, salePrice, newInventoryMode, newSalesFlow]
     );
     const newId = r.insertId;
     try{
@@ -796,7 +837,7 @@ const orderId = r.insertId;
         [order.customer_id, newId, salePrice]
       );
     }catch(e){}
-    return {product_id:newId, product_name:name, unit, sale_price:salePrice, price_type:'MANUAL_PRICE', inventory_mode:data.inventory_mode || 'CARCASS_PART', allow_negative_stock:1};
+    return {product_id:newId, product_name:name, unit, sale_price:salePrice, price_type:'MANUAL_PRICE', inventory_mode:newInventoryMode, allow_negative_stock:1};
   }
 
   // Mixed Sales Phase 1B Task 7: applies the same shared derive/validate resolver

@@ -4,6 +4,7 @@ const {assertCustomerScope}=require('../middleware/scope');
 const PriceMatrixAgent=require('../agents/PriceMatrixAgent');
 const router=express.Router();
 const pool=require('../config/db');
+const {resolveAuthoritativeCalendar}=require('../utils/billCalendar');
 
 function effectivePayload(body={}){
   return {
@@ -89,10 +90,16 @@ router.post('/:customerId/effective-prices', auth(['ADMIN','STAFF','CUSTOMER']),
   const PriceBookService=require('../services/PriceBookService');
   const body=req.body||{};
   const productIds=body.product_ids || body.productIds || (body.items||[]).map(x=>x.product_id);
+  const orderDate=body.order_date || body.bill_date || body.date;
+  // S1D read-path parity fix: re-read customers.billing_calendar_type via the
+  // same shared resolver OrderAgent.create() and customerCatalogForOrder() use —
+  // this endpoint previously trusted body.calendar_type/lunar_date_text from the
+  // frontend outright, the same class of gap already closed elsewhere.
+  const {calendarType,lunarDateText}=await resolveAuthoritativeCalendar(pool, req.params.customerId, {order_date:orderDate, lunar_date_text:body.lunar_date_text});
   res.json(await PriceBookService.getEffectivePrices(req.params.customerId, productIds, {
-    order_date: body.order_date || body.bill_date || body.date,
-    calendar_type: body.calendar_type,
-    lunar_date_text: body.lunar_date_text
+    order_date: orderDate,
+    calendar_type: calendarType,
+    lunar_date_text: lunarDateText
   }));
 }catch(e){next(e)}});
 
@@ -108,7 +115,7 @@ router.put('/:customerId', auth(['ADMIN','STAFF','CUSTOMER']), async(req,res,nex
 
 router.get('/:customerId/catalog/order', auth(['ADMIN','STAFF','CUSTOMER']), async(req,res,next)=>{try{
   await assertCustomerScope(req.user, req.params.customerId);
-  res.json(await PriceMatrixAgent.customerCatalogForOrder(req.params.customerId, req.query.category_id, req.query.inventory_mode || null))
+  res.json(await PriceMatrixAgent.customerCatalogForOrder(req.params.customerId, req.query.category_id, req.query.inventory_mode || null, req.query.bill_date || req.query.order_date || null, req.query.sales_flow || null, req.query.lunar_date_text || null))
 }catch(e){next(e)}});
 
 router.post('/copy', auth(['ADMIN','STAFF','CUSTOMER']), async(req,res,next)=>{try{

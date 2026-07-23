@@ -4,6 +4,7 @@ import RegisterAccount from'./pages/RegisterAccount';
 import VerifyEmail from'./pages/VerifyEmail';
 import Dashboard from'./pages/Dashboard';
 import CreateOrder from'./pages/CreateOrder';
+import InventorySales from'./pages/InventorySales';
 import Orders from'./pages/Orders';
 import Payments from'./pages/Payments';
 import Customers from'./pages/Customers';
@@ -101,6 +102,7 @@ export default function App(){
   const pages={
     dashboard:<Dashboard/>,
     'create-order':<CreateOrder setPage={setPage}/>,
+    'inventory-sales':<InventorySales/>,
     orders:<Orders/>,
     payments:<Payments/>,
     installments:<Installments/>,

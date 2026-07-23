@@ -87,6 +87,35 @@ class PriceBookService {
     return rows.length ? rows[0].id : null;
   }
 
+  // S1D Rule 2: prevent accidental backdating when creating a genuinely NEW price
+  // book version (never called for an edit of an existing effective date — that
+  // path is a same-day UPDATE, not a new version, and is unaffected). Compares the
+  // new effective date only against the LATEST existing ACTIVE effective date for
+  // this customer_price_category_id + calendar — the business effective date
+  // (effective_from / effective_lunar_sort), never created_at or id, consistent
+  // with Rule 1's resolver ordering. Equivalent to "new date < MAX(existing
+  // dates)": if any existing ACTIVE book's effective date is later than the new
+  // one, the new one is a backdate relative to the current latest and is rejected.
+  async assertNotBackdated(customerPriceCategoryId, meta, conn = pool) {
+    if (!customerPriceCategoryId) return;
+    const isLunar = meta.effective_calendar_type === 'LUNAR';
+    const query = isLunar
+      ? `SELECT COUNT(*) c FROM customer_price_books
+         WHERE customer_price_category_id=? AND effective_calendar_type='LUNAR'
+           AND COALESCE(status,'ACTIVE')<>'DELETED' AND COALESCE(effective_lunar_sort,0) > ?`
+      : `SELECT COUNT(*) c FROM customer_price_books
+         WHERE customer_price_category_id=? AND effective_calendar_type='SOLAR'
+           AND COALESCE(status,'ACTIVE')<>'DELETED' AND effective_from > ?`;
+    const param = isLunar ? meta.effective_lunar_sort : meta.effective_from;
+    const [[row]] = await conn.query(query, [customerPriceCategoryId, param]);
+    if (Number(row.c) > 0) {
+      throw Object.assign(
+        new Error('Ngày hiệu lực mới đang sớm hơn bảng giá hiện hành.\nVui lòng kiểm tra lại hoặc sử dụng chức năng sửa dữ liệu lịch sử.'),
+        { status: 400, statusCode: 400, code: 'PRICE_BOOK_BACKDATED' }
+      );
+    }
+  }
+
   // Perf fix: bulk equivalent of calling getEffectivePrice() once per product in a category.
   // PriceMatrixAgent.matrix() previously called getEffectivePrice() per row, which itself
   // issued up to 5 queries (product category lookup, CustomerPriceCategory resolve, price
@@ -398,6 +427,7 @@ class PriceBookService {
         );
         await conn.query(`DELETE FROM customer_price_book_items WHERE price_book_id=?`, [bookId]);
       } else {
+        await this.assertNotBackdated(customerPriceCategoryId, meta, conn);
         const [r] = await conn.query(
           `INSERT INTO customer_price_books(customer_id,category_id,customer_price_category_id,book_name,effective_from,effective_calendar_type,effective_lunar_date_text,effective_lunar_sort,status,note,created_by)
            VALUES(?,?,?,?,?,?,?,?,?,?,?)`,

@@ -51,6 +51,11 @@ router.put('/categories/:id/default', auth(['ADMIN','STAFF','CUSTOMER']), async(
   res.json(await PriceMatrixAgent.setDefaultCustomerPriceCategory(req.params.id))
 }catch(e){next(e)}});
 
+router.put('/categories/:id', auth(['ADMIN','STAFF','CUSTOMER']), async(req,res,next)=>{try{
+  await assertCategoryScope(req.params.id, req.user);
+  res.json(await PriceMatrixAgent.updateCustomerPriceCategorySalesFlow(req.params.id, req.body.sales_flow))
+}catch(e){next(e)}});
+
 router.delete('/categories/:id', auth(['ADMIN','STAFF','CUSTOMER']), async(req,res,next)=>{try{
   await assertCategoryScope(req.params.id, req.user);
   res.json(await PriceMatrixAgent.deleteCustomerPriceCategory(req.params.id))

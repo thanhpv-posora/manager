@@ -6,6 +6,18 @@ const router = express.Router();
 router.get('/units', auth(['ADMIN', 'STAFF']), async (req, res, next) => {
   try { res.json(await SupplierPurchaseOptionAgent.listUnits()); } catch (e) { next(e); }
 });
+router.get('/bulk', auth(['ADMIN', 'STAFF']), async (req, res, next) => {
+  try {
+    const { partner_id, category_id } = req.query;
+    res.json(await SupplierPurchaseOptionAgent.bulkList(partner_id, category_id));
+  } catch (e) { next(e); }
+});
+router.post('/bulk', auth(['ADMIN', 'STAFF']), async (req, res, next) => {
+  try {
+    const { partner_id, category_id, rows } = req.body || {};
+    res.json(await SupplierPurchaseOptionAgent.bulkSave(partner_id, category_id, rows, req.user?.id));
+  } catch (e) { next(e); }
+});
 router.get('/', auth(['ADMIN', 'STAFF']), async (req, res, next) => {
   try {
     const { partner_id, supplier_id, product_id } = req.query;

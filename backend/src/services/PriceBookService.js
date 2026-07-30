@@ -278,6 +278,62 @@ class PriceBookService {
     return rows;
   }
 
+  // "Nạp bảng giá NCC" (load supplier purchase price book into a Purchase
+  // Order) — same effective-book resolution rule as findActiveBookItemsForPartner
+  // above (latest ACTIVE book with effective_from <= purchase_date, ties broken
+  // by highest id — verified, already-shipped, deterministic; not a "first
+  // record" guess), but additionally returns the resolved price_book_id and
+  // each item's price_book_item_id for traceability, and does NOT filter out
+  // inactive/deleted products — callers must show them as unavailable rather
+  // than silently dropping them (SupplierPurchaseCatalogResolver.
+  // resolvePriceBookForBulkEntry layers SPO/unit resolution on top of this).
+  async findEffectivePriceBookForBulkEntry(partnerId, meta, categoryId = null, conn = pool) {
+    let customerPriceCategoryId = null;
+    if (categoryId) {
+      customerPriceCategoryId = await this.resolveCustomerPriceCategoryId(partnerId, categoryId, conn);
+      if (!customerPriceCategoryId) return { price_book_id: null, items: [] };
+    }
+    const categoryFilter = customerPriceCategoryId ? 'AND customer_price_category_id = ?' : '';
+    const categoryParam = customerPriceCategoryId ? [customerPriceCategoryId] : [];
+    let bookRows;
+    if (meta.effective_calendar_type === 'LUNAR') {
+      [bookRows] = await conn.query(
+        `SELECT id FROM customer_price_books
+         WHERE customer_id = ? AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+           AND COALESCE(effective_calendar_type, 'SOLAR') = 'LUNAR'
+           AND COALESCE(effective_lunar_sort, 0) <= ?
+           ${categoryFilter}
+         ORDER BY COALESCE(effective_lunar_sort, 0) DESC, id DESC
+         LIMIT 1`,
+        [partnerId, meta.effective_lunar_sort, ...categoryParam]
+      );
+    } else {
+      [bookRows] = await conn.query(
+        `SELECT id FROM customer_price_books
+         WHERE customer_id = ? AND COALESCE(status, 'ACTIVE') = 'ACTIVE'
+           AND COALESCE(effective_calendar_type, 'SOLAR') = 'SOLAR'
+           AND effective_from <= ?
+           ${categoryFilter}
+         ORDER BY effective_from DESC, id DESC
+         LIMIT 1`,
+        [partnerId, meta.effective_from, ...categoryParam]
+      );
+    }
+    if (!bookRows.length) return { price_book_id: null, items: [] };
+    const priceBookId = bookRows[0].id;
+
+    const [rows] = await conn.query(
+      `SELECT bi.id price_book_item_id, bi.product_id, bi.sale_price purchase_price,
+              p.name product_name, p.product_code, p.is_active product_is_active, p.del_flg product_del_flg
+       FROM customer_price_book_items bi
+       JOIN products p ON p.id = bi.product_id
+       WHERE bi.price_book_id = ?
+       ORDER BY p.name`,
+      [priceBookId]
+    );
+    return { price_book_id: priceBookId, items: rows };
+  }
+
   async getEffectivePrice(customerId, productId, billDate = null, conn = pool, calendarType = null, lunarDateText = '') {
     const defaultCt = calendarType || await customerCalendarType(customerId, conn);
     const ctx = resolveBillLookupContext({ bill_date: billDate, calendar_type: defaultCt, lunar_date_text: lunarDateText }, defaultCt);

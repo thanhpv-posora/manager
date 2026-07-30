@@ -178,6 +178,94 @@ class SupplierPurchaseCatalogResolver {
     return null;
   }
 
+  /**
+   * "Nạp bảng giá NCC" — resolve the supplier's EFFECTIVE purchase price book
+   * (PRICE_BOOK source only, never the product_supplier_links fallback — this
+   * is a price-book-specific feature, distinct from the general catalog used
+   * by the main PO grid) for bulk entry into a Purchase Order.
+   *
+   * Effective-book rule: latest ACTIVE book with effective_from <= purchaseDate
+   * (ties broken by highest id) — delegates to PriceBookService, the sole
+   * owner of customer_price_books/customer_price_book_items, using the exact
+   * same resolution query already relied on by getEffectivePrice()/
+   * findActiveBookItemsForPartner() for customer-side pricing. Not a new or
+   * invented rule.
+   *
+   * Every item is returned (never silently dropped), each carrying an
+   * `available` flag and `unavailable_reason` when the product is
+   * inactive/deleted, has no active purchase unit (supplier_purchase_options)
+   * for this partner, or has no valid (>0) resolved price.
+   *
+   * @returns {Promise<{price_book_id:number|null, items:Array}>}
+   */
+  async resolvePriceBookForBulkEntry(partnerId, supplierId, purchaseDate, calendarType, categoryId = null) {
+    const { resolvedSupplierId, resolvedPartnerId } = await this._resolveIds(partnerId, supplierId);
+    if (!resolvedPartnerId) return { price_book_id: null, items: [] };
+
+    const meta = PriceBookService.resolveEffectiveMeta({
+      effective_from: purchaseDate || new Date().toISOString().slice(0, 10),
+      effective_calendar_type: calendarType || 'SOLAR',
+    });
+
+    const { price_book_id: priceBookId, items: bookItems } =
+      await PriceBookService.findEffectivePriceBookForBulkEntry(resolvedPartnerId, meta, categoryId);
+    if (!priceBookId || !bookItems.length) return { price_book_id: priceBookId, items: [] };
+
+    // Batch-load SPOs for the resolved product set — one query, never per-row
+    // (same pattern as resolveCatalog's step 3-4).
+    const productIds = bookItems.map(r => r.product_id);
+    const spoFilter = resolvedPartnerId ? 'spo.partner_id = ?' : 'spo.supplier_id = ?';
+    const spoVal = resolvedPartnerId || resolvedSupplierId;
+    const [spoRows] = await pool.query(
+      `SELECT spo.id, spo.product_id, spo.default_conversion_qty conversion_qty,
+              spo.requires_actual_weight, spo.display_order,
+              u.code unit_code, u.name unit_name
+       FROM supplier_purchase_options spo
+       JOIN units u ON u.id = spo.unit_id
+       WHERE ${spoFilter} AND spo.product_id IN (?) AND spo.is_active = 1
+       ORDER BY spo.display_order ASC, spo.id ASC`,
+      [spoVal, productIds]
+    );
+    const spoByProduct = {};
+    for (const spo of spoRows) {
+      if (!spoByProduct[spo.product_id]) spoByProduct[spo.product_id] = spo; // first (lowest display_order) wins as default
+    }
+
+    const items = bookItems.map(r => {
+      const spo = spoByProduct[r.product_id] || null;
+      const price = Number(r.purchase_price || 0);
+      let available = true;
+      let unavailable_reason = '';
+      if (Number(r.product_del_flg) === 1 || Number(r.product_is_active) !== 1) {
+        available = false;
+        unavailable_reason = 'Sản phẩm không còn hoạt động';
+      } else if (!spo) {
+        available = false;
+        unavailable_reason = 'Không có đơn vị mua hàng hợp lệ cho nhà cung cấp này';
+      } else if (!(price > 0)) {
+        available = false;
+        unavailable_reason = 'Giá mua không hợp lệ';
+      }
+      return {
+        product_id: r.product_id,
+        product_name: r.product_name,
+        product_code: r.product_code,
+        purchase_price: price,
+        price_book_id: priceBookId,
+        price_book_item_id: r.price_book_item_id,
+        supplier_purchase_option_id: spo?.id || null,
+        unit_code: spo?.unit_code || null,
+        unit_name: spo?.unit_name || null,
+        conversion_qty: spo ? Number(spo.conversion_qty) : null,
+        requires_actual_weight: spo?.requires_actual_weight || 0,
+        available,
+        unavailable_reason,
+      };
+    });
+
+    return { price_book_id: priceBookId, items };
+  }
+
   // Resolve partner_id / supplier_id. Does NOT throw if supplier mapping is missing —
   // that only blocks the legacy fallback path; the price book path uses partner_id directly.
   async _resolveIds(partnerId, supplierId) {

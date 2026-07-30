@@ -26,11 +26,17 @@ function cleanName(data){
   return String(data.name||data.customer_name||data.full_name||'').trim();
 }
 
-// Customer Default Model: customers.default_sales_flow is a UI-only hint (which
-// screen CreateOrder should default to for this customer) — never used for
-// pricing, inventory, ledger, or reports. Required when creating a brand new
-// customer; optional when editing an existing one, so a legacy customer can stay
-// NULL indefinitely or be classified later without that being forced.
+// Customer Default Model: customers.default_sales_flow picks which screen
+// CreateOrder should default to for this customer. S1M: it is now ALSO the
+// inheritance source for any Customer Price Category that has no sales_flow
+// classification of its own (see PriceMatrixAgent.resolveEffectiveSalesFlow) —
+// no longer purely a UI hint, since it can determine which products a Price
+// Matrix category resolves to and which price-book items are considered
+// compatible. Still never used for inventory/ledger/reports. Required when
+// creating a brand new customer; optional when editing an existing one, so a
+// legacy customer can stay NULL indefinitely or be classified later without
+// that being forced. Changing it on an existing customer is guarded — see
+// assertCustomerDefaultFlowChangeIsSafe() below.
 const VALID_DEFAULT_SALES_FLOW = ['CARCASS_POS', 'INVENTORY_SALE'];
 function normalizeDefaultSalesFlow(value, { required }){
   if (value === undefined || value === null || value === '') {
@@ -168,6 +174,20 @@ class CustomerAgent{
     // may stay NULL indefinitely (no backfill, no forced classification), or be
     // classified now if the form explicitly sends a value.
     const defaultSalesFlow = normalizeDefaultSalesFlow(data.default_sales_flow, { required: false });
+
+    // S1M: default_sales_flow is no longer a UI-only hint — Customer Price
+    // Categories with no explicit classification of their own now inherit it
+    // for pricing/product-filtering (see PriceMatrixAgent's
+    // resolveEffectiveSalesFlow). Changing it can therefore make an
+    // already-saved price-book item incompatible; only guard an actual
+    // change to a new valid value (clearing it to NULL cannot make anything
+    // incompatible, so it is never blocked here).
+    const [[existingCust]] = await pool.query(`SELECT default_sales_flow FROM customers WHERE id=? AND del_flg=0`, [id]);
+    if (existingCust && defaultSalesFlow && defaultSalesFlow !== existingCust.default_sales_flow) {
+      const PriceMatrixAgent = require('./PriceMatrixAgent');
+      await PriceMatrixAgent.assertCustomerDefaultFlowChangeIsSafe(id, defaultSalesFlow);
+    }
+
     await pool.query(
       `UPDATE customers SET name=?,phone=?,address=?,price_mode=?,billing_calendar_type=?,note=?,is_active=?,partner_type=?,default_sales_flow=? WHERE id=? AND del_flg=0`,
       [name,data.phone||'',data.address||'',normalizePriceMode(data.price_mode),normalizeBillingCalendarType(data.billing_calendar_type),data.note||'',data.is_active?1:0,partner_type,defaultSalesFlow,id]

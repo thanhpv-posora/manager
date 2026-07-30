@@ -5,11 +5,20 @@ function isBusinessPartner(item){
   return (t&1)===1||(t&2)===2;
 }
 
+// S1L: display labels only — the wire value is always the technical enum
+// (CARCASS_POS/INVENTORY_SALE). NULL/unclassified legacy categories show as
+// "Chưa xác định", never silently treated as a real classification in the UI.
+const SALES_FLOW_LABELS={CARCASS_POS:'Bò xô',INVENTORY_SALE:'Hàng kho'};
+function salesFlowLabel(v){return v?(SALES_FLOW_LABELS[v]||v):'Chưa xác định';}
+
 export default function PriceMatrix(){
   const[customers,setCustomers]=useState([]);
   const[categories,setCategories]=useState([]);
   const[customerCategories,setCustomerCategories]=useState([]);
   const[addCategoryPickerId,setAddCategoryPickerId]=useState('');
+  const[editFlowCategory,setEditFlowCategory]=useState(null);
+  const[editFlowValue,setEditFlowValue]=useState('');
+  const[editFlowBusy,setEditFlowBusy]=useState(false);
   const[categoryDragId,setCategoryDragId]=useState(null);
   const[cid,setCid]=useState('');
   const[categoryId,setCategoryId]=useState('');
@@ -175,6 +184,10 @@ export default function PriceMatrix(){
 
   // Single explicit-confirm entry point for creating a Customer Price Category — reused by
   // both this admin screen and POS's guided init. Never created silently.
+  // S1M: sales_flow is never sent here — the customer is the single source of
+  // truth for it (customers.default_sales_flow), so the user is never asked to
+  // pick it again on this screen. The backend inherits it automatically and
+  // blocks with a clear message if the customer itself has no valid default.
   const confirmAddCustomerCategory=async()=>{
     if(!cid||!addCategoryPickerId)return showWarning('Chọn danh mục hàng hóa cần thêm');
     const catName=categories.find(c=>String(c.id)===String(addCategoryPickerId))?.name||'';
@@ -198,6 +211,35 @@ export default function PriceMatrix(){
     await loadCustomerCategories(cid);
   };
 
+  const openEditFlow=(c)=>{
+    setEditFlowCategory(c);
+    setEditFlowValue(c.sales_flow||'');
+  };
+
+  // Reclassifying sales_flow never trusts the frontend to know whether it's safe —
+  // the backend re-audits every already-saved price-book item and rejects (409,
+  // PRICE_CATEGORY_SALES_FLOW_CHANGE_BLOCKED) if any would become incompatible,
+  // per updateCustomerPriceCategorySalesFlow(). On success, reload the category
+  // list and — if this category is the one currently open — reload the matrix so
+  // the product list is refiltered immediately, with no stale rows left behind
+  // and no full-page refresh.
+  const saveEditFlow=async()=>{
+    if(!editFlowCategory||!editFlowValue)return showWarning('Chọn Luồng bán');
+    setEditFlowBusy(true);
+    try{
+      await api.put('/price-matrix/categories/'+editFlowCategory.id,{sales_flow:editFlowValue});
+      showSuccess('Đã cập nhật luồng bán cho danh mục');
+      const wasActive=String(categoryId)===String(editFlowCategory.category_id);
+      setEditFlowCategory(null);
+      await loadCustomerCategories(cid);
+      if(wasActive)await changeCategory(editFlowCategory.category_id);
+    }catch(e){
+      showError(e.response?.data?.message||e.message||'Không thể đổi luồng bán');
+    }finally{
+      setEditFlowBusy(false);
+    }
+  };
+
   const handleCategoryDrop=async(targetRowId)=>{
     if(!categoryDragId||categoryDragId===targetRowId)return;
     const arr=[...customerCategories];
@@ -219,9 +261,13 @@ export default function PriceMatrix(){
       const dup=books.find(b=>String(b.status||'ACTIVE')!=='DELETED'&&(effectiveCalendarType==='LUNAR'?b.effective_lunar_date_text===effectiveLunarDateText:String(b.effective_from||'').slice(0,10)===effectiveFrom));
       if(dup)return showWarning('Bảng giá của ngày này đã tồn tại. Vui lòng chỉnh sửa bảng giá hiện có.');
     }
-    await api.put('/price-matrix/'+cid,{...effectivePayload(),items:rows.map((x,i)=>({...x,sort_order:i+1})),category_id:categoryId});
-    showSuccess('Đã lưu bảng giá riêng và thứ tự danh mục. Ngày hiệu lực: '+effectiveLabel);
-    setNewBookMode(false);await loadMatrix(cid)
+    try{
+      await api.put('/price-matrix/'+cid,{...effectivePayload(),items:rows.map((x,i)=>({...x,sort_order:i+1})),category_id:categoryId});
+      showSuccess('Đã lưu bảng giá riêng và thứ tự danh mục. Ngày hiệu lực: '+effectiveLabel);
+      setNewBookMode(false);await loadMatrix(cid);
+    }catch(e){
+      showError(e.response?.data?.message||e.message||'Không thể lưu bảng giá');
+    }
   };
   const copy=async()=>{
     if(!copyTo)return showWarning('Chọn bạn hàng nhận copy');
@@ -461,7 +507,13 @@ export default function PriceMatrix(){
                 style={{cursor:'move',display:'inline-flex',alignItems:'center',gap:6,padding:'4px 10px'}}
                 title="Kéo thả để đổi thứ tự"
               >
-                <span style={{cursor:'pointer'}} onClick={()=>changeCategory(c.category_id)}>{c.category_name}</span>
+                <span style={{cursor:'pointer'}} onClick={()=>changeCategory(c.category_id)}>{c.category_name} · <i>{salesFlowLabel(c.sales_flow)}</i></span>
+                <button
+                  type="button"
+                  title="Sửa luồng bán"
+                  onClick={()=>openEditFlow(c)}
+                  style={{background:'none',border:'none',cursor:'pointer',padding:0,color:'#94a3b8',fontSize:14,lineHeight:1}}
+                >✎</button>
                 <button
                   type="button"
                   title={c.is_default?'Danh mục mặc định':'Đặt làm danh mục mặc định'}
@@ -639,6 +691,30 @@ export default function PriceMatrix(){
         <div className="modal-footer">
           <button className="btn secondary" onClick={()=>setFileImport(null)}>Hủy</button>
           <button className="btn" onClick={applyPriceExcel} disabled={!fileImport.byProduct.length}>Đưa dòng đã mapping vào bảng giá</button>
+        </div>
+      </div>
+    </div>}
+
+    {editFlowCategory&&<div className="modal-backdrop">
+      <div className="modal-card" style={{maxWidth:420}}>
+        <div className="modal-header">
+          <div>
+            <h2>Sửa Luồng bán — {editFlowCategory.category_name}</h2>
+            <p className="muted">Luồng bán hiện tại: <b>{salesFlowLabel(editFlowCategory.sales_flow)}</b></p>
+          </div>
+          <button className="btn secondary" onClick={()=>setEditFlowCategory(null)}>Đóng</button>
+        </div>
+        <label className="field-label"><span>Luồng bán</span>
+          <select className="select" value={editFlowValue} onChange={e=>setEditFlowValue(e.target.value)}>
+            <option value="">-- Chọn Luồng bán --</option>
+            <option value="CARCASS_POS">Bò xô</option>
+            <option value="INVENTORY_SALE">Hàng kho</option>
+          </select>
+        </label>
+        <p className="muted">Nếu danh mục đã có bảng giá với mặt hàng không phù hợp với luồng bán mới, hệ thống sẽ từ chối thay đổi và không xóa dữ liệu đã lưu.</p>
+        <div className="modal-footer">
+          <button className="btn secondary" onClick={()=>setEditFlowCategory(null)}>Hủy</button>
+          <button className="btn" onClick={saveEditFlow} disabled={editFlowBusy||!editFlowValue}>Lưu</button>
         </div>
       </div>
     </div>}

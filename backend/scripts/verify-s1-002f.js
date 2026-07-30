@@ -107,7 +107,10 @@ async function section2() {
       release: () => {},
     });
     try {
-      await PMA.saveAllSafe(99, { items: [] }, { role: 'ADMIN', id: 1 });
+      // S4.2: category-scoped price books made category_id mandatory on
+      // saveMatrix() (items=[] short-circuits every category/item check, so
+      // this only needs to be truthy to clear the up-front guard).
+      await PMA.saveAllSafe(99, { items: [], category_id: 1 }, { role: 'ADMIN', id: 1 });
     } finally { mockPool.getConnection = origGet; }
   });
 }

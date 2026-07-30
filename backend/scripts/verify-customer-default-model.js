@@ -11,7 +11,7 @@
 //    dependency CreateOrder.jsx's customer picker needs).
 //  - Mixed Bill PASS: OrderAgent.create()'s actual sales_flow derivation is
 //    driven only by products.inventory_mode, never by customer.default_sales_flow
-//    — a customer defaulted to INVENTORY_SALE can still buy a CARCASS_PART item
+//    — a customer defaulted to INVENTORY_SALE can still buy a NON_STOCK item
 //    and get a correctly-derived CARCASS_POS bill.
 //  - Inventory PASS: stock deduction for a TRACK_STOCK item is unaffected by
 //    default_sales_flow.
@@ -147,7 +147,7 @@ async function main() {
       // INVENTORY_SALE-classified category for the track-stock item.
       const [prodCatsForMixed] = await pool.query(`SELECT id FROM product_categories WHERE del_flg=0 ORDER BY id LIMIT 2`);
       const [catMixedA, catMixedB] = prodCatsForMixed.map(x => x.id);
-      const pCarcass = await makeProduct('CARCASS_PART', { categoryId: catMixedA });
+      const pCarcass = await makeProduct('NON_STOCK', { categoryId: catMixedA });
       const pTrack = await makeProduct('TRACK_STOCK', { stock: 20, categoryId: catMixedB });
 
       const cpcCarcass = await PriceMatrixAgent.createCustomerPriceCategory(customer.id, catMixedA, { sales_flow: 'CARCASS_POS' });
@@ -166,12 +166,12 @@ async function main() {
       const [[order]] = await pool.query(`SELECT sales_flow FROM orders WHERE id=?`, [r.order_id]);
       check('Mixed Bill: header sales_flow=MIXED, derived purely from item modes (customer default_sales_flow=INVENTORY_SALE had no effect on this)', order.sales_flow === 'MIXED', order.sales_flow);
 
-      // A customer defaulted to INVENTORY_SALE can still buy a CARCASS_PART-only bill,
+      // A customer defaulted to INVENTORY_SALE can still buy a NON_STOCK-only bill,
       // correctly resolving CARCASS_POS — proving OrderAgent never reads default_sales_flow.
       const r2 = await OrderAgent.create({ customer_id: customer.id, order_date: '2025-06-01', items: [billItem(pCarcass, 1)] }, adminUser());
       cleanup.orderIds.push(r2.order_id);
       const [[order2]] = await pool.query(`SELECT sales_flow FROM orders WHERE id=?`, [r2.order_id]);
-      check('Mixed Bill: CARCASS_PART-only bill for an INVENTORY_SALE-default customer still correctly resolves CARCASS_POS', order2.sales_flow === 'CARCASS_POS', order2.sales_flow);
+      check('Mixed Bill: NON_STOCK-only bill for an INVENTORY_SALE-default customer still correctly resolves CARCASS_POS', order2.sales_flow === 'CARCASS_POS', order2.sales_flow);
     }
 
     // ══════════════════ Inventory PASS (stock deduction unaffected) ══════════════════
@@ -196,23 +196,30 @@ async function main() {
       const rCust = await CustomerAgent.create({ name: 'CDM Price Test ' + Date.now(), partner_type: 2, default_sales_flow: 'INVENTORY_SALE' }, adminUser());
       const [[customer]] = await pool.query(`SELECT id FROM customers WHERE customer_code=?`, [rCust.customer_code]);
       cleanup.customerIds.push(customer.id);
-      const p = await makeProduct('CARCASS_PART', { categoryId: catA });
+      const p = await makeProduct('NON_STOCK', { categoryId: catA });
       await priceAndCatalog(customer.id, catA, p, 88000);
 
       const price = await PriceBookService.getEffectivePrice(customer.id, p.id, '2025-06-01', pool, 'SOLAR', '');
       check('Price: resolves correctly via PriceBookService regardless of customer.default_sales_flow', Number(price.sale_price) === 88000 && price.price_type === 'PRICE_BOOK', price);
     }
 
-    // ══════════════════ Static proof: CreateOrder.jsx redirect, no DB write ══════════════════
+    // ══════════════════ Static proof: CreateOrder.jsx uses default_sales_flow only ══════════════════
+    // ══════════════════ to pick the default catalog, no DB write, no page redirect ══════════════════
+    // Unified Sales V1: the old separate 'Bán hàng kho' screen (InventorySales.jsx)
+    // and its setPage('inventory-sales') redirect are retired — CreateOrder.jsx is
+    // now the single sales screen for both flows, so this proof was updated to match.
     {
       const createOrderSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'src', 'pages', 'CreateOrder.jsx'), 'utf8');
-      check('CreateOrder.jsx reads default_sales_flow on customer select', /default_sales_flow===.INVENTORY_SALE./.test(createOrderSrc));
-      check('CreateOrder.jsx navigates via setPage(\'inventory-sales\') for INVENTORY_SALE default', /setPage\('inventory-sales'\)/.test(createOrderSrc));
+      check('CreateOrder.jsx reads default_sales_flow to pick the default catalog', /default_sales_flow===.INVENTORY_SALE./.test(createOrderSrc));
+      check('CreateOrder.jsx no longer redirects to a separate inventory-sales page', !/setPage\('inventory-sales'\)/.test(createOrderSrc));
       check('CreateOrder.jsx never PUTs/POSTs default_sales_flow back to the customer record', !/api\.(put|post)\(['"`]\/customers[^)]*default_sales_flow/.test(createOrderSrc));
 
       const customersFormSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'src', 'pages', 'Customers.jsx'), 'utf8');
       check('Customers.jsx form includes the default_sales_flow field', /default_sales_flow/.test(customersFormSrc));
       check('Customers.jsx requires it only for new customers, not edits', /!editing&&Number\(form\.partner_type\)!==1&&!form\.default_sales_flow/.test(customersFormSrc));
+
+      const appSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'src', 'App.jsx'), 'utf8');
+      check('App.jsx no longer routes a standalone InventorySales page', !/InventorySales/.test(appSrc));
     }
 
     // ══════════════════ Forbidden domains untouched (static proof) ══════════════════

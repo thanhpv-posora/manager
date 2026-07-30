@@ -2,8 +2,8 @@
 // Verifies S6.6's standalone Inventory Adjustment (InventoryAdjustmentAgent),
 // independent of Order Edit. Covers: Increase, Decrease, all 6 reasons accepted,
 // remark stored, adjustment_code generated, ledger type/reference correctness,
-// history, reconciliation returning OK after adjustment, Bò Xô (CARCASS_PART/
-// NON_STOCK) correctly rejected, insufficient-stock rejection on Decrease, and
+// history, reconciliation returning OK after adjustment, Bò Xô (NON_STOCK)
+// correctly rejected, insufficient-stock rejection on Decrease, and
 // allow_negative_stock bypassing that rejection.
 //
 // Self-cleaning: throwaway products + adjustments, removed in `finally`.
@@ -20,7 +20,8 @@ function check(name, cond, detail) {
 }
 
 async function makeProduct(mode, qty, allowNeg = false) {
-  await ProductAgent.addProduct({ name: `S6.6 ADJ ${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, unit: 'kg', inventory_mode: mode, stock_quantity: qty, allow_negative_stock: allowNeg ? 1 : 0 });
+  const salesFlow = mode === 'TRACK_STOCK' ? 'INVENTORY_SALE' : 'CARCASS_POS';
+  await ProductAgent.addProduct({ name: `S6.6 ADJ ${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, unit: 'kg', inventory_mode: mode, sales_flow: salesFlow, stock_quantity: qty, allow_negative_stock: allowNeg ? 1 : 0 });
   const [[created]] = await pool.query(`SELECT * FROM products WHERE name LIKE 'S6.6 ADJ %' ORDER BY id DESC LIMIT 1`);
   return created;
 }
@@ -117,14 +118,14 @@ async function main() {
       check('Case 6: generic Stock Ledger view also surfaces it via reference_type=ADJUSTMENT filter', ledgerView.items.some(x => Number(x.reference_id) === r.adjustment_id), JSON.stringify(ledgerView.items.map(x => x.reference_id)));
     }
 
-    // ── Case 7: CARCASS_PART (Bò Xô) rejected — never adjustable via this feature ──
+    // ── Case 7: NON_STOCK (Bò Xô) rejected — never adjustable via this feature ──
     {
-      const p = await makeProduct('CARCASS_PART', 0);
+      const p = await makeProduct('NON_STOCK', 0);
       productIds.push(p.id);
       let threw = null;
       try { await InventoryAdjustmentAgent.create({ product_id: p.id, direction: 'INCREASE', quantity: 5, reason: 'FOUND' }, user); }
       catch (e) { threw = e; }
-      check('Case 7: CARCASS_PART rejected (Bò Xô untouched by this feature)', !!threw, threw && threw.message);
+      check('Case 7: NON_STOCK rejected (Bò Xô untouched by this feature)', !!threw, threw && threw.message);
       const after = await getProduct(p.id);
       check('Case 7: balance unchanged (still 0)', Number(after.stock_quantity) === 0, after.stock_quantity);
     }

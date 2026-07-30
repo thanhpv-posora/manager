@@ -50,8 +50,17 @@ async function getProduct(id) {
   const [[row]] = await pool.query(`SELECT * FROM products WHERE id=?`, [id]);
   return row;
 }
+// S1G decoupled sales_flow from inventory_mode (see OrderAgent.js's "flow here
+// is now products.sales_flow, never inventory_mode" note), and the DB layer
+// now rejects any inventory_mode+sales_flow combination outside the two
+// approved pairs. So simulating "this product got reclassified after the
+// category was set up" must flip BOTH columns together to the other valid
+// pairing — mutating inventory_mode alone (the old technique) now fails
+// earlier, at the combination guard, before ever reaching the category check
+// this helper exists to exercise.
 async function setProductMode(id, mode) {
-  await pool.query(`UPDATE products SET inventory_mode=? WHERE id=?`, [mode, id]);
+  const salesFlow = mode === 'TRACK_STOCK' ? 'INVENTORY_SALE' : 'CARCASS_POS';
+  await pool.query(`UPDATE products SET inventory_mode=?, sales_flow=? WHERE id=?`, [mode, salesFlow, id]);
 }
 
 const cleanup = {
@@ -60,9 +69,10 @@ const cleanup = {
 
 async function makeProduct(mode, { stock = 0, allowNegative = 0, categoryId }) {
   const tag = `P1B ${mode} ${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const salesFlow = mode === 'TRACK_STOCK' ? 'INVENTORY_SALE' : 'CARCASS_POS';
   await ProductAgent.addProduct({
     name: tag, unit: 'kg', category_id: categoryId,
-    inventory_mode: mode, stock_quantity: stock, allow_negative_stock: allowNegative,
+    inventory_mode: mode, sales_flow: salesFlow, stock_quantity: stock, allow_negative_stock: allowNegative,
   });
   const [[created]] = await pool.query(`SELECT * FROM products WHERE name=? LIMIT 1`, [tag]);
   cleanup.productIds.push(created.id);
@@ -106,7 +116,7 @@ async function main() {
     // ══════════════════ 1) CARCASS-only, one category ══════════════════
     {
       const customerId = await makeCustomer('C1');
-      const pCarcass = await makeProduct('CARCASS_PART', { categoryId: catA });
+      const pCarcass = await makeProduct('NON_STOCK', { categoryId: catA });
       const { cpc } = await setupCategoryWithProduct(customerId, catA, 'CARCASS_POS', pCarcass, 70000);
 
       const r = await OrderAgent.create({ customer_id: customerId, order_date: today(), items: [billItem(pCarcass, 2)] }, adminUser());
@@ -139,7 +149,7 @@ async function main() {
     let mixedCustomerId, mixedCarcassCpc, mixedTrackCpc, mixedCarcassProduct, mixedTrackProduct;
     {
       mixedCustomerId = await makeCustomer('C3');
-      mixedCarcassProduct = await makeProduct('CARCASS_PART', { categoryId: catA });
+      mixedCarcassProduct = await makeProduct('NON_STOCK', { categoryId: catA });
       mixedTrackProduct = await makeProduct('TRACK_STOCK', { stock: 20, categoryId: catB });
       const setupCarcass = await setupCategoryWithProduct(mixedCustomerId, catA, 'CARCASS_POS', mixedCarcassProduct, 70000);
       const setupTrack = await setupCategoryWithProduct(mixedCustomerId, catB, 'INVENTORY_SALE', mixedTrackProduct, 50000);
@@ -163,8 +173,8 @@ async function main() {
     // ══════════════════ 4) Two CARCASS categories on one bill -> reject ══════════════════
     {
       const customerId = await makeCustomer('C4');
-      const pA = await makeProduct('CARCASS_PART', { categoryId: catA });
-      const pB = await makeProduct('CARCASS_PART', { categoryId: catB });
+      const pA = await makeProduct('NON_STOCK', { categoryId: catA });
+      const pB = await makeProduct('NON_STOCK', { categoryId: catB });
       await setupCategoryWithProduct(customerId, catA, 'CARCASS_POS', pA, 70000);
       await setupCategoryWithProduct(customerId, catB, 'CARCASS_POS', pB, 71000);
 
@@ -191,7 +201,7 @@ async function main() {
     // ══════════════════ 6) NULL category, valid unambiguous common price -> success ══════════════════
     {
       const customerId = await makeCustomer('C6');
-      const pCarcass = await makeProduct('CARCASS_PART', { categoryId: catA });
+      const pCarcass = await makeProduct('NON_STOCK', { categoryId: catA });
       await pool.query(`UPDATE products SET default_sale_price=? WHERE id=?`, [45000, pCarcass.id]);
       // No customer_price_categories row at all for this customer/category -> price
       // resolves to COMMON_PRICE (products.default_sale_price), price_book_id stays null.
@@ -208,7 +218,7 @@ async function main() {
     // ══════════════════ 7) NULL category, ambiguous price source -> clear 400, no crash ══════════════════
     {
       const customerId = await makeCustomer('C7');
-      const pCarcass = await makeProduct('CARCASS_PART', { categoryId: catA });
+      const pCarcass = await makeProduct('NON_STOCK', { categoryId: catA });
       let threw = null;
       try {
         await OrderAgent.create({
@@ -225,7 +235,7 @@ async function main() {
       const customerId = await makeCustomer('C8');
       const p = await makeProduct('TRACK_STOCK', { stock: 20, categoryId: catA });
       await setupCategoryWithProduct(customerId, catA, 'INVENTORY_SALE', p, 50000);
-      await setProductMode(p.id, 'CARCASS_PART'); // mutated after category setup
+      await setProductMode(p.id, 'NON_STOCK'); // mutated after category setup
 
       let threw = null;
       try { await OrderAgent.create({ customer_id: customerId, order_date: today(), items: [billItem(p, 1)] }, adminUser()); }
@@ -237,9 +247,16 @@ async function main() {
     }
 
     // ══════════════════ 9) INVENTORY item resolving against a CARCASS category -> reject ══════════════════
+    // Phase 1B Gate Fix (OrderAgent.js): INVENTORY_SALE gets a stricter,
+    // dedicated branch — it may resolve ONLY through a category explicitly
+    // classified INVENTORY_SALE, never a CARCASS_POS or NULL/legacy category
+    // (unlike CARCASS_POS, which keeps a legacy-NULL allowance). That branch
+    // throws the more specific PRICE_CATEGORY_NOT_INVENTORY_SALE, not the
+    // generic PRICE_CATEGORY_SALES_FLOW_MISMATCH this scenario originally
+    // expected before that gate fix landed.
     {
       const customerId = await makeCustomer('C9');
-      const p = await makeProduct('CARCASS_PART', { categoryId: catA });
+      const p = await makeProduct('NON_STOCK', { categoryId: catA });
       await setupCategoryWithProduct(customerId, catA, 'CARCASS_POS', p, 70000);
       await pool.query(`UPDATE products SET stock_quantity=20 WHERE id=?`, [p.id]);
       await setProductMode(p.id, 'TRACK_STOCK'); // mutated after category setup
@@ -248,13 +265,13 @@ async function main() {
       try { await OrderAgent.create({ customer_id: customerId, order_date: today(), items: [billItem(p, 1)] }, adminUser()); }
       catch (e) { threw = e; }
       check('9. INVENTORY item now resolving against a CARCASS_POS category: rejected',
-        threw && threw.code === 'PRICE_CATEGORY_SALES_FLOW_MISMATCH', threw && threw.message);
+        threw && threw.code === 'PRICE_CATEGORY_NOT_INVENTORY_SALE', threw && threw.message);
     }
 
     // ══════════════════ 10) Product mode changed after category setup -> clear business error, no side effects ══════════════════
     {
       const customerId = await makeCustomer('C10');
-      const p = await makeProduct('CARCASS_PART', { categoryId: catA });
+      const p = await makeProduct('NON_STOCK', { categoryId: catA });
       await setupCategoryWithProduct(customerId, catA, 'CARCASS_POS', p, 70000);
       await pool.query(`UPDATE products SET stock_quantity=20 WHERE id=?`, [p.id]);
       await setProductMode(p.id, 'TRACK_STOCK');
@@ -271,8 +288,8 @@ async function main() {
       const [[orderCountAfter]] = await pool.query(`SELECT COUNT(*) c FROM orders WHERE customer_id=?`, [customerId]);
       const [[debtCountAfter]] = await pool.query(`SELECT COUNT(*) c FROM debt_transactions WHERE customer_id=?`, [customerId]);
 
-      check('10. Product mode mutation: clear business error (not a 500)', threw && threw.status === 400 && threw.code === 'PRICE_CATEGORY_SALES_FLOW_MISMATCH', threw && `status=${threw && threw.status}`);
-      check('10. Error message matches the spec-example wording', threw && /đã thay đổi tính chất kho và không còn phù hợp với danh mục giá này/.test(threw.message), threw && threw.message);
+      check('10. Product mode mutation: clear business error (not a 500)', threw && threw.status === 400 && threw.code === 'PRICE_CATEGORY_NOT_INVENTORY_SALE', threw && `status=${threw && threw.status}`);
+      check('10. Error message matches current wording (Phase 1B Gate Fix\'s dedicated INVENTORY_SALE branch)', threw && /Danh mục giá không thuộc phân hệ bán hàng kho/.test(threw.message), threw && threw.message);
       check('10. No partial Order created', Number(orderCountAfter.c) === Number(orderCountBefore.c));
       check('10. No Inventory write (stock unchanged)', Number(stockAfter.stock_quantity) === Number(stockBefore.stock_quantity));
       check('10. No Debt write', Number(debtCountAfter.c) === Number(debtCountBefore.c));
@@ -282,10 +299,10 @@ async function main() {
     {
       const customerA = await makeCustomer('C11A');
       const customerB = await makeCustomer('C11B');
-      const pA = await makeProduct('CARCASS_PART', { categoryId: catA });
+      const pA = await makeProduct('NON_STOCK', { categoryId: catA });
       const { bookId: bookIdBelongingToA } = await setupCategoryWithProduct(customerA, catA, 'CARCASS_POS', pA, 70000);
 
-      const pB = await makeProduct('CARCASS_PART', { categoryId: catA });
+      const pB = await makeProduct('NON_STOCK', { categoryId: catA });
       let threw = null;
       try {
         await OrderAgent.create({
@@ -299,7 +316,7 @@ async function main() {
     // ══════════════════ 12) Historical order_items snapshot facts remain frozen ══════════════════
     {
       const customerId = await makeCustomer('C12');
-      const p = await makeProduct('CARCASS_PART', { categoryId: catA });
+      const p = await makeProduct('NON_STOCK', { categoryId: catA });
       const { cpc, bookId } = await setupCategoryWithProduct(customerId, catA, 'CARCASS_POS', p, 70000);
 
       const r = await OrderAgent.create({ customer_id: customerId, order_date: today(), items: [billItem(p, 1)] }, adminUser());
@@ -334,7 +351,7 @@ async function main() {
     // ══════════════════ 13) Mixed bill, insufficient warehouse stock -> whole rollback ══════════════════
     {
       const customerId = await makeCustomer('C13');
-      const pCarcass = await makeProduct('CARCASS_PART', { categoryId: catA });
+      const pCarcass = await makeProduct('NON_STOCK', { categoryId: catA });
       const pTrackLow = await makeProduct('TRACK_STOCK', { stock: 2, categoryId: catB });
       await setupCategoryWithProduct(customerId, catA, 'CARCASS_POS', pCarcass, 70000);
       await setupCategoryWithProduct(customerId, catB, 'INVENTORY_SALE', pTrackLow, 50000);
@@ -357,28 +374,42 @@ async function main() {
     }
 
     // ══════════════════ 14) Existing Bò Xô legacy/unclassified-category regression ══════════════════
+    // Phase 1B Gate Fix closed the bypass this scenario originally exercised:
+    // a NULL/unclassified category is permissive ONLY for CARCASS_POS (or
+    // NULL-sales_flow legacy) products — mirroring real production data where
+    // every existing category is unclassified — but INVENTORY_SALE items get
+    // no such fallback (assertItemsMatchCategory + OrderAgent's dedicated
+    // INVENTORY_SALE branch both enforce this). So mixing a TRACK_STOCK/
+    // INVENTORY_SALE product into that same unclassified category must now be
+    // rejected, not silently permitted.
     {
       const customerId = await makeCustomer('C14');
-      const pCarcass = await makeProduct('CARCASS_PART', { categoryId: catA });
+      const pCarcass = await makeProduct('NON_STOCK', { categoryId: catA });
       const pTrack = await makeProduct('TRACK_STOCK', { stock: 20, categoryId: catA });
-      const pNonStock = await makeProduct('NON_STOCK', { categoryId: catA });
       // Legacy category: sales_flow NOT provided (stays NULL) — mirrors real production
-      // data, where every existing customer_price_categories row is unclassified and
-      // several already mix CARCASS_PART/TRACK_STOCK/NON_STOCK products in one category.
+      // data, where every existing customer_price_categories row is unclassified.
       const cpc = await PriceMatrixAgent.createCustomerPriceCategory(customerId, catA, {});
       cleanup.priceCategoryIds.push(cpc.id);
       await PriceMatrixAgent.saveMatrix(
         customerId,
-        [
-          { product_id: pCarcass.id, private_price: 70000, in_catalog: true },
-          { product_id: pTrack.id, private_price: 50000, in_catalog: true },
-        ],
+        [{ product_id: pCarcass.id, private_price: 70000, in_catalog: true }],
         null, { effective_from: '2024-01-01', effective_calendar_type: 'SOLAR' }, catA
       );
       const [books] = await pool.query(`SELECT id FROM customer_price_books WHERE customer_price_category_id=?`, [cpc.id]);
       books.forEach(b => cleanup.bookIds.push(b.id));
 
-      check('14a. Legacy unclassified category: mixed-mode saveMatrix still succeeds (write guard permissive when sales_flow NULL)', true);
+      check('14a. Legacy unclassified category: CARCASS_POS-flow product saveMatrix still succeeds (write guard permissive when sales_flow NULL)', true);
+
+      let threw = null;
+      try {
+        await PriceMatrixAgent.saveMatrix(
+          customerId,
+          [{ product_id: pTrack.id, private_price: 50000, in_catalog: true }],
+          null, { effective_from: '2024-01-01', effective_calendar_type: 'SOLAR' }, catA
+        );
+      } catch (e) { threw = e; }
+      check('14a2. Legacy unclassified category: INVENTORY_SALE-flow product rejected (no legacy fallback for this flow, Phase 1B Gate Fix)',
+        threw && threw.code === 'PRICE_CATEGORY_SALES_FLOW_MISMATCH', threw && threw.message);
 
       const r = await OrderAgent.create({ customer_id: customerId, order_date: today(), items: [billItem(pCarcass, 1)] }, adminUser());
       cleanup.orderIds.push(r.order_id);
@@ -386,7 +417,7 @@ async function main() {
       const [[order]] = await pool.query(`SELECT sales_flow FROM orders WHERE id=?`, [r.order_id]);
       check('14b. header still correctly derived CARCASS_POS despite unclassified category', order.sales_flow === 'CARCASS_POS', order.sales_flow);
 
-      cleanup.productIds.push(pNonStock.id); // created for symmetry with production data; not sold (NON_STOCK out of scope)
+      cleanup.productIds.push(pTrack.id); // never successfully cataloged; cleaned up directly
     }
 
     // ══════════════════ 15) Excel Import / AI confirm path resolver sharing ══════════════════

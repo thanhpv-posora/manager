@@ -48,8 +48,8 @@ function routeHandler(router, method, routePath) {
 }
 
 // Build a minimal mock request.
-function req(params = {}, user = {}, body = {}) {
-  return { params, user, body };
+function req(params = {}, user = {}, body = {}, query = {}) {
+  return { params, user, body, query };
 }
 
 // Invoke a route handler; re-throw anything passed to next().
@@ -107,7 +107,8 @@ async function fix1() {
       return [[]];
     };
     const h = routeHandler(pmRouter, 'GET', '/:customerId/books');
-    const result = await call(h, req({ customerId: '10' }, CUST10));
+    // S4.2: listBooks() is category-scoped — req.query.category_id is now required.
+    const result = await call(h, req({ customerId: '10' }, CUST10, {}, { category_id: '1' }));
     assert.ok(Array.isArray(result), 'Expected array response');
   });
 
@@ -117,7 +118,7 @@ async function fix1() {
       return [[]];
     };
     const h = routeHandler(pmRouter, 'GET', '/:customerId/books');
-    const result = await call(h, req({ customerId: '99' }, ADMIN));
+    const result = await call(h, req({ customerId: '99' }, ADMIN, {}, { category_id: '1' }));
     assert.ok(Array.isArray(result), 'Expected array response');
   });
 
@@ -266,10 +267,15 @@ async function fix2() {
   });
 
   await t('PUT /customer-prices/:customerId/:productId — ADMIN allowed (passes scope)', async () => {
-    // ADMIN bypasses scope; agent will still call customerProducts which queries DB.
-    // Give it enough mock data to not crash.
+    // ADMIN bypasses scope; agent will still call updateCustomerPrice(), which
+    // (S4.2) now derives the price book's category from the product's own
+    // category_id, then resolves the customer's CustomerPriceCategory for it —
+    // both queries need real-shaped rows or it never reaches the write path.
     mockQueryImpl = async sql => {
+      if (sql.includes('SELECT category_id FROM products')) return [[{ category_id: 1 }]];
+      if (sql.includes('FROM customer_price_categories'))    return [[{ id: 5 }]];
       if (sql.includes('FROM customers'))  return [[{ id: 99, billing_calendar_type: 'SOLAR' }]];
+      if (sql.includes('COUNT(*) c'))      return [[{ c: 0 }]]; // assertNotBackdated
       if (sql.includes('FROM products'))   return [[]];
       if (sql.includes('customer_price_books')) return [[]];
       return [[]];
@@ -277,10 +283,17 @@ async function fix2() {
     const origGet = mockPool.getConnection;
     mockPool.getConnection = async () => ({
       beginTransaction: async () => {},
-      query:            async ()    => [{ insertId: 1 }],
-      commit:           async ()    => {},
-      rollback:         async ()    => {},
-      release:          ()          => {},
+      // createOrReplaceBook() runs SELECTs (expects [rows]) and INSERTs (expects
+      // [{insertId}]) on the same conn — a single flat stub breaks the SELECTs'
+      // array destructuring, so this must branch on SQL shape like the
+      // top-level mock does.
+      query: async sql => {
+        if (/^\s*SELECT/i.test(sql)) return mockQueryImpl(sql);
+        return [{ insertId: 1 }];
+      },
+      commit:           async () => {},
+      rollback:         async () => {},
+      release:          ()      => {},
     });
     try {
       const h = routeHandler(prRouter, 'PUT', '/customer-prices/:customerId/:productId');
@@ -328,7 +341,8 @@ async function fix3() {
     });
     try {
       const h = routeHandler(pmRouter, 'POST', '/:customerId/save-all-safe');
-      const result = await call(h, req({ customerId: '10' }, ADMIN, { items: [] }));
+      // S4.2: saveMatrix()'s category_id guard is now mandatory (see verify-s1-002f.js).
+      const result = await call(h, req({ customerId: '10' }, ADMIN, { items: [], category_id: 1 }));
       assert.ok(result && result.message, `Expected message, got: ${JSON.stringify(result)}`);
     } finally { mockPool.getConnection = origGet; }
   });
@@ -347,7 +361,7 @@ async function fix3() {
       release:          ()          => {},
     });
     try {
-      await PMA.saveAllSafe(10, { items: [] }, ADMIN);
+      await PMA.saveAllSafe(10, { items: [], category_id: 1 }, ADMIN);
       assert.ok(saveMatrixCalled, 'saveMatrix must be called by saveAllSafe');
     } finally {
       PMA.saveMatrix = origSM;

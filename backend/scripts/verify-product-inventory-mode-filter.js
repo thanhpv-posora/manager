@@ -2,8 +2,11 @@
 // Verifies the pre-commit cleanup patch to ProductAgent.products()/GET /products:
 // the optional inventory_mode filter must be validated, never silently
 // normalized. Covers: omitted param (unchanged/backward compatible), each of
-// the 3 valid modes (exact match, no leakage), and an invalid value (rejected
+// the 2 valid modes (exact match, no leakage), and an invalid value (rejected
 // with a business error, not silently coerced to NON_STOCK).
+//
+// S1J: CARCASS_PART is retired as a current inventory_mode — moved from the
+// valid-mode list into the invalid/rejected-mode list below.
 //
 // Self-cleaning: throwaway products, removed in `finally`.
 
@@ -17,9 +20,10 @@ function check(name, cond, detail) {
 }
 
 async function makeProduct(mode) {
+  const salesFlow = mode === 'TRACK_STOCK' ? 'INVENTORY_SALE' : 'CARCASS_POS';
   await ProductAgent.addProduct({
     name: `S8.0 PIM FILTER ${mode} ${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    unit: 'kg', inventory_mode: mode, stock_quantity: 0,
+    unit: 'kg', inventory_mode: mode, sales_flow: salesFlow, stock_quantity: 0,
   });
   const [[created]] = await pool.query(`SELECT * FROM products WHERE name LIKE 'S8.0 PIM FILTER ${mode} %' ORDER BY id DESC LIMIT 1`);
   return created;
@@ -30,20 +34,19 @@ async function main() {
 
   try {
     const pTrack = await makeProduct('TRACK_STOCK');
-    const pCarcass = await makeProduct('CARCASS_PART');
     const pNonStock = await makeProduct('NON_STOCK');
-    productIds.push(pTrack.id, pCarcass.id, pNonStock.id);
+    productIds.push(pTrack.id, pNonStock.id);
 
     // ── omitted param: unchanged / backward compatible ──
     {
       const all = await ProductAgent.products('');
       check('omitted param: no last_count_at field leaks onto rows', !('last_count_at' in (all[0] || {})));
       const found = all.filter(p => productIds.includes(p.id));
-      check('omitted param: sees all 3 test products regardless of mode', found.length === 3, found.length);
+      check('omitted param: sees all 2 test products regardless of mode', found.length === 2, found.length);
     }
 
     // ── each valid mode: exact match, no leakage ──
-    for (const mode of ['TRACK_STOCK', 'CARCASS_PART', 'NON_STOCK']) {
+    for (const mode of ['TRACK_STOCK', 'NON_STOCK']) {
       const rows = await ProductAgent.products('', mode);
       const modes = new Set(rows.map(r => r.inventory_mode));
       check(`valid mode ${mode}: every returned row has inventory_mode=${mode}`, modes.size <= 1 && (modes.size === 0 || modes.has(mode)), [...modes]);
@@ -58,7 +61,7 @@ async function main() {
     }
 
     // ── invalid mode: rejected, not silently coerced to NON_STOCK ──
-    for (const bad of ['TYPO', 'STOCK', 'ALL', '']) {
+    for (const bad of ['TYPO', 'STOCK', 'ALL', 'CARCASS_PART', '']) {
       if (bad === '') continue; // empty string means "omitted" by design, not invalid — tested above
       let threw = null;
       try { await ProductAgent.products('', bad); } catch (e) { threw = e; }

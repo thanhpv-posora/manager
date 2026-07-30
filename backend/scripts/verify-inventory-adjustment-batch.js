@@ -20,7 +20,8 @@ function check(name, cond, detail) {
 }
 
 async function makeProduct(mode, qty, allowNeg = false) {
-  await ProductAgent.addProduct({ name: `S7.2 BATCH ${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, unit: 'kg', inventory_mode: mode, stock_quantity: qty, allow_negative_stock: allowNeg ? 1 : 0 });
+  const salesFlow = mode === 'TRACK_STOCK' ? 'INVENTORY_SALE' : 'CARCASS_POS';
+  await ProductAgent.addProduct({ name: `S7.2 BATCH ${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, unit: 'kg', inventory_mode: mode, sales_flow: salesFlow, stock_quantity: qty, allow_negative_stock: allowNeg ? 1 : 0 });
   const [[created]] = await pool.query(`SELECT * FROM products WHERE name LIKE 'S7.2 BATCH %' ORDER BY id DESC LIMIT 1`);
   return created;
 }
@@ -103,12 +104,12 @@ async function main() {
 
     // ── Case 3: TRACK_STOCK-only enforcement (defense in depth) ──
     {
-      const pCarcass = await makeProduct('CARCASS_PART', 0); productIds.push(pCarcass.id);
+      const pCarcass = await makeProduct('NON_STOCK', 0); productIds.push(pCarcass.id);
       let threw = null;
       try {
         await InventoryAdjustmentAgent.createBatch({ items: [{ product_id: pCarcass.id, actual_quantity: 5, reason: 'FOUND' }] }, user);
       } catch (e) { threw = e; }
-      check('Case 3: CARCASS_PART rejected even via the bulk save', !!threw, threw && threw.message);
+      check('Case 3: NON_STOCK rejected even via the bulk save', !!threw, threw && threw.message);
     }
 
     // ── Case 4: reconciliation OK after a bulk save ──

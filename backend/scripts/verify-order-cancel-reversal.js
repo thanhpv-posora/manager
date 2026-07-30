@@ -4,7 +4,7 @@
 //   orders/order_items/stock_transactions/debt_transactions rows are NEVER deleted.
 //   Inventory reversal follows order_items.inventory_mode/stock_checked (historical
 //   facts frozen at sale time), never the product's CURRENT inventory_mode.
-//   Bò Xô / CARCASS_PART / NON_STOCK lines never get an affect_stock=1 reversal.
+//   Bò Xô / NON_STOCK lines never get an affect_stock=1 reversal.
 //   Debt reversal is one compensating ADJUSTMENT_DECREASE row (S8.1A convention).
 //   Guards reject: not-found, already-cancelled, payment_allocations, legacy direct
 //   payment, paid_amount>0, locked, empty reason — before any write happens.
@@ -29,8 +29,9 @@ function check(name, cond, detail) {
 
 async function makeProduct(mode, qty, allowNeg = 0) {
   const name = `S8.2 CANCEL ${mode} ${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const salesFlow = mode === 'TRACK_STOCK' ? 'INVENTORY_SALE' : 'CARCASS_POS';
   await ProductAgent.addProduct({
-    name, unit: 'kg', inventory_mode: mode, stock_quantity: mode === 'TRACK_STOCK' ? qty : 0, allow_negative_stock: allowNeg,
+    name, unit: 'kg', inventory_mode: mode, sales_flow: salesFlow, stock_quantity: mode === 'TRACK_STOCK' ? qty : 0, allow_negative_stock: allowNeg,
   });
   const [[created]] = await pool.query(`SELECT * FROM products WHERE name=? LIMIT 1`, [name]);
   if (mode === 'TRACK_STOCK' && qty > 0 && Number(created.stock_quantity) !== qty) {
@@ -159,23 +160,23 @@ async function main() {
       check('S1: AI debt lookup = 0 after cancel', !!aiRow && Number(aiRow.debt_amount) === 0, aiRow && aiRow.debt_amount);
     }
 
-    // ══════════════════════ Scenario 2: cancel CARCASS_PART order (Bò Xô) ══════════════════════
+    // ══════════════════════ Scenario 2: cancel NON_STOCK order (Bò Xô) ══════════════════════
     {
-      const p = await makeProduct('CARCASS_PART', 0);
+      const p = await makeProduct('NON_STOCK', 0);
       productIds.push(p.id);
       const r = await OrderAgent.create({
         customer_id: customerId, order_date: today,
         items: [{ product_id: p.id, product_name: 'boxo', unit: 'kg', quantity: 5, sale_price: 80000, manual_price: true }],
       }, user);
       orderIds.push(r.order_id);
-      check('S2: CARCASS_PART stock_quantity unchanged on create', await stockOf(p.id) === 0, await stockOf(p.id));
+      check('S2: NON_STOCK (Bò Xô) stock_quantity unchanged on create', await stockOf(p.id) === 0, await stockOf(p.id));
       const [[item]] = await pool.query(`SELECT stock_checked FROM order_items WHERE order_id=?`, [r.order_id]);
-      check('S2: order_items.stock_checked=0 recorded for CARCASS_PART line', Number(item.stock_checked) === 0, item.stock_checked);
+      check('S2: order_items.stock_checked=0 recorded for NON_STOCK (Bò Xô) line', Number(item.stock_checked) === 0, item.stock_checked);
 
       await OrderAgent.cancel(r.order_id, { reason: 'S8.2 boxo cancel' }, user);
-      check('S2: CARCASS_PART stock_quantity still unchanged after cancel', await stockOf(p.id) === 0, await stockOf(p.id));
+      check('S2: NON_STOCK (Bò Xô) stock_quantity still unchanged after cancel', await stockOf(p.id) === 0, await stockOf(p.id));
       const stockAfter = await stockRowsForProduct(p.id);
-      check('S2: no affect_stock=1 reversal row created for CARCASS_PART line', !stockAfter.some(x => Number(x.affect_stock) === 1), stockAfter);
+      check('S2: no affect_stock=1 reversal row created for NON_STOCK (Bò Xô) line', !stockAfter.some(x => Number(x.affect_stock) === 1), stockAfter);
       check('S2: order status = CANCELLED', (await orderRow(r.order_id)).status === 'CANCELLED');
     }
 
@@ -197,7 +198,7 @@ async function main() {
     {
       const [[cat]] = await pool.query(`SELECT id FROM product_categories LIMIT 1`);
       const pTrack = await makeProduct('TRACK_STOCK', 40);
-      const pCarcass = await makeProduct('CARCASS_PART', 0);
+      const pCarcass = await makeProduct('NON_STOCK', 0);
       productIds.push(pTrack.id, pCarcass.id);
       await pool.query(`UPDATE products SET category_id=? WHERE id IN (?,?)`, [cat.id, pTrack.id, pCarcass.id]);
 
@@ -210,11 +211,11 @@ async function main() {
       }, user);
       orderIds.push(r.order_id);
       check('S4: TRACK_STOCK line deducted (40 -> 34)', await stockOf(pTrack.id) === 34, await stockOf(pTrack.id));
-      check('S4: CARCASS_PART line unaffected (0)', await stockOf(pCarcass.id) === 0, await stockOf(pCarcass.id));
+      check('S4: NON_STOCK line unaffected (0)', await stockOf(pCarcass.id) === 0, await stockOf(pCarcass.id));
 
       await OrderAgent.cancel(r.order_id, { reason: 'S8.2 mixed cancel' }, user);
       check('S4: TRACK_STOCK line restored (34 -> 40)', await stockOf(pTrack.id) === 40, await stockOf(pTrack.id));
-      check('S4: CARCASS_PART line still unaffected (0) after cancel', await stockOf(pCarcass.id) === 0, await stockOf(pCarcass.id));
+      check('S4: NON_STOCK line still unaffected (0) after cancel', await stockOf(pCarcass.id) === 0, await stockOf(pCarcass.id));
     }
 
     // ══════════════════════ Scenario 5: cancel already-cancelled order ══════════════════════
@@ -357,7 +358,7 @@ async function main() {
 
     // ══════════════════════ Scenario 10: inventory_mode changed AFTER the sale ══════════════════════
     {
-      // 10a: was TRACK_STOCK at sale time (stock_checked=1), later reconfigured to CARCASS_PART.
+      // 10a: was TRACK_STOCK at sale time (stock_checked=1), later reconfigured to NON_STOCK.
       // Reversal must still follow the historical stock_checked=1 fact and restore stock.
       const p = await makeProduct('TRACK_STOCK', 50);
       productIds.push(p.id);
@@ -367,16 +368,16 @@ async function main() {
       }, user);
       orderIds.push(r.order_id);
       check('S10a: stock deducted at sale time (50 -> 45)', await stockOf(p.id) === 45, await stockOf(p.id));
-      await pool.query(`UPDATE products SET inventory_mode='CARCASS_PART' WHERE id=?`, [p.id]);
+      await pool.query(`UPDATE products SET inventory_mode='NON_STOCK' WHERE id=?`, [p.id]);
       const [[item]] = await pool.query(`SELECT inventory_mode, stock_checked FROM order_items WHERE order_id=?`, [r.order_id]);
       check('S10a: order_items retains its ORIGINAL frozen inventory_mode/stock_checked despite product being reconfigured', Number(item.stock_checked) === 1, item);
 
       await OrderAgent.cancel(r.order_id, { reason: 'S8.2 mode-flip cancel' }, user);
-      check('S10a: reversal follows the HISTORICAL fact (stock_checked=1) — stock restored despite product now being CARCASS_PART (45 -> 50)', await stockOf(p.id) === 50, await stockOf(p.id));
+      check('S10a: reversal follows the HISTORICAL fact (stock_checked=1) — stock restored despite product now being NON_STOCK (45 -> 50)', await stockOf(p.id) === 50, await stockOf(p.id));
 
-      // 10b: was CARCASS_PART at sale time (stock_checked=0), later reconfigured to TRACK_STOCK.
+      // 10b: was NON_STOCK at sale time (stock_checked=0), later reconfigured to TRACK_STOCK.
       // Reversal must NOT touch stock, even though the product looks like TRACK_STOCK now.
-      const p2 = await makeProduct('CARCASS_PART', 0);
+      const p2 = await makeProduct('NON_STOCK', 0);
       productIds.push(p2.id);
       const r2 = await OrderAgent.create({
         customer_id: customerId, order_date: today,

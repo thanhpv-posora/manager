@@ -23,9 +23,10 @@ function check(name, cond, detail) {
 }
 
 async function makeProduct(mode, qty) {
+  const salesFlow = mode === 'TRACK_STOCK' ? 'INVENTORY_SALE' : 'CARCASS_POS';
   await ProductAgent.addProduct({
     name: `S8.0 F3F5 ${mode} ${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    unit: 'kg', inventory_mode: mode, stock_quantity: qty, allow_negative_stock: 0,
+    unit: 'kg', inventory_mode: mode, sales_flow: salesFlow, stock_quantity: qty, allow_negative_stock: 0,
     default_sale_price: 50000,
   });
   const [[created]] = await pool.query(`SELECT * FROM products WHERE name LIKE 'S8.0 F3F5 ${mode} %' ORDER BY id DESC LIMIT 1`);
@@ -120,7 +121,7 @@ async function main() {
     // ══════════════════════ F5 — confirmOrderDraft() persists real inventory_mode/stock_checked ══════════════════════
     {
       const pTrack = await makeProduct('TRACK_STOCK', 100);
-      const pCarcass = await makeProduct('CARCASS_PART', 0);
+      const pCarcass = await makeProduct('NON_STOCK', 0);
       const pNonStock = await makeProduct('NON_STOCK', 0);
       productIds.push(pTrack.id, pCarcass.id, pNonStock.id);
 
@@ -141,8 +142,8 @@ async function main() {
       check('F5: TRACK_STOCK row has inventory_mode=TRACK_STOCK persisted (not null)', byProduct[pTrack.id]?.inventory_mode === 'TRACK_STOCK', JSON.stringify(byProduct[pTrack.id]));
       check('F5: TRACK_STOCK row has stock_checked=1 (real stock check happened)', Number(byProduct[pTrack.id]?.stock_checked) === 1, byProduct[pTrack.id]?.stock_checked);
 
-      check('F5: CARCASS_PART row has inventory_mode=CARCASS_PART persisted (not null)', byProduct[pCarcass.id]?.inventory_mode === 'CARCASS_PART', JSON.stringify(byProduct[pCarcass.id]));
-      check('F5: CARCASS_PART row has stock_checked=0 (no real stock check)', Number(byProduct[pCarcass.id]?.stock_checked) === 0, byProduct[pCarcass.id]?.stock_checked);
+      check('F5: NON_STOCK (Bò Xô) row has inventory_mode=NON_STOCK persisted (not null)', byProduct[pCarcass.id]?.inventory_mode === 'NON_STOCK', JSON.stringify(byProduct[pCarcass.id]));
+      check('F5: NON_STOCK (Bò Xô) row has stock_checked=0 (no real stock check)', Number(byProduct[pCarcass.id]?.stock_checked) === 0, byProduct[pCarcass.id]?.stock_checked);
 
       check('F5: NON_STOCK row has inventory_mode=NON_STOCK persisted (not null)', byProduct[pNonStock.id]?.inventory_mode === 'NON_STOCK', JSON.stringify(byProduct[pNonStock.id]));
       check('F5: NON_STOCK row has stock_checked=0', Number(byProduct[pNonStock.id]?.stock_checked) === 0, byProduct[pNonStock.id]?.stock_checked);

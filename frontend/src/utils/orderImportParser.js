@@ -1,11 +1,18 @@
-import { calcQtyExpression } from './qtyExpression';
+import { calcQtyExpression, roundQty } from './qtyExpression.js';
 
+// Business rule (CRITICAL fix — POS Excel import "Nầm"/"Nạm" mapping bug):
+// product identity in Vietnamese depends on tone/vowel diacritics — "Nạm" and
+// "Nầm" are different products and must never normalize to the same key.
+// The previous implementation stripped every non a-z0-9 character (including
+// all Vietnamese diacritics) here, which collapsed "Nạm" and "Nầm" to the
+// identical token "n m" and let the fuzzy scorer below silently merge them.
+// This now keeps any Unicode letter/number (so đ and every accented vowel
+// survive) — only case, NFC form, and whitespace are normalized.
 function norm(s) {
   return String(s||'')
-    .toLowerCase()
     .normalize('NFC')
-    .replace(/[đ]/g,'d')
-    .replace(/[^a-z0-9\s.]/g,' ')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s.]/gu,' ')
     .replace(/\s+/g,' ')
     .trim();
 }
@@ -33,9 +40,14 @@ function strictKey(s) {
     .trim();
 }
 
-function strictExcelProductMatch(name, products) {
+// Exact match only — trims/collapses whitespace, normalizes NFC, ignores
+// case, but NEVER strips accents (strictKey does not touch diacritics).
+// Returns every candidate found so the caller can tell "zero matches" apart
+// from "ambiguous — more than one matches" instead of collapsing both cases
+// to the same null and risking a silent rows[0]-style pick.
+function findExactProductCandidates(name, products) {
   const key = strictKey(name);
-  if (!key) return null;
+  if (!key) return [];
 
   const candidates = [];
   for (const p of products || []) {
@@ -45,10 +57,7 @@ function strictExcelProductMatch(name, products) {
       candidates.push(p);
     }
   }
-
-  // Production safety: nếu trùng nhiều mặt hàng cùng tên/code thì không tự chọn đại.
-  if (candidates.length !== 1) return null;
-  return candidates[0];
+  return candidates;
 }
 
 export function scoreProduct(name, product) {
@@ -147,13 +156,19 @@ export function parseOrderText(text, sourceType='text') {
     const parsed = extractNameQty(line, sourceType);
     if (!parsed) continue;
 
-    const qty = calcQtyExpression(parsed.qtyExpr);
+    const qty = calcQtyExpression(parsed.qtyExpr); // already rounded to 3dp internally
     const validation = validateImportedQty(parsed.clean, parsed.qtyExpr, qty, sourceType);
 
     if (parsed.name && qty > 0) {
       rows.push({
         name: parsed.name,
-        qtyExpr: parsed.qtyExpr,
+        // qtyExpr is what the preview input displays/edits — always the
+        // clean evaluated number ("22"), never the raw expression text or a
+        // raw floating-point artifact. The original text (e.g. "10+12") is
+        // preserved separately in rawQuantityText/raw for the note column —
+        // it is never used for calculation.
+        qtyExpr: String(qty),
+        rawQuantityText: parsed.qtyExpr,
         qty,
         raw: parsed.clean,
         sourceType,
@@ -169,21 +184,36 @@ export function parseOrderText(text, sourceType='text') {
 export function matchImportedRows(importRows, products) {
   return importRows.map(r => {
     let best = null, bestScore = 0, bestReason = '';
+    let ambiguousCandidates = null;
     const warnings = [...(r.warnings || [])];
     const errors = [...(r.errors || [])];
+    const sourceType = String(r.sourceType || '').toLowerCase();
 
-    // Excel import tuyệt đối KHÔNG dùng alias / fuzzy matching.
-    // Tên trong Excel phải khớp đúng tên hàng hoặc mã hàng trong database.
-    // Tránh rủi ro Nầm/Nạm/Lòng bị cộng nhầm số lượng sang mặt hàng khác.
-    if (String(r.sourceType || '').toLowerCase() === 'excel') {
-      best = strictExcelProductMatch(r.name, products);
-      if (best) {
-        bestScore = 100;
-        bestReason = 'EXCEL_EXACT_DB_NAME_OR_CODE';
-      } else {
-        errors.push('Không mapping đúng tên hàng trong database');
+    // Business rule: product code/name matching must resolve to exactly one
+    // product, using an exact (accent-preserving, case-insensitive,
+    // whitespace/NFC-normalized) match — never alias/fuzzy matching, and
+    // never a silent "pick the first candidate" when several match. This is
+    // tried FIRST for every source, including pasted "text/excel" content
+    // and a manual edit of an already-imported row's quantity (the row's
+    // name is unchanged in that case) — only "OCR ảnh" (photographed/
+    // handwritten text) falls back to fuzzy scoring below, since that source
+    // has genuine character-recognition noise an exact match can't tolerate.
+    const exactCandidates = findExactProductCandidates(r.name, products);
+
+    if (exactCandidates.length === 1) {
+      best = exactCandidates[0];
+      bestScore = 100;
+      bestReason = 'EXACT_DB_NAME_OR_CODE';
+    } else if (exactCandidates.length > 1) {
+      // Ambiguous: never rows[0]/findOne/LIMIT 1 — reject and surface it.
+      ambiguousCandidates = exactCandidates.map(p => ({
+        id: p.product_id ?? p.id, code: p.product_code ?? p.code, name: p.product_name ?? p.name
+      }));
+      errors.push(`Không thể xác định mặt hàng "${r.name}": tìm thấy nhiều kết quả.`);
+      if (typeof console !== 'undefined' && console.warn) {
+        console.warn('[orderImportParser] ambiguous product match for import row', { name: r.name, candidates: ambiguousCandidates });
       }
-    } else {
+    } else if (sourceType === 'image') {
       for (const p of products || []) {
         const result = scoreProduct(r.name, p);
         if (result.score > bestScore) {
@@ -199,9 +229,11 @@ export function matchImportedRows(importRows, products) {
       } else if (bestScore < 90) {
         warnings.push('Tên khớp chưa chắc chắn');
       }
+    } else {
+      errors.push('Không mapping đúng tên hàng trong database');
     }
 
-    const matchedOk = !!best && errors.length === 0 && (String(r.sourceType || '').toLowerCase() === 'excel' ? bestScore === 100 : bestScore >= 75);
+    const matchedOk = !!best && errors.length === 0 && (sourceType === 'image' ? bestScore >= 75 : bestScore === 100);
 
     return {
       ...r,
@@ -210,6 +242,7 @@ export function matchImportedRows(importRows, products) {
       product_name: best?.product_name,
       score: bestScore,
       match_reason: bestReason,
+      ambiguousCandidates,
       ok: matchedOk,
       canApply: matchedOk,
       warnings,
@@ -221,4 +254,36 @@ export function matchImportedRows(importRows, products) {
 
 export function rematchOne(row, products) {
   return matchImportedRows([row], products)[0];
+}
+
+// product_id is the only allowed cart-merge key (never name/normalized name/
+// alias/display label/array position) — shared here so CreateOrder.jsx does
+// not keep its own duplicate copy of this rule.
+export function getProductKey(obj) {
+  const id = obj?.product_id ?? obj?.id ?? obj?.productId;
+  return id === undefined || id === null ? '' : String(id);
+}
+
+// Groups already-matched, selected import rows by resolved product_id before
+// they are applied to the cart — so two Excel rows for the same product
+// (e.g. two "Nầm" lines) accumulate into one cart row instead of overwriting
+// or landing on separate lines. Quantities are summed via roundQty() (never
+// raw JS addition) so the merged total never shows an IEEE754 artifact like
+// 51.99999999999999. Also collects the original per-row qty expressions so
+// the caller can preserve them as a "= 10+12" style note without treating
+// that note as the current input value.
+export function groupImportRowsByProduct(rowsToApply) {
+  const grouped = new Map();
+  for (const r of rowsToApply || []) {
+    const product = r.product || {};
+    const key = getProductKey(product) || String(r.product_id || '');
+    if (!key) continue;
+    const old = grouped.get(key) || { product, row: r, qty: 0, count: 0, names: [], qtyExprs: [] };
+    old.qty = roundQty(Number(old.qty || 0) + Number(r.qty || 0));
+    old.count += 1;
+    old.names.push(r.name || r.raw || product.product_name || '');
+    old.qtyExprs.push(String(r.qtyExpr || r.qty || ''));
+    grouped.set(key, old);
+  }
+  return grouped;
 }

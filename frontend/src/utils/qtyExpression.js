@@ -32,3 +32,15 @@ export function calcQtyExpression(input) {
 export function calcMeatQty(input) {
   return calcQtyExpression(input);
 }
+
+// Shared rounding helper for anywhere two already-evaluated quantities are
+// summed outside calcQtyExpression (e.g. merging repeated Excel rows, or
+// adding an imported quantity onto an existing cart row). calcQtyExpression
+// already rounds its own result to 3dp, but plain JS addition of two such
+// numbers can still reintroduce IEEE754 artifacts (e.g. 10.1+41.9 ->
+// 51.99999999999999) — always pass sums through this before storing/
+// displaying them, instead of scattering ad-hoc .toFixed(3) calls.
+export function roundQty(value) {
+  const n = Number(value || 0);
+  return Number.isFinite(n) ? Number(n.toFixed(3)) : 0;
+}

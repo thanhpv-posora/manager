@@ -55,7 +55,7 @@ WHERE id IN (<CARCASS_POS ids from that run's AFTER REPORT>) AND sales_flow='CAR
 COMMIT;
 ```
 
-The `AND sales_flow='...'` guard matters: it ensures the rollback only reverts rows still holding exactly the value that run set, so it can never revert a row someone else has since reclassified for a real reason. Run the equivalent `SELECT ... WHERE id IN (...) AND sales_flow<>'...'` first to confirm zero rows would be skipped unexpectedly, then re-run `verify-inventory-sales-flow.js` / `verify-product-sales-flow-separation.js` afterward (see Post Verification) to confirm no regression.
+The `AND sales_flow='...'` guard matters: it ensures the rollback only reverts rows still holding exactly the value that run set, so it can never revert a row someone else has since reclassified for a real reason. Run the equivalent `SELECT ... WHERE id IN (...) AND sales_flow<>'...'` first to confirm zero rows would be skipped unexpectedly, then re-run `verify-product-sales-flow-separation.js` afterward (see Post Verification) to confirm no regression.
 
 If this needs to happen often enough to justify a reusable tool, that is itself a signal the tool should gain a `--rollback --run-log=<path>` mode reading a persisted report from the live run, rather than reconstructing a one-off script per incident — track that as a follow-up if it comes up, not something to pre-build speculatively now.
 
@@ -63,5 +63,5 @@ If this needs to happen often enough to justify a reusable tool, that is itself 
 
 After a live run (forward or rollback), confirm:
 1. Aggregate counts in the AFTER REPORT match expectations (no unexpected `(NULL)` rows shrinking/growing).
-2. `node scripts/verify-inventory-sales-flow.js` and `node scripts/verify-product-sales-flow-separation.js` both still pass 100% (proves the classification didn't regress either sales channel).
+2. `node scripts/verify-product-sales-flow-separation.js` still passes 100% (proves the classification didn't regress either sales channel).
 3. Spot-check a handful of real product IDs directly: `SELECT id, name, sales_flow FROM products WHERE id IN (...)`.

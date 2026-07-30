@@ -31,3 +31,25 @@ export async function loadQuantityDecimalPlaces(api) {
     // keep whatever is already cached (default 2) if settings can't be loaded
   }
 }
+
+// Trimmed-decimal display for the quantity-expression live echo/note only
+// (e.g. the "= 22" shown next to the qty input while typing "10+12", or the
+// preserved "= 10+12" import note). Deliberately separate from formatQty():
+// formatQty() always pads to the admin-configured decimal places (business
+// display policy, used for stock/totals/etc. app-wide) — this one always
+// rounds to at most 3dp and drops trailing zeros (52 -> "52", 52.5 -> "52.5",
+// 52.125 -> "52.125"), which is what this specific echo needs and is not a
+// change to formatQty's app-wide behavior.
+export function formatQtyTrim(value, maxDecimals = 3) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n)) return '0';
+  return String(Number(n.toFixed(maxDecimals)));
+}
+
+// S9/S11: non-blocking POS nudge only — InventoryService/postOut() on the backend
+// remains the sole authority on whether a sale actually goes through.
+export function isOverStock(inventoryMode, allowNegativeStock, stockQuantity, quantity) {
+  return String(inventoryMode || '').toUpperCase() === 'TRACK_STOCK'
+    && Number(allowNegativeStock) !== 1
+    && Number(quantity || 0) > Number(stockQuantity || 0);
+}

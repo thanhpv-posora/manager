@@ -2,6 +2,7 @@ const express=require('express');
 const { auth }=require('../middleware/auth');
 const QRCode=require('qrcode');
 const OrderAgent=require('../agents/OrderAgent');
+const ReturnAgent=require('../agents/ReturnAgent');
 const router=express.Router();
 
 router.get('/public/:token/print', async (req,res,next)=>{try{res.setHeader('Content-Type','text/html; charset=utf-8');res.send(await OrderAgent.printHtmlByToken(req.params.token))}catch(e){next(e)}});
@@ -29,4 +30,9 @@ router.post('/:id/lock', auth(['ADMIN','STAFF']), async (req,res,next)=>{try{res
 router.post('/:id/cancel', auth(['ADMIN']), async (req,res,next)=>{try{res.json(await OrderAgent.cancel(req.params.id,req.body,req.user))}catch(e){next(e)}});
 router.post('/:id/items', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await OrderAgent.addItem(req.params.id,req.body,req.user))}catch(e){next(e)}});
 router.put('/:id/items/:itemId', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await OrderAgent.updateItem(req.params.id,req.params.itemId,req.body,req.user))}catch(e){next(e)}});
+// S9.2: Sales Return Foundation — Create/List Return Request only. Same role list
+// as order create/list (line 9-10 above): a customer may request a return on their
+// own bill, scope-enforced inside ReturnAgent via assertCustomerScope.
+router.post('/:id/returns', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await ReturnAgent.create(req.params.id,req.body,req.user))}catch(e){next(e)}});
+router.get('/:id/returns', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await ReturnAgent.list(req.params.id,req.user))}catch(e){next(e)}});
 module.exports=router;

@@ -39,4 +39,19 @@ function assertSalesFlowInventoryModeCombo(salesFlow, inventoryMode) {
   }
 }
 
-module.exports = { SALES_FLOW_INVENTORY_MODE_COMPAT, VALID_SALES_FLOWS, assertValidSalesFlow, assertSalesFlowInventoryModeCombo };
+// S1M: single centralized fallback rule for "what sales_flow governs this
+// Customer Price Category" — reused identically by category listing/display,
+// Price Matrix product loading, the save-time guard, category creation, and
+// the customer-flow-change guard. A category's own explicit classification
+// always wins; only when it is NULL/invalid does the customer's own
+// default_sales_flow apply. Returns null (never guesses CARCASS_POS) when
+// neither is a valid, known flow — callers decide what "unresolved" means
+// for their own context (e.g. Price Matrix's existing NULL-or-CARCASS_POS
+// Legacy Model bucket, unchanged, only reached when this returns null).
+function resolveEffectiveSalesFlow(categorySalesFlow, customerDefaultSalesFlow) {
+  if (VALID_SALES_FLOWS.includes(categorySalesFlow)) return categorySalesFlow;
+  if (VALID_SALES_FLOWS.includes(customerDefaultSalesFlow)) return customerDefaultSalesFlow;
+  return null;
+}
+
+module.exports = { SALES_FLOW_INVENTORY_MODE_COMPAT, VALID_SALES_FLOWS, assertValidSalesFlow, assertSalesFlowInventoryModeCombo, resolveEffectiveSalesFlow };

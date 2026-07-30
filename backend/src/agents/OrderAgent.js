@@ -9,7 +9,7 @@ const { resolveAuthoritativeCalendar }=require('../utils/billCalendar');
 const PriceBookService = require('../services/PriceBookService');
 const { assertCustomerScope, customerScopeWhere }=require('../middleware/scope');
 const { normalizeInventoryMode } = require('../utils/inventoryMode');
-const { assertSalesFlowInventoryModeCombo } = require('../utils/productSalesFlow');
+const { assertSalesFlowInventoryModeCombo, resolveEffectiveSalesFlow } = require('../utils/productSalesFlow');
 
 function parseLunarDateParts(text){
   const m=String(text||'').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
@@ -174,6 +174,13 @@ async function assertItemsCategoryPerFlow(conn, customerId, items, itemFlowByPro
     CARCASS_POS: new Set(seedFlowCategorySets?.CARCASS_POS || []),
     INVENTORY_SALE: new Set(seedFlowCategorySets?.INVENTORY_SALE || []),
   };
+  // S1O: a legacy category (sales_flow IS NULL) inherits the customer's own
+  // default_sales_flow instead of unconditionally rejecting INVENTORY_SALE
+  // items — the same centralized resolveEffectiveSalesFlow used by
+  // PriceMatrixAgent.matrix()/customerCatalogForOrder()/assertItemsMatchCategory().
+  // Fetched once per call, only needed by the INVENTORY_SALE branch below.
+  const [[customerRow]] = await conn.query(`SELECT default_sales_flow FROM customers WHERE id=? LIMIT 1`, [customerId]);
+  const customerDefaultFlow = customerRow ? customerRow.default_sales_flow : null;
 
   for (const it of items || []) {
     const pid = Number(it.product_id);
@@ -205,28 +212,49 @@ async function assertItemsCategoryPerFlow(conn, customerId, items, itemFlowByPro
         if (!cat || Number(cat.customer_id) !== Number(customerId)) {
           throw businessError(`Danh mục giá của mặt hàng "${label}" không thuộc khách hàng này.`, 'PRICE_CATEGORY_WRONG_CUSTOMER');
         }
-        // Phase 1B Gate Fix: NULL is its own logical state (LEGACY/UNKNOWN), never an
-        // implicit CARCASS_POS. CARCASS_POS keeps the pre-existing legacy-compat
-        // allowance (a NULL/unclassified category is accepted for it, unchanged).
-        // INVENTORY_SALE gets no such allowance — it may resolve ONLY through a
-        // category explicitly classified INVENTORY_SALE. The prior
-        // `cat.sales_flow && cat.sales_flow !== flow` check silently passed whenever
-        // cat.sales_flow was NULL (falsy short-circuit), regardless of flow — that
-        // was the bypass: an INVENTORY_SALE item could resolve price through any
-        // unclassified Legacy category. Closed here without touching the CARCASS_POS
-        // branch's existing behavior or wording.
+        // Phase 1B Gate Fix / S1O: NULL is its own logical state (LEGACY/UNKNOWN),
+        // never an implicit CARCASS_POS. CARCASS_POS keeps the pre-existing
+        // legacy-compat allowance (a NULL/unclassified category is accepted for
+        // it, unchanged). INVENTORY_SALE previously got NO such allowance — it
+        // could resolve ONLY through a category explicitly classified
+        // INVENTORY_SALE, unconditionally rejecting every legacy NULL category
+        // even when the customer's own default_sales_flow clearly identified as
+        // INVENTORY_SALE (the CRITICAL bug this story fixes: NULL category flow
+        // means INHERITANCE from the customer, not automatic rejection). The
+        // effective flow is resolved the same centralized way every other
+        // sales-flow call site does; only when that resolution genuinely
+        // disagrees with this item's own flow (or resolves to nothing at all)
+        // is the item still rejected.
         //
         // S1G: `flow` here is now products.sales_flow (Product Sales Domain),
         // never inventory_mode — so "Hidden Risk 2" below is products.sales_flow
         // being reclassified after the category was set up, not inventory_mode.
         if (flow === 'INVENTORY_SALE') {
-          if (!cat.sales_flow) {
-            throw businessError('Danh mục giá chưa được phân loại cho bán hàng kho.', 'PRICE_CATEGORY_NOT_CLASSIFIED_FOR_INVENTORY_SALE');
+          const effectiveFlow = resolveEffectiveSalesFlow(cat.sales_flow, customerDefaultFlow);
+          if (!effectiveFlow) {
+            throw businessError('Khách hàng chưa được thiết lập luồng bán hợp lệ.', 'CUSTOMER_SALES_FLOW_NOT_CONFIGURED');
           }
-          if (cat.sales_flow !== 'INVENTORY_SALE') {
+          if (effectiveFlow !== 'INVENTORY_SALE') {
             throw businessError('Danh mục giá không thuộc phân hệ bán hàng kho.', 'PRICE_CATEGORY_NOT_INVENTORY_SALE');
           }
-        } else if (cat.sales_flow && cat.sales_flow !== flow) {
+        } else if (cat.sales_flow) {
+          if (cat.sales_flow !== flow) {
+            throw businessError(
+              `Sản phẩm '${label}' đã thay đổi tính chất kho và không còn phù hợp với danh mục giá này.`,
+              'PRICE_CATEGORY_SALES_FLOW_MISMATCH'
+            );
+          }
+        } else if (resolveEffectiveSalesFlow(null, customerDefaultFlow) === 'INVENTORY_SALE') {
+          // S1O symmetry fix: a NULL category previously allowed a CARCASS_POS
+          // item unconditionally (old Legacy Model), regardless of the
+          // customer. Now that a NULL category can genuinely resolve to
+          // INVENTORY_SALE via customer inheritance (the fix above), that same
+          // unconditional allowance became a real gap — a CARCASS_POS product
+          // could slip through an INVENTORY_SALE customer's legacy category.
+          // Only reject when inheritance clearly resolves this category to
+          // INVENTORY_SALE; when nothing can be resolved at all (customer flow
+          // also missing/invalid), the original Legacy Model allowance for
+          // CARCASS_POS items is preserved unchanged.
           throw businessError(
             `Sản phẩm '${label}' đã thay đổi tính chất kho và không còn phù hợp với danh mục giá này.`,
             'PRICE_CATEGORY_SALES_FLOW_MISMATCH'

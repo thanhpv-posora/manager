@@ -1,7 +1,7 @@
 import React from 'react';
 import {calcQtyExpression} from '../../utils/qtyExpression';
 import {movePosGridFocus} from '../../utils/posKeyboard';
-import {formatQty} from '../../utils/quantity';
+import {formatQty, formatQtyTrim, isOverStock} from '../../utils/quantity';
 
 const money = n => Number(n || 0).toLocaleString('en-US') + 'đ';
 
@@ -31,7 +31,11 @@ export default function POSProductTableAgent({
   onClearRow,
   quickOpen,
   toolsOpen,
+  onBrowseOtherFlow,
+  otherFlowLabel,
+  onOpenImportDialog,
 }){
+  const hasStockColumn = shown.some(i => String(i.inventory_mode || '').toUpperCase() === 'TRACK_STOCK');
   return (
     <div className="card pos-agent-products-card">
       <div className="actions pos-agent-products-toolbar">
@@ -60,6 +64,24 @@ export default function POSProductTableAgent({
             {toolsOpen ? '− Thu gọn công cụ' : '⚙ Công cụ'}
           </button>
         )}
+        {onBrowseOtherFlow && (
+          <button type="button" className="btn secondary" onClick={onBrowseOtherFlow}>
+            + Thêm hàng {otherFlowLabel}
+          </button>
+        )}
+        {/* Patch 01 scaffolding — new dialog-framework entry point for Import,
+            empty until Patch 04 relocates it. Add Product's and Quick Add's
+            scaffolding buttons are gone: Patches 02/03 made their existing
+            production buttons above the one entry point for each workflow,
+            opening the same dialogs these placeholders used to.
+            import.meta.env.DEV is Vite's built-in dev-server flag: true only
+            under `npm run dev`, always false in a production build — so these
+            never render for a real end user, only for local/dev verification. */}
+        {import.meta.env.DEV && onOpenImportDialog && (
+          <button type="button" className="btn secondary" onClick={onOpenImportDialog}>
+            Import
+          </button>
+        )}
       </div>
 
       <div className="pos-agent-table-scroll">
@@ -69,6 +91,7 @@ export default function POSProductTableAgent({
               <th className="pos-col-stt">#</th>
               <th>Tên</th>
               <th className="pos-col-unit">ĐVT</th>
+              {hasStockColumn && <th>Tồn kho</th>}
               <th>Số lượng</th>
               <th>Đơn giá</th>
               <th>Thành tiền</th>
@@ -80,6 +103,7 @@ export default function POSProductTableAgent({
               const rowIndex = items.findIndex(x => x.product_id === i.product_id);
               const qty = Number(calcQtyExpression(i.quantity_expr) || 0);
               const rowKey = String(i.product_id);
+              const overStock = i.quantity_expr && isOverStock(i.inventory_mode, i.allow_negative_stock, i.stock_quantity, qty);
               return (
                 <tr
                   key={i.product_id}
@@ -88,15 +112,20 @@ export default function POSProductTableAgent({
                   onDragOver={e => e.preventDefault()}
                   onDrop={() => handleDrop(i.product_id)}
                   className={String(dragId) === String(i.product_id) ? 'dragging' : ''}
+                  style={overStock ? {background:'#fef2f2'} : undefined}
                 >
                   <td className="pos-col-stt muted">{rowNo + 1}</td>
                   <td><b>{i.product_name}</b></td>
                   <td className="pos-col-unit muted">{i.unit || 'kg'}</td>
+                  {hasStockColumn && (
+                    <td className="muted">{String(i.inventory_mode||'').toUpperCase()==='TRACK_STOCK' ? formatQty(i.stock_quantity) : ''}</td>
+                  )}
 
                   <td>
                     <input
                       ref={el => qtyRefs.current[i.product_id] = el}
                       className="input pos-agent-qty-input"
+                      style={overStock ? {borderColor:'#dc2626'} : undefined}
                       data-pos-col="qty"
                       data-pos-row={rowKey}
                       value={i.quantity_expr || ''}
@@ -104,7 +133,10 @@ export default function POSProductTableAgent({
                       onChange={e => updateQtyExpr(rowIndex, e.target.value)}
                       placeholder="10+12"
                     />
-                    {i.quantity_expr && <span className="pos-qty-computed">= {formatQty(qty)}</span>}
+                    {i.quantity_note
+                      ? <span className="pos-qty-computed">= {i.quantity_note}</span>
+                      : (i.quantity_expr && <span className="pos-qty-computed">= {formatQtyTrim(qty)}</span>)}
+                    {overStock && <div style={{color:'#dc2626',fontSize:11,marginTop:2}}>Vượt tồn: còn {formatQty(i.stock_quantity)}</div>}
                   </td>
 
                   <td>

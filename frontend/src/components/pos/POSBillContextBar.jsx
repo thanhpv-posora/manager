@@ -61,7 +61,7 @@ export default function POSBillContextBar({
         </div>
 
         {currentCustomer && selectedCategoryId && !categoryChooserOpen && (
-          <div className="pos-field" title="Mỗi bill chỉ áp dụng cho 1 danh mục hàng hóa (1 bill = 1 khách hàng + 1 danh mục)">
+          <div className="pos-field" title="Danh mục chính của bill. Có thể thêm hàng ở luồng bán còn lại bằng nút 'Thêm hàng...' trong bảng mặt hàng.">
             <span className="pos-field-label">Danh mục</span>
             <div className="pos-field-value-row">
               <span className="pos-field-value">{categoryName}</span>

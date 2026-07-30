@@ -8,13 +8,14 @@ import POSAdvancedTools from'../components/pos/POSAdvancedTools';
 import POSBillSummary from'../components/pos/POSBillSummary';
 import AIBusinessPanel from'../components/ai/AIBusinessPanel';
 import AIVoicePOSPanel from'../components/ai/AIVoicePOSPanel';
-import {calcQtyExpression}from'../utils/qtyExpression';
-import {isQtyOverStock}from'../utils/inventoryStockWarning';
+import {calcQtyExpression,roundQty}from'../utils/qtyExpression';
+import {isOverStock}from'../utils/quantity';
 import {formatLunarDate,solarToLunar,parseLunarText,lunarToSolarDate}from'../utils/lunarDate';
 import {createSpeechRecognition,parseVoiceBillCommand,voiceSupported} from'../utils/voiceBillParser';
-import {matchImportedRows,parseOrderText,rematchOne} from'../utils/orderImportParser';
+import {matchImportedRows,parseOrderText,rematchOne,getProductKey,groupImportRowsByProduct} from'../utils/orderImportParser';
 import {parseHandwritingText} from'../utils/handwritingBillParser';
 import CalendarDialog from'../components/common/CalendarDialog';
+import Dialog from'../components/common/Dialog';
 import {showWarning,showSuccess,showError}from'../utils/toast';
 
 const parseLunarMonthYear=(text)=>{
@@ -30,7 +31,7 @@ const solarMonthYearLocal=(dateText)=>{
 };
 
 
-export default function CreateOrder({setPage}){
+export default function CreateOrder(){
   const toLocalIsoDate=(d=new Date())=>{
     const y=d.getFullYear();
     const m=String(d.getMonth()+1).padStart(2,'0');
@@ -75,8 +76,32 @@ export default function CreateOrder({setPage}){
   const[voiceOpen,setVoiceOpen]=useState(false);
   const[importOpen,setImportOpen]=useState(false);
 
-  const[quick,setQuick]=useState({unit:'kg',inventory_mode:'CARCASS_PART',allow_negative_stock:1});
+  // Patch 01 (Unified POS Product Entry refactor) — dialog-framework scaffolding.
+  // Add Product's and Quick Add's Patch-01 placeholder flags are gone — Patch 02
+  // and Patch 03 reuse otherFlowOpen/quickOpen as each dialog's open flag
+  // directly, since each of those had exactly one production surface to begin
+  // with. Import is different by CTO decision: legacy Import (POSAdvancedTools,
+  // gated by toolsOpen/importOpen, untouched) and the new Excel Import dialog
+  // shell are two independent workflows kept alive side by side until the final
+  // Excel migration patch unifies them. excelImportDialogOpen is therefore its
+  // own, separate flag — never importOpen, never touching POSAdvancedTools.
+  const[excelImportDialogOpen,setExcelImportDialogOpen]=useState(false);
+
+  const[quick,setQuick]=useState({unit:'kg'});
   const[dragId,setDragId]=useState(null);
+
+  // Unified Sales V1: default_sales_flow only decides which catalog loads first —
+  // sellers may always add products from the other flow into the same bill via the
+  // browser panel below. Backend (deriveItemsSalesFlow/recomputeOrderSalesFlow)
+  // remains the sole authority on the resulting per-item and order-header sales_flow.
+  const[otherFlowOpen,setOtherFlowOpen]=useState(false);
+  const[otherFlowCategorySelection,setOtherFlowCategorySelection]=useState({categories:[],auto_selected_category_id:null,requires_selection:false,needs_initialization:false});
+  const[otherFlowSelectedCategoryId,setOtherFlowSelectedCategoryId]=useState('');
+  const[otherFlowAddCategoryPickerId,setOtherFlowAddCategoryPickerId]=useState('');
+  const[otherFlowAddCategoryBusy,setOtherFlowAddCategoryBusy]=useState(false);
+  const[otherFlowItems,setOtherFlowItems]=useState([]);
+  const[otherFlowCatalogLoading,setOtherFlowCatalogLoading]=useState(false);
+  const[otherFlowFilter,setOtherFlowFilter]=useState('');
 
   const[voiceText,setVoiceText]=useState('');
   const[voiceProductId,setVoiceProductId]=useState('');
@@ -86,6 +111,7 @@ export default function CreateOrder({setPage}){
   const[importText,setImportText]=useState('');
   const[importPreview,setImportPreview]=useState([]);
   const[importMsg,setImportMsg]=useState('');
+  const[importApplying,setImportApplying]=useState(false);
   const[allProducts,setAllProducts]=useState([]);
   const[ocrAliases,setOcrAliases]=useState([]);
   const[importApplyMode,setImportApplyMode]=useState('REPLACE');
@@ -95,6 +121,7 @@ export default function CreateOrder({setPage}){
 
   const qtyRefs=useRef({});
   const priceRefs=useRef({});
+  const otherFlowQtyRefs=useRef({});
   // S6.5: stable per-bill-attempt key sent to /orders so a double-click or a
   // network retry of the SAME save() attempt resolves to the same order instead
   // of creating a second one. Generated lazily on first use, rotated only after
@@ -106,6 +133,17 @@ export default function CreateOrder({setPage}){
   const importExcelFileRef=useRef(null);
   const importImageFileRef=useRef(null);
   const importReadSeqRef=useRef(0);
+  // Patch 04B — the Excel Import dialog's own copy of the Import Center controls
+  // (see the dialog JSX below) calls the exact same readExcelFile/readImageFile
+  // functions as Legacy Import, but needs its OWN file-input refs: Legacy Import
+  // was restored to full production function (see the Patch 04B report's
+  // REQUIRES_CTO_DECISION — removing it would have made Excel/OCR/Handwriting
+  // unreachable in production, since the new dialog is still dev-only), so both
+  // copies can be simultaneously mounted. Reusing importExcelFileRef/
+  // importImageFileRef across two mounted <input type="file"> elements is
+  // exactly what File Input Safety forbids.
+  const excelImportDialogExcelFileRef=useRef(null);
+  const excelImportDialogImageFileRef=useRef(null);
 
   const quickNameInputRef=useRef(null);
   const quickUnitInputRef=useRef(null);
@@ -145,6 +183,19 @@ export default function CreateOrder({setPage}){
     const base=customers.find(c=>String(c.id)===String(cid));
     return base?{...base,monthlyInstallment}:base;
   },[customers,cid,monthlyInstallment]);
+
+  // Customer Default Model: default_sales_flow only picks which catalog loads by
+  // default (CARCASS_POS for NULL/legacy customers, same Legacy Model used
+  // everywhere else) — it is never a restriction. The "other flow" browser below
+  // lets the seller add products from the opposite flow into the same bill.
+  const flowForCustomerId=(custId)=>{
+    const c=customers.find(x=>String(x.id)===String(custId));
+    return c?.default_sales_flow==='INVENTORY_SALE'?'INVENTORY_SALE':'CARCASS_POS';
+  };
+  const flowLabel=(f)=>f==='INVENTORY_SALE'?'Hàng Kho':'Bò Xô';
+  const primaryFlow=flowForCustomerId(cid);
+  const otherFlow=primaryFlow==='INVENTORY_SALE'?'CARCASS_POS':'INVENTORY_SALE';
+
   const assignedCategoryIds=useMemo(()=>new Set((categorySelection.categories||[]).map(c=>String(c.category_id))),[categorySelection]);
   const unassignedCategories=useMemo(()=>categories.filter(c=>!assignedCategoryIds.has(String(c.id))),[categories,assignedCategoryIds]);
   const walkInCustomer=isWalkInCustomer(currentCustomer);
@@ -275,10 +326,14 @@ export default function CreateOrder({setPage}){
       String(x.product_id),
       {quantity_expr:x.quantity_expr,quantity:x.quantity,selected:x.selected}
     ]));
+    // Rows merged in from the other sales flow's catalog (see openOtherFlowBrowser)
+    // are not part of this category's fetch below — preserve them as-is so Quick
+    // Add / catalog reorder never silently drops them from the bill.
+    const extraOtherFlowItems=items.filter(x=>x._extraFlow);
 
     setCatalogLoading(true);
     try{
-      const r=(await api.get('/price-matrix/'+id+'/catalog/order',{params:{category_id:selectedCategoryId}})).data;
+      const r=(await api.get('/price-matrix/'+id+'/catalog/order',{params:{category_id:selectedCategoryId,order_date:orderDate||today,sales_flow:flowForCustomerId(id),lunar_date_text:billCalendarType==='LUNAR'?billLunarDateText:''}})).data;
       const mapped=(r.products||[]).map((p,idx)=>{
         const old=oldByProduct.get(String(p.product_id));
         return {
@@ -290,7 +345,7 @@ export default function CreateOrder({setPage}){
           sort_order:p.sort_order||idx+1
         };
       });
-      setItems(await applyEffectivePrices(mapped));
+      setItems(await applyEffectivePrices([...mapped,...extraOtherFlowItems]));
       setNoPrivatePrice(!!r.no_private_prices);
     }finally{
       setCatalogLoading(false);
@@ -302,7 +357,7 @@ export default function CreateOrder({setPage}){
     if(!id||!selectedCategoryId){setItems([]);return;}
     setCatalogLoading(true);
     try{
-      const r=(await api.get('/price-matrix/'+id+'/catalog/order',{params:{category_id:selectedCategoryId}})).data;
+      const r=(await api.get('/price-matrix/'+id+'/catalog/order',{params:{category_id:selectedCategoryId,order_date:orderDate||today,sales_flow:flowForCustomerId(id),lunar_date_text:billCalendarType==='LUNAR'?billLunarDateText:''}})).data;
       const mapped=(r.products||[]).map((p,idx)=>({
         ...p,
         quantity_expr:'',
@@ -419,7 +474,7 @@ export default function CreateOrder({setPage}){
       const pickedCustomer=customers.find(c=>String(c.id)===String(id));
       const pickedCalendarType=String(pickedCustomer?.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
       const pickedLunarText=pickedCalendarType==='LUNAR'?formatLunarDate(orderDate||today).replace(/^ÂL\s*/,''):'';
-      const r=(await api.get('/price-matrix/'+id+'/catalog/order',{params:{category_id:categoryId}})).data;
+      const r=(await api.get('/price-matrix/'+id+'/catalog/order',{params:{category_id:categoryId,order_date:orderDate||today,sales_flow:flowForCustomerId(id),lunar_date_text:pickedLunarText}})).data;
       const mapped=(r.products||[]).map((p,idx)=>({
         ...p,
         quantity_expr:'',
@@ -442,7 +497,7 @@ export default function CreateOrder({setPage}){
   // Case 1 (1 category) / Case 2 (2+ with a default): auto_selected_category_id is set.
   // Case 3 (2+, no default): requires_selection, chooser stays open.
   const refreshCategoryList=async(id)=>{
-    const sel=(await api.get('/price-matrix/'+id+'/categories')).data;
+    const sel=(await api.get('/price-matrix/'+id+'/categories',{params:{sales_flow:flowForCustomerId(id)}})).data;
     setCategorySelection(sel);
     return sel;
   };
@@ -490,7 +545,7 @@ export default function CreateOrder({setPage}){
     setAddCategoryBusy(true);
     try{
       const newCategoryId=addCategoryPickerId;
-      await api.post('/price-matrix/'+cid+'/categories',{category_id:newCategoryId});
+      await api.post('/price-matrix/'+cid+'/categories',{category_id:newCategoryId,sales_flow:primaryFlow});
       await refreshCategoryList(cid);
       setAddCategoryPickerId('');
       setCategoryChooserOpen(false);
@@ -500,6 +555,152 @@ export default function CreateOrder({setPage}){
       showError(e.response?.data?.message||e.message||'Không thể thêm danh mục');
     }finally{
       setAddCategoryBusy(false);
+    }
+  };
+
+  // ── Unified Sales V1: browse the OTHER sales flow's catalog and add products
+  // into the SAME bill. The backend already supports one bill spanning both
+  // flows (assertItemsCategoryPerFlow allows at most one Customer Price Category
+  // per flow) — this is the UI for that, deliberately a simple bolt-on rather
+  // than a second full POS screen. Price/stock/sales_flow are still entirely
+  // resolved server-side; this panel only reuses the same catalog/price-category
+  // endpoints CreateOrder already calls for the primary flow. ────────────────
+  const refreshOtherFlowCategoryList=async(id,flow)=>{
+    const sel=(await api.get('/price-matrix/'+id+'/categories',{params:{sales_flow:flow}})).data;
+    setOtherFlowCategorySelection(sel);
+    return sel;
+  };
+
+  const loadOtherFlowCatalog=async(id,categoryId,flow)=>{
+    if(!id||!categoryId){setOtherFlowItems([]);return;}
+    setOtherFlowCatalogLoading(true);
+    try{
+      const pickedCustomer=customers.find(c=>String(c.id)===String(id));
+      const pickedCalendarType=String(pickedCustomer?.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
+      const pickedLunarText=pickedCalendarType==='LUNAR'?formatLunarDate(orderDate||today).replace(/^ÂL\s*/,''):'';
+      const r=(await api.get('/price-matrix/'+id+'/catalog/order',{params:{category_id:categoryId,order_date:orderDate||today,sales_flow:flow,lunar_date_text:pickedLunarText}})).data;
+      const mapped=(r.products||[]).map((p,idx)=>({...p,quantity_expr:'',quantity:0,sort_order:p.sort_order||idx+1}));
+      setOtherFlowItems(await applyEffectivePrices(mapped,{customer_id:id,calendar_type:pickedCalendarType,order_date:orderDate,lunar_date_text:pickedCalendarType==='LUNAR'?pickedLunarText:''}));
+    }finally{
+      setOtherFlowCatalogLoading(false);
+    }
+  };
+
+  const openOtherFlowBrowser=async()=>{
+    if(!cid)return showWarning('Chọn khách hàng trước');
+    if(!selectedCategoryId)return showWarning('Chọn danh mục hàng hóa trước');
+    setOtherFlowFilter('');
+    setOtherFlowOpen(true);
+    const flow=otherFlow;
+    const sel=await refreshOtherFlowCategoryList(cid,flow);
+    setOtherFlowAddCategoryPickerId('');
+    if(sel.auto_selected_category_id){
+      setOtherFlowSelectedCategoryId(String(sel.auto_selected_category_id));
+      await loadOtherFlowCatalog(cid,sel.auto_selected_category_id,flow);
+    }else{
+      setOtherFlowSelectedCategoryId('');
+      setOtherFlowItems([]);
+    }
+  };
+
+  const pickOtherFlowCategory=async(categoryId)=>{
+    setOtherFlowSelectedCategoryId(String(categoryId));
+    await loadOtherFlowCatalog(cid,categoryId,otherFlow);
+  };
+
+  const confirmAddOtherFlowCategory=async()=>{
+    if(!cid||!otherFlowAddCategoryPickerId)return showWarning('Chọn danh mục hàng hóa cần thêm');
+    const catName=categories.find(c=>String(c.id)===String(otherFlowAddCategoryPickerId))?.name||'';
+    const ok=await window.appConfirm(`Xác nhận thêm danh mục "${catName}" cho khách hàng này (${flowLabel(otherFlow)})?`,{title:'Thêm danh mục giá',confirmText:'Xác nhận',variant:'info'});
+    if(!ok)return;
+    setOtherFlowAddCategoryBusy(true);
+    try{
+      const newCategoryId=otherFlowAddCategoryPickerId;
+      await api.post('/price-matrix/'+cid+'/categories',{category_id:newCategoryId,sales_flow:otherFlow});
+      await refreshOtherFlowCategoryList(cid,otherFlow);
+      setOtherFlowAddCategoryPickerId('');
+      setOtherFlowSelectedCategoryId(String(newCategoryId));
+      await loadOtherFlowCatalog(cid,newCategoryId,otherFlow);
+    }catch(e){
+      showError(e.response?.data?.message||e.message||'Không thể thêm danh mục');
+    }finally{
+      setOtherFlowAddCategoryBusy(false);
+    }
+  };
+
+  const updateOtherFlowQty=(productId,value)=>{
+    setOtherFlowItems(prev=>prev.map(x=>{
+      if(x.product_id!==productId)return x;
+      const qty=calcQtyExpression(value)||0;
+      return {...x,quantity_expr:value,quantity:qty};
+    }));
+  };
+
+  const otherFlowUnassignedCategories=useMemo(()=>{
+    const assigned=new Set((otherFlowCategorySelection.categories||[]).map(c=>String(c.category_id)));
+    return categories.filter(c=>!assigned.has(String(c.id)));
+  },[categories,otherFlowCategorySelection]);
+
+  const otherFlowShown=useMemo(()=>{
+    const q=otherFlowFilter.trim().toLowerCase();
+    if(!q)return otherFlowItems;
+    return otherFlowItems.filter(x=>String(x.product_name||'').toLowerCase().includes(q)||String(x.product_code||'').toLowerCase().includes(q));
+  },[otherFlowItems,otherFlowFilter]);
+
+  const addOtherFlowSelectionToBill=()=>{
+    const picked=otherFlowItems.filter(i=>Number(i.quantity)>0);
+    if(!picked.length)return showWarning('Nhập số lượng ít nhất 1 mặt hàng');
+    setItems(prev=>{
+      const next=[...prev];
+      for(const p of picked){
+        const idx=next.findIndex(x=>String(x.product_id)===String(p.product_id));
+        if(idx>=0){
+          const newQty=roundQty(Number(next[idx].quantity||0)+Number(p.quantity||0));
+          next[idx]={...next[idx],quantity:newQty,quantity_expr:String(newQty),selected:true};
+        }else{
+          next.push({...p,selected:true,_extraFlow:true});
+        }
+      }
+      return next;
+    });
+    setOtherFlowItems(prev=>prev.map(x=>({...x,quantity_expr:'',quantity:0})));
+    setOtherFlowOpen(false);
+    showSuccess(`Đã thêm ${picked.length} mặt hàng ${flowLabel(otherFlow)} vào bill`);
+    setPendingFocusQty(true);
+  };
+
+  // Patch 02 — Add Product dialog keyboard support. New behavior (the old inline
+  // panel had no keyboard nav beyond native tab order): Enter/double-click "add"
+  // a row by routing through the exact same updateOtherFlowQty() path typing
+  // already uses — never a separate quantity-setting code path — and only when
+  // the row has no quantity yet, so a manually-typed value is never clobbered.
+  const addOrSelectOtherFlowRow=(productId)=>{
+    const row=otherFlowItems.find(x=>x.product_id===productId);
+    if(row&&Number(row.quantity||0)<=0)updateOtherFlowQty(productId,'1');
+  };
+
+  const focusOtherFlowRow=(productId)=>{
+    const el=otherFlowQtyRefs.current[productId];
+    if(el){el.focus();el.select?.();}
+  };
+
+  const handleOtherFlowRowKeyDown=(e,productId)=>{
+    if(e.key==='Enter'){
+      e.preventDefault();
+      addOrSelectOtherFlowRow(productId);
+      const idx=otherFlowShown.findIndex(x=>x.product_id===productId);
+      const next=otherFlowShown[idx+1];
+      if(next)focusOtherFlowRow(next.product_id);
+    }else if(e.key==='ArrowDown'){
+      e.preventDefault();
+      const idx=otherFlowShown.findIndex(x=>x.product_id===productId);
+      const next=otherFlowShown[idx+1];
+      if(next)focusOtherFlowRow(next.product_id);
+    }else if(e.key==='ArrowUp'){
+      e.preventDefault();
+      const idx=otherFlowShown.findIndex(x=>x.product_id===productId);
+      const prev=otherFlowShown[idx-1];
+      if(prev)focusOtherFlowRow(prev.product_id);
     }
   };
 
@@ -519,7 +720,7 @@ export default function CreateOrder({setPage}){
   };
 
   const clearRow=(idx)=>{
-    update(idx,{quantity_expr:'',quantity:0,selected:false});
+    update(idx,{quantity_expr:'',quantity:0,quantity_note:'',selected:false});
   };
 
   const shown=useMemo(()=>{
@@ -642,11 +843,11 @@ export default function CreateOrder({setPage}){
     if(checkedDate.solarDate&&checkedDate.solarDate!==orderDate)setOrderDate(checkedDate.solarDate);
     if(!selected.length)return showWarning('Nhập số lượng ít nhất 1 mặt hàng');
 
-    // S9: non-blocking nudge only — row highlight + inline warning already show
-    // live in POSProductTableAgent as the cashier types. Save is NEVER blocked
-    // here; InventoryService/postOut() remains the sole authority on whether a
-    // sale is actually allowed.
-    const overStockItem=selected.find(i=>isQtyOverStock(i.inventory_mode,i.allow_negative_stock,i.stock_quantity,i.quantity));
+    // Non-blocking nudge only — row highlight + inline warning already show live in
+    // POSProductTableAgent as the cashier types. Save is NEVER blocked here;
+    // InventoryService/postOut() remains the sole authority on whether a sale is
+    // actually allowed.
+    const overStockItem=selected.find(i=>isOverStock(i.inventory_mode,i.allow_negative_stock,i.stock_quantity,i.quantity));
     if(overStockItem)qtyRefs.current[overStockItem.product_id]?.focus();
 
     const needManualPrice=walkInCustomer||noPrivatePrice;
@@ -774,8 +975,16 @@ export default function CreateOrder({setPage}){
     if(!quick.name)return showWarning('Nhập tên mặt hàng');
 
     try{
+      // Quick Add always creates a product for the bill's currently-selected
+      // (primary) category/flow — inventory_mode is derived from that flow, never
+      // user-picked, since CARCASS_POS/INVENTORY_SALE each pair with exactly one
+      // valid inventory_mode (see productSalesFlow.js's compatibility matrix).
+      const quickInventoryMode=primaryFlow==='INVENTORY_SALE'?'TRACK_STOCK':'NON_STOCK';
       const r=await api.post('/products/quick',{
         ...quick,
+        inventory_mode:quickInventoryMode,
+        allow_negative_stock:primaryFlow==='INVENTORY_SALE'?0:1,
+        sales_flow:primaryFlow,
         category_id:selectedCategoryId,
         customer_id:cid
       });
@@ -783,8 +992,6 @@ export default function CreateOrder({setPage}){
       showSuccess(r.data.message+' - '+r.data.product_code);
       setQuick(q=>({
         unit:q.unit||'kg',
-        inventory_mode:q.inventory_mode||'CARCASS_PART',
-        allow_negative_stock:q.allow_negative_stock??1,
         category_id:q.category_id
       }));
       if(selectedCategoryId)loadNextCode(selectedCategoryId);
@@ -854,7 +1061,7 @@ export default function CreateOrder({setPage}){
     if(result.action==='CLEAR_ITEM'){
       const idx=items.findIndex(x=>x.product_id===result.product.product_id);
       if(idx>=0){
-        update(idx,{quantity_expr:'',quantity:0,selected:false});
+        update(idx,{quantity_expr:'',quantity:0,quantity_note:'',selected:false});
         setVoiceMsg(`Đã xóa ${result.product.product_name}`);
       }
       return;
@@ -867,7 +1074,7 @@ export default function CreateOrder({setPage}){
     }
 
     const oldQty=Number(items[idx].quantity||0);
-    const newQty=Number((oldQty+Number(result.quantity||0)).toFixed(3));
+    const newQty=roundQty(oldQty+Number(result.quantity||0));
     update(idx,{quantity_expr:String(newQty),quantity:newQty,selected:newQty>0});
     setVoiceMsg(`Đã thêm ${result.product.product_name}: ${result.expression||result.quantity} = ${result.quantity} kg`);
   };
@@ -909,8 +1116,14 @@ export default function CreateOrder({setPage}){
   };
 
   const resetImportFileInputs=()=>{
+    // The rendered Import dialog's file inputs are excelImportDialogExcelFileRef/
+    // excelImportDialogImageFileRef (see the Dialog JSX below) — importExcelFileRef/
+    // importImageFileRef are legacy refs no longer attached to any mounted
+    // element, kept only so nothing else referencing them breaks.
     if(importExcelFileRef.current)importExcelFileRef.current.value='';
     if(importImageFileRef.current)importImageFileRef.current.value='';
+    if(excelImportDialogExcelFileRef.current)excelImportDialogExcelFileRef.current.value='';
+    if(excelImportDialogImageFileRef.current)excelImportDialogImageFileRef.current.value='';
   };
 
   const startFreshImportSession=()=>{
@@ -978,7 +1191,7 @@ export default function CreateOrder({setPage}){
 
   const clearCurrentBillQty=async()=>{
     if(!await window.appConfirm('Xóa toàn bộ số lượng đang nhập trong bill hiện tại?',{title:'Xóa số lượng bill',confirmText:'Xóa',variant:'danger'}))return;
-    setItems(prev=>prev.map(x=>({...x,quantity_expr:'',quantity:0,selected:false})));
+    setItems(prev=>prev.map(x=>({...x,quantity_expr:'',quantity:0,quantity_note:'',selected:false})));
     setPaid(0);
     setCashAmount(0);
     setBankAmount(0);
@@ -1026,60 +1239,87 @@ export default function CreateOrder({setPage}){
     }));
   };
 
-  const getProductKey=(obj)=>{
-    const id=obj?.product_id??obj?.id??obj?.productId;
-    return id===undefined||id===null?'':String(id);
-  };
-
   const applyImport=async()=>{
+    // Double-click / repeat-click guard: while a previous call is still
+    // processing (e.g. awaiting the warning-confirmation dialog below),
+    // ignore further clicks entirely rather than starting a second apply.
+    if(importApplying)return;
     if(!importPreview.length)return;
     const rowsToApply=importPreview.filter(x=>x.selected&&x.canApply);
     if(!rowsToApply.length){
+      // No valid row selected: dialog stays open, existing validation
+      // message shown, bill unchanged — nothing else to do.
       showWarning('Không có dòng hợp lệ được chọn');
       return;
     }
 
-    const warnRows=rowsToApply.filter(x=>x.warnings&&x.warnings.length);
-    if(warnRows.length){
-      const ok=await window.appConfirm('Có dòng import cảnh báo. Bạn đã kiểm tra kỹ chưa?',{title:'Xác nhận import',confirmText:'Đã kiểm tra',variant:'warning'});
-      if(!ok)return;
-    }
-
-    // Gom theo product_id trước khi đưa vào bill.
-    // Tránh lỗi file Excel có 2 dòng cùng mặt hàng (ví dụ Rìa) bị ghi đè hoặc lệch dòng.
-    const grouped=new Map();
-    for(const r of rowsToApply){
-      const product=r.product||{};
-      const key=getProductKey(product)||String(r.product_id||'');
-      if(!key)continue;
-      const old=grouped.get(key)||{product,row:r,qty:0,count:0,names:[]};
-      old.qty=Number((Number(old.qty||0)+Number(r.qty||0)).toFixed(3));
-      old.count+=1;
-      old.names.push(r.name||r.raw||product.product_name||'');
-      grouped.set(key,old);
-    }
-
-    let arr=[...items];
-    let applied=0;
-    let missing=0;
-    for(const [key,g] of grouped.entries()){
-      const idx=arr.findIndex(x=>getProductKey(x)===key);
-      if(idx>=0){
-        const oldQty=importApplyMode==='ADD'?Number(arr[idx].quantity||0):0;
-        const newQty=Number((oldQty+Number(g.qty||0)).toFixed(3));
-        arr[idx]={...arr[idx],quantity:newQty,quantity_expr:String(newQty),selected:newQty>0};
-        applied+=g.count;
-      }else{
-        missing+=g.count;
+    setImportApplying(true);
+    try{
+      const warnRows=rowsToApply.filter(x=>x.warnings&&x.warnings.length);
+      if(warnRows.length){
+        const ok=await window.appConfirm('Có dòng import cảnh báo. Bạn đã kiểm tra kỹ chưa?',{title:'Xác nhận import',confirmText:'Đã kiểm tra',variant:'warning'});
+        if(!ok)return; // user declined: dialog stays open, nothing applied
       }
+
+      // Gom theo product_id trước khi đưa vào bill (never by name — two rows
+      // only ever merge when their resolved product_id is identical).
+      // Tránh lỗi file Excel có 2 dòng cùng mặt hàng (ví dụ Rìa) bị ghi đè hoặc lệch dòng.
+      const grouped=groupImportRowsByProduct(rowsToApply);
+
+      let arr=[...items];
+      let applied=0;
+      let missing=0;
+      for(const [key,g] of grouped.entries()){
+        const idx=arr.findIndex(x=>getProductKey(x)===key);
+        if(idx>=0){
+          const oldQty=importApplyMode==='ADD'?Number(arr[idx].quantity||0):0;
+          const newQty=roundQty(oldQty+Number(g.qty||0));
+          // Preserve the original Excel/text expression(s) as a note distinct
+          // from the input value itself (input shows the evaluated newQty;
+          // the note below it may show "= 10+12") — never the other way round.
+          const newNote=g.qtyExprs.join(' + ');
+          const existingNote=importApplyMode==='ADD'
+            ? (arr[idx].quantity_note || (oldQty>0 ? String(oldQty) : ''))
+            : '';
+          arr[idx]={...arr[idx],quantity:newQty,quantity_expr:String(newQty),quantity_note:existingNote?`${existingNote} + ${newNote}`:newNote,selected:newQty>0};
+          applied+=g.count;
+        }else{
+          missing+=g.count;
+        }
+      }
+      setItems(arr);
+      const duplicateCount=rowsToApply.length-grouped.size;
+      const successMsg=`Đã đưa ${applied} dòng đã chọn vào bill (${grouped.size} mặt hàng${duplicateCount>0?', đã gộp '+duplicateCount+' dòng trùng':''}, ${importApplyMode==='ADD'?'cộng thêm':'ghi đè'}).${missing?` Có ${missing} dòng không tìm thấy trong danh mục khách.`:''}`;
+
+      if(excelBillQueue.length>0){
+        // A multi-sheet Excel import is in progress (one bill per sheet).
+        // That workflow is driven separately, from save() ->
+        // goNextExcelSheetAfterSave(), AFTER this bill is actually saved —
+        // not here. Keep the dialog open and the queue intact; only mark
+        // these rows as consumed so re-clicking apply can't double-add them.
+        setImportPreview(prev=>prev.map(x=>rowsToApply.includes(x)?{...x,selected:false,applied:true}:x));
+        setImportMsg(successMsg);
+      }else{
+        // Single-sheet / pasted-text / OCR import: bill state has been
+        // updated and there is no further sheet queued — reset the
+        // temporary import/dialog state and close automatically. Order
+        // matters — the preview rows are only cleared AFTER arr/items has
+        // already consumed them above, never before.
+        resetImportSession();
+        resetImportFileInputs();
+        setImportApplyMode('REPLACE');
+        setExcelImportDialogOpen(false);
+        setToolsOpen(false);
+        setPendingFocusQty(true);
+        showSuccess(successMsg);
+      }
+    }catch(e){
+      // Processing failure: dialog stays open, nothing partially applied
+      // (setItems above never ran), existing error handling surfaces it.
+      showError(e?.response?.data?.message||e?.message||'Không thể đưa dòng đã chọn vào bill');
+    }finally{
+      setImportApplying(false);
     }
-    setItems(arr);
-    setImportPreview(prev=>prev.map(x=>rowsToApply.includes(x)?{...x,selected:false,applied:true}:x));
-    const duplicateCount=rowsToApply.length-grouped.size;
-    setImportMsg(`Đã đưa ${applied} dòng đã chọn vào bill (${grouped.size} mặt hàng${duplicateCount>0?', đã gộp '+duplicateCount+' dòng trùng':''}, ${importApplyMode==='ADD'?'cộng thêm':'ghi đè'}). Đã bỏ chọn các dòng vừa đưa vào bill để tránh bấm nhầm lần 2.${missing?` Có ${missing} dòng không tìm thấy trong danh mục khách.`:''}`);
-    setImportOpen(false);
-    setToolsOpen(false);
-    setPendingFocusQty(true);
   };
 
   const readExcelFile=async(file)=>{
@@ -1095,7 +1335,7 @@ export default function CreateOrder({setPage}){
     const readSeq=importReadSeqRef.current+1;
     importReadSeqRef.current=readSeq;
     resetImportSession();
-    setItems(prev=>prev.map(x=>({...x,quantity:0,quantity_expr:'',selected:false})));
+    setItems(prev=>prev.map(x=>({...x,quantity:0,quantity_expr:'',quantity_note:'',selected:false})));
     setImportApplyMode('REPLACE');
     setImportMsg('Đang đọc file Excel mới, đã xóa cache import cũ...');
     try{
@@ -1252,10 +1492,18 @@ export default function CreateOrder({setPage}){
           const qtyText=toNumberText(row[qtyCol]);
           if(!name||!isNumericCell(qtyText))continue;
           if(isNameHeader(name)||isQtyHeader(name))continue;
+          // Raw Excel numeric cells can themselves carry IEEE754 storage
+          // artifacts (e.g. a formula-computed cell cached as
+          // 51.99999999999999) — round once here, at the point the value
+          // enters the preview-row model, so qty/qtyExpr are always clean
+          // downstream (preview input, "= " note, and the add-to-bill
+          // payload all read from this same already-rounded value).
+          const cleanQty=roundQty(Number(qtyText));
           rows.push({
             name,
-            qtyExpr:String(qtyText),
-            qty:Number(qtyText),
+            qtyExpr:String(cleanQty),
+            rawQuantityText:qtyText,
+            qty:cleanQty,
             raw:`[${sheetName}] ${name} ${qtyText}`,
             sourceType:'excel',
             sheetName,
@@ -1439,6 +1687,9 @@ export default function CreateOrder({setPage}){
                 onClearRow={clearRow}
                 quickOpen={quickOpen}
                 toolsOpen={toolsOpen}
+                onBrowseOtherFlow={openOtherFlowBrowser}
+                otherFlowLabel={flowLabel(otherFlow)}
+                onOpenImportDialog={()=>setExcelImportDialogOpen(true)}
               />
             ) : currentCustomer && (
               <div className="card">
@@ -1446,14 +1697,95 @@ export default function CreateOrder({setPage}){
               </div>
             )}
 
-            {quickOpen && (
-              <div className="card pos-quick-add-panel" ref={quickAddSectionRef}>
-                <div className="pos-quick-add-head">
-                  <h3 style={{margin:0}}>Thêm nhanh mặt hàng</h3>
-                  <button type="button" className="btn secondary" onClick={toggleQuickAddPanel}>
-                    − Thu gọn
-                  </button>
+            {/* Patch 04C — production cutover. This is now the sole copy of the
+                Import Center (POSAdvancedTools's inline card and all its Import
+                Center props were removed in this same patch). The
+                "+ Import Excel/Ảnh/Viết tay" button (still in POSAdvancedTools,
+                unchanged position/role) opens excelImportDialogOpen directly —
+                no more importOpen toggle. importOpen itself is untouched and
+                still exists: readExcelFile/loadExcelBillToPreview still set it
+                exactly as before (neither function was modified, per mission),
+                it simply has no UI left anywhere that reads it for visibility.
+                File inputs keep their dedicated refs from Patch 04B
+                (excelImportDialogExcelFileRef/excelImportDialogImageFileRef) —
+                no longer required for File Input Safety now that only one copy
+                exists, but left as-is since renaming was not requested and
+                would be diff beyond "remove the obsolete presentation layer". */}
+            <Dialog open={excelImportDialogOpen} title="Import" onClose={()=>setExcelImportDialogOpen(false)}>
+                <h3>Import đơn từ Excel / hình ảnh</h3>
+                <p className="muted">
+                  File chỉ cần 2 cột: <b>Tên mặt hàng</b> và <b>Số lượng</b>.
+                </p>
+                <div className="actions">
+                  <input className="input" style={{ maxWidth: 360 }} placeholder="Sheet cần đọc (trống = tất cả, nhiều sheet cách nhau dấu phẩy)" value={importSheetFilter} onChange={e => setImportSheetFilter(e.target.value)} />
+                  <input ref={excelImportDialogExcelFileRef} type="file" accept=".xlsx,.xls,.csv" onClick={e => { e.currentTarget.value = ''; startFreshImportSession(); }} onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; readExcelFile(file); }} />
+                  <input ref={excelImportDialogImageFileRef} type="file" accept="image/*" onClick={e => { e.currentTarget.value = ''; startFreshImportSession(); }} onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; readImageFile(file); }} />
                 </div>
+                <textarea className="input" style={{ minHeight: 120, marginTop: 10 }} placeholder={'Bò búp 10+12\nĐùi bò 5.5'} value={importText} onChange={e => setImportText(e.target.value)} />
+                <div className="actions" style={{ marginTop: 10 }}>
+                  <select className="select" style={{ width: 220 }} value={importApplyMode} onChange={e => setImportApplyMode(e.target.value)}>
+                    <option value="REPLACE">Ghi đè số lượng trong bill</option>
+                    <option value="ADD">Cộng thêm vào số lượng cũ</option>
+                  </select>
+                  <button className="btn secondary" onClick={() => previewImport('text')}>Xem trước import text/excel</button>
+                  <button className="btn secondary" onClick={() => previewImport('image')}>Xem trước OCR ảnh</button>
+                  <button className="btn secondary" onClick={previewHandwriting}>Xem ảnh viết tay</button>
+                  <button className="btn" onClick={applyImport} disabled={!importPreview.length||importApplying}>{importApplying?'Đang xử lý...':'Đưa dòng đã chọn vào bill'}</button>
+                  <button className="btn danger" onClick={clearCurrentBillQty}>Xóa SL bill hiện tại</button>
+                </div>
+                {importMsg && <p className="muted">{importMsg}</p>}
+
+                {importPreview.length > 0 && (
+                  <div className="card inner-card">
+                    <h3>Preview import</h3>
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>Chọn</th>
+                          <th>Raw</th>
+                          <th>Mặt hàng khớp</th>
+                          <th>Số lượng</th>
+                          <th>Trạng thái</th>
+                          <th>Thao tác</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {importPreview.map((r, idx) => (
+                          <tr key={idx} style={{ background: r.status === 'ERROR' ? '#fee2e2' : (r.status === 'WARN' ? '#fef3c7' : '#dcfce7') }}>
+                            <td>
+                              <input type="checkbox" checked={!!r.selected} disabled={!r.canApply} onChange={e => updateImportRow(idx, { selected: e.target.checked })} />
+                            </td>
+                            <td><b>{r.name || r.raw || ''}</b><br /><span className="muted">{r.raw || ''}</span></td>
+                            <td>{r.product ? <span>{r.product.product_code} - {r.product.product_name}</span> : <span className="muted">Chưa khớp danh mục</span>}</td>
+                            <td>
+                              <input inputMode="decimal" className="input" style={{ width: 120 }} value={r.qtyExpr || r.quantity_expr || r.qty || ''} onChange={e => updateImportRow(idx, { qtyExpr: e.target.value })} />
+                            </td>
+                            <td>
+                              {r.errors?.length ? <span>🔴 {r.errors.join(', ')}</span> : r.warnings?.length ? <span>🟡 {r.warnings.join(', ')}</span> : <span>🟢 OK</span>}
+                            </td>
+                            <td>
+                              {r.product_id && !r.inCustomerCatalog && (
+                                <button className="btn secondary" onClick={() => addMissingToCatalog(r)}>
+                                  Thêm vào DM khách
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </Dialog>
+
+            {/* Patch 03 — Quick Add dialog. Reuses quickOpen as the single open/close
+                flag (no separate dialog-only flag) so there is exactly one production
+                entry point for this workflow — the existing "+ Thêm nhanh" toolbar
+                button (onQuickAdd={toggleQuickAddPanel}) already sets quickOpen=true,
+                unchanged. Content below is the same quick state/addQuickProduct/
+                keyboard flow unchanged, only relocated out of the old inline card. */}
+            <Dialog open={quickOpen} title="Thêm nhanh mặt hàng" onClose={()=>setQuickOpen(false)}>
+              <div ref={quickAddSectionRef}>
                 {!selectedCategoryId && <p className="muted">Chọn danh mục hàng hóa ở trên trước khi thêm nhanh mặt hàng.</p>}
                 <div className="form-grid">
                   <input className="input" disabled value={categories.find(c=>String(c.id)===String(selectedCategoryId))?.name||'Chưa chọn danh mục'} />
@@ -1486,17 +1818,107 @@ export default function CreateOrder({setPage}){
                       }
                     }}
                   />
-                  <select className="select" value={quick.inventory_mode||'CARCASS_PART'} onChange={e=>setQuick({...quick,inventory_mode:e.target.value,allow_negative_stock:e.target.value==='STOCK'?0:1})}>
-                    <option value="STOCK">Quản tồn kho</option>
-                    <option value="NON_STOCK">Bò xô không kiểm tồn</option>
-                    <option value="CARCASS_PART">Phần pha lóc không kiểm tồn</option>
-                  </select>
+                  <input className="input" disabled value={primaryFlow==='INVENTORY_SALE'?'Quản tồn kho (Hàng Kho)':'Bò xô không kiểm tồn'} />
                 </div>
                 <button ref={quickAddSaveBtnRef} className="btn secondary" style={{marginTop:10}} disabled={!selectedCategoryId} onClick={addQuickProduct}>
                   + Thêm vào danh mục khách
                 </button>
               </div>
-            )}
+            </Dialog>
+
+            {/* Patch 02 — Add Product dialog. Reuses otherFlowOpen as the single
+                open/close flag (no separate dialog-only flag) so there is exactly
+                one production entry point for this workflow. Content below is the
+                same otherFlow* state/handlers unchanged, only relocated out of the
+                old inline card into the Patch-01 Dialog shell, plus new keyboard
+                wiring (ref/onKeyDown/onDoubleClick) on each row. */}
+            <Dialog open={otherFlowOpen} title={`Thêm hàng ${flowLabel(otherFlow)}`} onClose={()=>setOtherFlowOpen(false)}>
+              {otherFlowCategorySelection.needs_initialization && (
+                <p className="notice">Khách hàng này chưa có danh mục giá {flowLabel(otherFlow)} nào. Chọn danh mục hàng hóa để bắt đầu.</p>
+              )}
+              {otherFlowCategorySelection.requires_selection && (
+                <p className="notice">Khách hàng có nhiều danh mục giá {flowLabel(otherFlow)} và chưa đặt mặc định. Vui lòng chọn danh mục.</p>
+              )}
+
+              {otherFlowCategorySelection.categories.length>0 && (
+                <div className="pos-bill-context-row">
+                  <b>Chọn danh mục đã có:</b>
+                  <select className="select" value={otherFlowSelectedCategoryId} onChange={e=>pickOtherFlowCategory(e.target.value)}>
+                    <option value="">-- Chọn danh mục --</option>
+                    {otherFlowCategorySelection.categories.map(c=>(
+                      <option key={c.id} value={c.category_id}>{c.category_name}{c.is_default?' (mặc định)':''}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div className="pos-bill-context-row" style={{marginTop:8}}>
+                <b>{otherFlowCategorySelection.categories.length>0?'+ Thêm danh mục khác:':'Chọn danh mục hàng hóa mới:'}</b>
+                <select className="select" value={otherFlowAddCategoryPickerId} onChange={e=>setOtherFlowAddCategoryPickerId(e.target.value)}>
+                  <option value="">-- Chọn danh mục --</option>
+                  {otherFlowUnassignedCategories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+                <button type="button" className="btn secondary" disabled={!otherFlowAddCategoryPickerId||otherFlowAddCategoryBusy} onClick={confirmAddOtherFlowCategory}>
+                  {otherFlowAddCategoryBusy?'Đang tạo...':'Xác nhận tạo'}
+                </button>
+              </div>
+
+              {otherFlowSelectedCategoryId && (
+                <>
+                  <input className="input" style={{marginTop:10}} placeholder="Tìm mã, tên mặt hàng..." value={otherFlowFilter} onChange={e=>setOtherFlowFilter(e.target.value)} />
+                  <div className="pos-agent-table-scroll" style={{marginTop:8}}>
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>Mã hàng</th><th>Tên mặt hàng</th><th>ĐVT</th>
+                          {otherFlow==='INVENTORY_SALE' && <th>Tồn kho</th>}
+                          <th>Số lượng</th><th>Đơn giá</th><th>Thành tiền</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {otherFlowCatalogLoading && <tr><td colSpan={7} style={{textAlign:'center'}}>Đang tải...</td></tr>}
+                        {!otherFlowCatalogLoading && !otherFlowShown.length && (
+                          <tr><td colSpan={7} style={{textAlign:'center'}} className="muted">Không có mặt hàng trong danh mục này</td></tr>
+                        )}
+                        {otherFlowShown.map(i=>{
+                          const overStock=i.quantity_expr&&isOverStock(i.inventory_mode,i.allow_negative_stock,i.stock_quantity,i.quantity);
+                          return (
+                            <tr
+                              key={i.product_id}
+                              style={overStock?{background:'#fef2f2'}:undefined}
+                              onDoubleClick={()=>addOrSelectOtherFlowRow(i.product_id)}
+                            >
+                              <td className="muted">{i.product_code}</td>
+                              <td><b>{i.product_name}</b></td>
+                              <td className="muted">{i.unit||'kg'}</td>
+                              {otherFlow==='INVENTORY_SALE' && <td>{i.stock_quantity}</td>}
+                              <td>
+                                <input
+                                  ref={el=>otherFlowQtyRefs.current[i.product_id]=el}
+                                  className="input"
+                                  style={overStock?{borderColor:'#dc2626'}:undefined}
+                                  inputMode="decimal"
+                                  value={i.quantity_expr||''}
+                                  onChange={e=>updateOtherFlowQty(i.product_id,e.target.value)}
+                                  onKeyDown={e=>handleOtherFlowRowKeyDown(e,i.product_id)}
+                                  placeholder="0"
+                                />
+                                {overStock && <div style={{color:'#dc2626',fontSize:11,marginTop:2}}>Vượt tồn: còn {i.stock_quantity}</div>}
+                              </td>
+                              <td>{Number(i.sale_price||0).toLocaleString('en-US')}đ</td>
+                              <td><b>{(Number(i.quantity||0)*Number(i.sale_price||0)).toLocaleString('en-US')}đ</b></td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <button type="button" className="btn" style={{marginTop:10}} onClick={addOtherFlowSelectionToBill}>
+                    Đưa vào bill
+                  </button>
+                </>
+              )}
+            </Dialog>
 
             <POSAdvancedTools
               toolsOpen={toolsOpen}
@@ -1504,27 +1926,7 @@ export default function CreateOrder({setPage}){
               cid={cid}
               saveOrder={saveOrder}
               toolsFirstInputRef={toolsFirstInputRef}
-              importOpen={importOpen}
-              setImportOpen={setImportOpen}
-              importSheetFilter={importSheetFilter}
-              setImportSheetFilter={setImportSheetFilter}
-              importExcelFileRef={importExcelFileRef}
-              importImageFileRef={importImageFileRef}
-              startFreshImportSession={startFreshImportSession}
-              readExcelFile={readExcelFile}
-              readImageFile={readImageFile}
-              importText={importText}
-              setImportText={setImportText}
-              importApplyMode={importApplyMode}
-              setImportApplyMode={setImportApplyMode}
-              previewImport={previewImport}
-              previewHandwriting={previewHandwriting}
-              applyImport={applyImport}
-              importPreview={importPreview}
-              clearCurrentBillQty={clearCurrentBillQty}
-              importMsg={importMsg}
-              updateImportRow={updateImportRow}
-              addMissingToCatalog={addMissingToCatalog}
+              onOpenExcelImportDialog={()=>setExcelImportDialogOpen(true)}
             />
           </main>
 

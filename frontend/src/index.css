@@ -2596,6 +2596,37 @@ button,.btn,.menu-item,.input,.select,textarea{
 .modal-header,.modal-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;}
 .modal-header h2{margin:0 0 6px 0;}
 .modal-footer{border-top:1px solid #e5e7eb;margin-top:14px;padding-top:14px;}
+
+/* Master Data Dialog Design System — scoped to Dialog.jsx's dialog-shell
+   modifier only (added only when a caller uses the standardized footer), so
+   this never changes the bare .modal-card/.modal-header/.modal-footer used
+   directly by CalendarDialog.jsx or the hand-rolled .app-dialog-* modals.
+   Reuses the existing modal-card/modal-header/modal-footer colors, borders,
+   and spacing values already defined above — no new colors introduced. */
+.modal-card.dialog-shell{
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+  max-height:90vh;
+}
+.dialog-shell .modal-header{
+  flex-shrink:0;
+  border-bottom:1px solid #e5e7eb;
+  padding-bottom:14px;
+  margin-bottom:0;
+}
+.dialog-shell .dialog-body{
+  flex:1 1 auto;
+  overflow:auto;
+  padding:16px 0;
+}
+.dialog-shell .modal-footer{
+  flex-shrink:0;
+}
+@media(max-width:640px){
+  .modal-card.dialog-shell{max-height:94vh;width:96vw;padding:14px;}
+}
+
 .excel-price-preview .excel-preview-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:12px;}
 .excel-price-preview .scroll-box{max-height:52vh;overflow:auto;border:1px solid #e5e7eb;border-radius:14px;}
 .excel-price-preview .scroll-box table{margin:0;}

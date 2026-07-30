@@ -6,6 +6,7 @@ import { showSuccess, showError, showWarning } from '../utils/toast';
 import EnterpriseAutocomplete from '../components/common/EnterpriseAutocomplete';
 import MoneyInput from '../components/MoneyInput';
 import { formatQty } from '../utils/quantity';
+import { validatePriceBookRows, buildPriceBookApplyRows, mergePriceBookRowsIntoPoRows } from '../utils/supplierPriceBookBulkEntry';
 
 const STATUS_LABEL = {
   DRAFT: 'Nháp',
@@ -83,6 +84,8 @@ function mergePoRows(catalogItems, existingItems) {
       item_id:                 ex?.id || null,
       expected_conversion_qty: ex?.expected_conversion_qty ?? null,
       expected_stock_qty:      ex?.expected_stock_qty ?? null,
+      price_book_id:           ex?.price_book_id ?? null,
+      price_book_item_id:      ex?.price_book_item_id ?? null,
     });
   }
 
@@ -102,6 +105,8 @@ function mergePoRows(catalogItems, existingItems) {
         item_id:                 it.id,
         expected_conversion_qty: it.expected_conversion_qty ?? null,
         expected_stock_qty:      it.expected_stock_qty ?? null,
+        price_book_id:           it.price_book_id ?? null,
+        price_book_item_id:      it.price_book_item_id ?? null,
       });
     }
   }
@@ -173,6 +178,17 @@ export default function InventoryPurchases() {
   const [statusSaving, setStatusSaving]           = useState(false);
   const addDlgProductRef                          = useRef();
   const payDlgKeyRef                              = useRef(null);
+
+  // "Nạp bảng giá NCC" bulk-entry dialog state. Rows live only in this local
+  // draft array while the dialog is open — no API call per keystroke, no API
+  // call per row. Applying valid rows merges into poRows using the exact
+  // same product_id-match rule as saveAddDlg() (see report §"Duplicate-row
+  // behavior"); persistence itself is entirely unchanged — still the
+  // existing savePoGrid()/"Lưu nháp" -> /sync endpoint.
+  const [priceBookDlg, setPriceBookDlg]           = useState(null); // {priceBookId, rows, search, onlyEntered}
+  const [priceBookLoading, setPriceBookLoading]   = useState(false);
+  const [priceBookApplying, setPriceBookApplying] = useState(false);
+  const priceBookQtyRefs                          = useRef({});
 
   // short close dialog
   const [shortCloseDlg, setShortCloseDlg]         = useState(false);
@@ -389,6 +405,8 @@ export default function InventoryPurchases() {
         quantity:                    Number(String(r.quantity || '0').replace(',', '.')),
         purchase_price:              Number(r.purchase_price || 0),
         note:                        r.note || null,
+        price_book_id:               r.price_book_id || null,
+        price_book_item_id:          r.price_book_item_id || null,
       }));
       const res = await api.post(`/inventory-purchases/${order.id}/sync`, { rows });
       showSuccess(res.data.message || 'Đã lưu phiếu mua hàng');
@@ -489,6 +507,88 @@ export default function InventoryPurchases() {
     finally { setAddDlgSaving(false); }
   };
 
+  // ── "Nạp bảng giá NCC" (load supplier purchase price book) ──────────────────
+
+  const openPriceBookDialog = async () => {
+    if (!order?.id) return;
+    if (!catalogCategoryId) { showWarning('Chọn danh mục hàng hóa trước'); return; }
+    setPriceBookLoading(true);
+    try {
+      const r = await api.get(`/inventory-purchases/${order.id}/price-book`, { params: { category_id: catalogCategoryId } });
+      if (!r.data.price_book_id) {
+        showWarning('Nhà cung cấp chưa có bảng giá mua phù hợp với ngày nhập.');
+        return;
+      }
+      const rows = r.data.items.map(it => ({
+        product_id: it.product_id,
+        product_name: it.product_name,
+        product_code: it.product_code,
+        unit_name: it.unit_name,
+        conversion_qty: it.conversion_qty,
+        supplier_purchase_option_id: it.supplier_purchase_option_id,
+        price_book_id: it.price_book_id,
+        price_book_item_id: it.price_book_item_id,
+        purchase_price: String(it.purchase_price || ''),
+        quantity: '',
+        note: '',
+        available: it.available,
+        unavailable_reason: it.unavailable_reason,
+        error: '',
+      }));
+      setPriceBookDlg({ priceBookId: r.data.price_book_id, rows, search: '', onlyEntered: false });
+    } catch (e) {
+      showError(e.response?.data?.message || e.message || 'Không tải được bảng giá nhà cung cấp');
+    } finally {
+      setPriceBookLoading(false);
+    }
+  };
+
+  const updatePriceBookRow = (productId, field, value) => {
+    setPriceBookDlg(d => d && ({
+      ...d,
+      rows: d.rows.map(r => r.product_id === productId ? { ...r, [field]: value, ...(field === 'quantity' ? { error: '' } : {}) } : r),
+    }));
+  };
+
+  const clearPriceBookQuantities = () => {
+    setPriceBookDlg(d => d && ({ ...d, rows: d.rows.map(r => ({ ...r, quantity: '', error: '' })) }));
+  };
+
+  const applyPriceBookDialog = () => {
+    if (!priceBookDlg || priceBookApplying) return; // double-click guard
+    // Validate every row first — a single invalid row blocks the whole apply
+    // and keeps the dialog open (blank/zero are never errors, only skipped).
+    const { hasError, rows: validated } = validatePriceBookRows(priceBookDlg.rows);
+    if (hasError) {
+      setPriceBookDlg(d => ({ ...d, rows: validated }));
+      showWarning('Có số lượng không hợp lệ. Vui lòng kiểm tra lại các dòng được đánh dấu.');
+      return;
+    }
+
+    setPriceBookApplying(true);
+    try {
+      const { toAdd, skipped } = buildPriceBookApplyRows(priceBookDlg.rows);
+      if (!toAdd.length) {
+        showWarning('Chưa nhập số lượng cho mặt hàng nào.');
+        return; // dialog stays open — nothing to apply
+      }
+
+      // Same product_id-match rule as saveAddDlg(): a product already present
+      // in the current PO draft is replaced (product_id is the only identity
+      // used — never product name), matching the one verified existing
+      // duplicate-row rule in this codebase. See report §"Duplicate-row behavior".
+      setPoRows(prev => mergePriceBookRowsIntoPoRows(prev, toAdd));
+
+      showSuccess(`Đã thêm ${toAdd.length} mặt hàng vào phiếu. Bỏ qua ${skipped} mặt hàng chưa nhập số lượng.`);
+      setPriceBookDlg(null); // success only — close the dialog
+    } catch (e) {
+      showError(e.message || 'Không đưa được mặt hàng vào phiếu');
+      // dialog intentionally stays open on failure
+    } finally {
+      setPriceBookApplying(false);
+    }
+  };
+
   // ── Derived ────────────────────────────────────────────────────────────────
   const isDraft  = order?.status === 'DRAFT';
   // Short Close closes the remainder after a partial receipt — must not double as cancel.
@@ -515,10 +615,17 @@ export default function InventoryPurchases() {
           </div>
           <div>
             <label style={LBL}>Nhà cung cấp</label>
-            <select className="select" value={filterSup} onChange={e => setFilterSup(e.target.value)}>
-              <option value="">Tất cả</option>
-              {partners.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
+            <EnterpriseAutocomplete
+              items={partners}
+              value={partners.find(s => String(s.id) === String(filterSup)) || null}
+              onChange={s => setFilterSup(s ? String(s.id) : '')}
+              placeholder="Tất cả"
+              displayField="name"
+              secondaryFields={['customer_code', 'phone']}
+              searchFields={['name', 'customer_code', 'phone']}
+              emptyText="Không tìm thấy nhà cung cấp"
+              getItemKey={s => s.id}
+            />
           </div>
           <button className="btn secondary" onClick={loadList} disabled={listLoading}>Tải lại</button>
           <button className="btn" style={{ marginLeft: 'auto' }} onClick={openNew}>+ Tạo phiếu mua hàng</button>
@@ -585,11 +692,17 @@ export default function InventoryPurchases() {
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 20px' }}>
                   <div>
                     <label style={LBL}>Nhà cung cấp{REQ}</label>
-                    <select className="select" value={hdrForm.partner_id}
-                      onChange={e => setHdrForm(f => ({ ...f, partner_id: e.target.value }))}>
-                      <option value="">Chọn nhà cung cấp...</option>
-                      {partners.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                    </select>
+                    <EnterpriseAutocomplete
+                      items={partners}
+                      value={partners.find(s => String(s.id) === String(hdrForm.partner_id)) || null}
+                      onChange={s => setHdrForm(f => ({ ...f, partner_id: s ? String(s.id) : '' }))}
+                      placeholder="Tìm nhà cung cấp..."
+                      displayField="name"
+                      secondaryFields={['customer_code', 'phone']}
+                      searchFields={['name', 'customer_code', 'phone']}
+                      emptyText="Không tìm thấy nhà cung cấp"
+                      getItemKey={s => s.id}
+                    />
                   </div>
                   <div>
                     <label style={LBL}>Ngày nhập{REQ}</label>
@@ -759,6 +872,9 @@ export default function InventoryPurchases() {
                       <option value="LUNAR">Âm lịch</option>
                     </select>
                     <button className="btn secondary" onClick={openAddDlg}>+ Thêm sản phẩm</button>
+                    <button className="btn secondary" onClick={openPriceBookDialog} disabled={priceBookLoading}>
+                      {priceBookLoading ? 'Đang tải bảng giá...' : 'Nạp bảng giá NCC'}
+                    </button>
                     <button className="btn" onClick={savePoGrid}
                       disabled={gridSaving || !poRows.some(r => Number(r.quantity) > 0)}>
                       {gridSaving ? 'Đang lưu...' : 'Lưu nháp'}
@@ -1198,6 +1314,112 @@ export default function InventoryPurchases() {
           </div>
         </div>
       )}
+
+      {/* ── "Nạp bảng giá NCC" Dialog ─────────────────────────────────────── */}
+      {priceBookDlg !== null && (() => {
+        const q = priceBookDlg.search.trim().toLowerCase();
+        const visibleRows = priceBookDlg.rows.filter(r => {
+          if (priceBookDlg.onlyEntered && !(Number(r.quantity) > 0)) return false;
+          if (!q) return true;
+          return String(r.product_name || '').toLowerCase().includes(q) || String(r.product_code || '').toLowerCase().includes(q);
+        });
+        const focusRow = (i) => {
+          const el = document.querySelector(`[data-pricebook-row-index="${i}"]`);
+          if (el) el.focus();
+        };
+        return (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1200,
+            display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            onMouseDown={e => { if (e.target === e.currentTarget && !priceBookApplying) setPriceBookDlg(null); }}>
+            <div className="card" style={{ width: 900, maxWidth: '96vw', maxHeight: '90vh', overflowY: 'auto' }}>
+              <h3 style={{ margin: '0 0 4px' }}>Nạp bảng giá NCC</h3>
+              <p className="muted" style={{ marginTop: 0, fontSize: 13 }}>
+                Nhà cung cấp: <b>{order?.supplier_name}</b> — {priceBookDlg.rows.length} sản phẩm trong bảng giá hiệu lực.
+              </p>
+
+              <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                <input className="input" style={{ maxWidth: 240 }} placeholder="Tìm theo tên hoặc mã sản phẩm..."
+                  value={priceBookDlg.search}
+                  onChange={e => setPriceBookDlg(d => ({ ...d, search: e.target.value }))} />
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={priceBookDlg.onlyEntered}
+                    onChange={e => setPriceBookDlg(d => ({ ...d, onlyEntered: e.target.checked }))} />
+                  Chỉ hiện dòng đã nhập số lượng
+                </label>
+                <button className="btn secondary" style={{ fontSize: 12 }} onClick={clearPriceBookQuantities}>Xóa số lượng đã nhập</button>
+              </div>
+
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Sản phẩm</th>
+                    <th>Mã sản phẩm</th>
+                    <th>Đơn vị</th>
+                    <th style={{ textAlign: 'right' }}>Số lượng</th>
+                    <th style={{ textAlign: 'right' }}>Giá mua</th>
+                    <th style={{ textAlign: 'right' }}>Thành tiền</th>
+                    <th>Ghi chú</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleRows.length === 0 && (
+                    <tr><td colSpan={7} className="muted" style={{ textAlign: 'center', padding: 16 }}>Không có dòng nào.</td></tr>
+                  )}
+                  {visibleRows.map((r, i) => {
+                    const qty = Number(r.quantity || 0);
+                    const price = Number(r.purchase_price || 0);
+                    const lineTotal = qty > 0 ? qty * price : 0;
+                    return (
+                      <tr key={r.product_id} style={{ opacity: r.available ? 1 : 0.5, background: r.error ? '#fee2e2' : (qty > 0 ? '#f0fdf4' : undefined) }}>
+                        <td>
+                          <b style={{ fontSize: 13 }}>{r.product_name}</b>
+                          {!r.available && <div style={{ fontSize: 11, color: '#dc2626' }}>{r.unavailable_reason}</div>}
+                          {r.error && <div style={{ fontSize: 11, color: '#dc2626' }}>{r.error}</div>}
+                        </td>
+                        <td style={{ fontSize: 12 }}>{r.product_code || '—'}</td>
+                        <td style={{ fontSize: 12 }}>{r.unit_name || '—'}</td>
+                        <td style={{ textAlign: 'right' }}>
+                          <input className="input" style={{ width: 72, textAlign: 'right' }}
+                            data-pricebook-row-index={i}
+                            type="text" inputMode="decimal" placeholder="0"
+                            disabled={!r.available}
+                            value={r.quantity}
+                            onChange={e => updatePriceBookRow(r.product_id, 'quantity', e.target.value)}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter' || e.key === 'ArrowDown') { e.preventDefault(); focusRow(i + 1); }
+                              else if (e.key === 'ArrowUp') { e.preventDefault(); focusRow(i - 1); }
+                            }}
+                          />
+                        </td>
+                        <td style={{ textAlign: 'right' }}>
+                          <MoneyInput style={{ width: 100, textAlign: 'right' }}
+                            disabled={!r.available}
+                            value={price}
+                            onChange={v => updatePriceBookRow(r.product_id, 'purchase_price', v)} />
+                        </td>
+                        <td style={{ textAlign: 'right', fontWeight: 600 }}>{lineTotal > 0 ? fmt(lineTotal) : '—'}</td>
+                        <td>
+                          <input className="input" style={{ width: 110 }} placeholder="Ghi chú..."
+                            disabled={!r.available}
+                            value={r.note}
+                            onChange={e => updatePriceBookRow(r.product_id, 'note', e.target.value)} />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+
+              <div className="actions" style={{ marginTop: 14 }}>
+                <button className="btn" onClick={applyPriceBookDialog} disabled={priceBookApplying}>
+                  {priceBookApplying ? 'Đang xử lý...' : 'Đưa mặt hàng có số lượng vào phiếu'}
+                </button>
+                <button className="btn secondary" disabled={priceBookApplying} onClick={() => setPriceBookDlg(null)}>Đóng</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Short Close Dialog ────────────────────────────────────────────── */}
       {shortCloseDlg && (

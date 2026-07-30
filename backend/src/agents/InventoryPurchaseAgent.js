@@ -60,13 +60,34 @@ class InventoryPurchaseAgent {
               poi.quantity, poi.received_quantity, poi.purchase_price, poi.total_price,
               poi.supplier_purchase_option_id,
               poi.expected_conversion_qty, poi.requires_actual_weight,
-              poi.expected_stock_qty, poi.inventory_status, poi.note
+              poi.expected_stock_qty, poi.inventory_status, poi.note,
+              poi.price_book_id, poi.price_book_item_id
        FROM purchase_order_items poi
        WHERE poi.purchase_order_id = ?
        ORDER BY poi.id ASC`,
       [id]
     );
     return { ...order, items };
+  }
+
+  // "Nạp bảng giá NCC" — resolve this PO's supplier's effective purchase
+  // price book (by the PO's own purchase_date), for the bulk-entry dialog.
+  // Read-only: never creates/modifies a price book. Returns
+  // price_book_id=null + empty items when no effective book exists — the
+  // caller shows "Nhà cung cấp chưa có bảng giá mua phù hợp với ngày nhập."
+  // rather than falling back to any other price source.
+  async priceBookForBulkEntry(id, categoryId) {
+    const [[order]] = await pool.query(
+      `SELECT id, partner_id, supplier_id, purchase_date, status FROM purchase_orders WHERE id=? AND del_flg=0`,
+      [id]
+    );
+    if (!order) throw Object.assign(new Error('Không tìm thấy phiếu mua hàng'), { status: 404 });
+    if (!order.partner_id) return { price_book_id: null, items: [] };
+
+    const calendarType = await this._resolveCalendarType(order);
+    return SupplierPurchaseCatalogResolver.resolvePriceBookForBulkEntry(
+      order.partner_id, order.supplier_id, order.purchase_date, calendarType, categoryId ? Number(categoryId) : null
+    );
   }
 
   // S4.3: Receive History Timeline — thin passthrough. Business query lives in
@@ -126,11 +147,12 @@ class InventoryPurchaseAgent {
       `INSERT INTO purchase_order_items
          (purchase_order_id, product_id, product_name, unit, quantity, purchase_price, total_price,
           supplier_purchase_option_id, expected_conversion_qty, requires_actual_weight,
-          expected_stock_qty, inventory_status, note)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,'PENDING',?)`,
+          expected_stock_qty, inventory_status, note, price_book_id, price_book_item_id)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,'PENDING',?,?,?)`,
       [orderId, snap.product_id, snap.product_name, snap.unit, snap.qty, snap.price,
        snap.total_price, snap.spo_id, snap.expected_conversion_qty,
-       snap.requires_actual_weight, snap.expected_stock_qty, note || null]
+       snap.requires_actual_weight, snap.expected_stock_qty, note || null,
+       snap.price_book_id, snap.price_book_item_id]
     );
     await this._recalcTotal(orderId);
     return { id: r.insertId, message: 'Đã thêm dòng hàng' };
@@ -155,17 +177,20 @@ class InventoryPurchaseAgent {
         supplier_purchase_option_id: row.supplier_purchase_option_id || null,
         quantity:                    qty,
         purchase_price:              Number(row.purchase_price || 0),
+        price_book_id:               row.price_book_id || null,
+        price_book_item_id:          row.price_book_item_id || null,
       }, order);
       if (row.item_id && existingIds.has(Number(row.item_id))) {
         await pool.query(
           `UPDATE purchase_order_items
            SET product_id=?, product_name=?, unit=?, quantity=?, purchase_price=?, total_price=?,
                supplier_purchase_option_id=?, expected_conversion_qty=?, requires_actual_weight=?,
-               expected_stock_qty=?, inventory_status='PENDING', note=?
+               expected_stock_qty=?, inventory_status='PENDING', note=?,
+               price_book_id=?, price_book_item_id=?
            WHERE id=?`,
           [snap.product_id, snap.product_name, snap.unit, snap.qty, snap.price, snap.total_price,
            snap.spo_id, snap.expected_conversion_qty, snap.requires_actual_weight,
-           snap.expected_stock_qty, row.note || null, row.item_id]
+           snap.expected_stock_qty, row.note || null, snap.price_book_id, snap.price_book_item_id, row.item_id]
         );
         keptIds.add(Number(row.item_id));
       } else {
@@ -173,11 +198,11 @@ class InventoryPurchaseAgent {
           `INSERT INTO purchase_order_items
              (purchase_order_id, product_id, product_name, unit, quantity, purchase_price, total_price,
               supplier_purchase_option_id, expected_conversion_qty, requires_actual_weight,
-              expected_stock_qty, inventory_status, note)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,'PENDING',?)`,
+              expected_stock_qty, inventory_status, note, price_book_id, price_book_item_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,'PENDING',?,?,?)`,
           [orderId, snap.product_id, snap.product_name, snap.unit, snap.qty, snap.price, snap.total_price,
            snap.spo_id, snap.expected_conversion_qty, snap.requires_actual_weight,
-           snap.expected_stock_qty, row.note || null]
+           snap.expected_stock_qty, row.note || null, snap.price_book_id, snap.price_book_item_id]
         );
       }
       saved++;
@@ -401,7 +426,7 @@ class InventoryPurchaseAgent {
   // catalog price exists, it overrides whatever the client sent. Only when neither
   // source has a price do we fall back to accepting the client's manual entry.
   async _buildItemSnapshot(body, order = null) {
-    const { product_id, supplier_purchase_option_id, quantity, purchase_price } = body;
+    const { product_id, supplier_purchase_option_id, quantity, purchase_price, price_book_id, price_book_item_id } = body;
     if (!product_id) throw Object.assign(new Error('Thiếu sản phẩm'), { status: 400 });
     const qty        = Number(quantity);
     const clientPrice = Number(purchase_price);
@@ -445,11 +470,33 @@ class InventoryPurchaseAgent {
 
     const expected_stock_qty = qty * expected_conversion_qty;
 
+    // Traceability only (which price book this row came from, if any) — never
+    // trusted for the price itself, which is always the server-resolved
+    // `price` above. Validated so a client can't attach an arbitrary/stale
+    // book-item id to a row: it must actually exist and reference this exact
+    // product. Once persisted, this is a snapshot like every other field on
+    // this row — a later price-book edit never retroactively touches it.
+    let priceBookId = null, priceBookItemId = null;
+    if (price_book_item_id) {
+      const [[bi]] = await pool.query(
+        `SELECT id, price_book_id, product_id FROM customer_price_book_items WHERE id=?`,
+        [price_book_item_id]
+      );
+      if (!bi || Number(bi.product_id) !== Number(product_id)) {
+        throw Object.assign(new Error('Dòng bảng giá không hợp lệ hoặc không khớp sản phẩm'), { status: 400 });
+      }
+      if (price_book_id && Number(bi.price_book_id) !== Number(price_book_id)) {
+        throw Object.assign(new Error('Dòng bảng giá không thuộc bảng giá đã chọn'), { status: 400 });
+      }
+      priceBookId = bi.price_book_id;
+      priceBookItemId = bi.id;
+    }
+
     return {
       product_id, product_name: prod.name, unit, qty, price,
       total_price: expected_stock_qty * price, spo_id,
       expected_conversion_qty, requires_actual_weight,
-      expected_stock_qty,
+      expected_stock_qty, price_book_id: priceBookId, price_book_item_id: priceBookItemId,
     };
   }
 }

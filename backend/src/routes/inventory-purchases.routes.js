@@ -15,6 +15,11 @@ router.get('/:id', auth(['ADMIN', 'STAFF']), async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+router.get('/:id/price-book', auth(['ADMIN', 'STAFF']), async (req, res, next) => {
+  try { res.json(await InventoryPurchaseAgent.priceBookForBulkEntry(req.params.id, req.query.category_id)); }
+  catch (e) { next(e); }
+});
+
 router.get('/:id/timeline', auth(['ADMIN', 'STAFF']), async (req, res, next) => {
   try {
     res.json(await InventoryPurchaseAgent.timeline(req.params.id, {

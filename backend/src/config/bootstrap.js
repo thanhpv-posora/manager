@@ -956,6 +956,14 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
     await safeAddColumn(conn, 'purchase_order_items', 'requires_actual_weight', 'requires_actual_weight TINYINT(1) NOT NULL DEFAULT 0');
     await safeAddIndex(conn, 'purchase_order_items', 'idx_poi_spo', 'INDEX idx_poi_spo(supplier_purchase_option_id)');
 
+    // "Nạp bảng giá NCC" traceability — which supplier price book/item (if
+    // any) this line was loaded from. Snapshot-only, like every other column
+    // on this row: never re-read live, so a later price-book edit can never
+    // retroactively change an already-saved Purchase Order item's price.
+    // NULL for rows added manually via "+ Thêm sản phẩm" (no price book involved).
+    await safeAddColumn(conn, 'purchase_order_items', 'price_book_id', 'price_book_id BIGINT NULL');
+    await safeAddColumn(conn, 'purchase_order_items', 'price_book_item_id', 'price_book_item_id BIGINT NULL');
+
     await safeAddColumn(conn, 'purchase_lots', 'raw_weight', 'raw_weight DECIMAL(15,3) NOT NULL DEFAULT 0 AFTER purchase_date');
     await safeAddColumn(conn, 'purchase_lots', 'bone_weight', 'bone_weight DECIMAL(15,3) NOT NULL DEFAULT 0 AFTER raw_weight');
     await safeAddColumn(conn, 'purchase_lots', 'deducted_weight', 'deducted_weight DECIMAL(15,3) NOT NULL DEFAULT 0 AFTER bone_weight');
@@ -1482,14 +1490,16 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
     // Adds partner_type to customers. Existing rows get DEFAULT 2 (Customer) automatically.
     await safeAddColumn(conn, 'customers', 'partner_type', 'partner_type INT NOT NULL DEFAULT 2');
 
-    // Customer Default Model: customers.default_sales_flow — a UI-only hint for
-    // which screen (Tạo bill POS / Bán hàng kho) CreateOrder should default to when
-    // this customer is selected. Values: CARCASS_POS | INVENTORY_SALE | NULL
-    // (legacy/unclassified). Deliberately nullable, no default, no backfill — every
+    // Customer Default Model (Unified Sales V1): customers.default_sales_flow — a
+    // UI-only hint CreateOrder.jsx uses to pick which catalog/price category loads
+    // first when this customer is selected. Never a restriction: the seller can
+    // always browse and add products from the other flow into the same bill.
+    // Values: CARCASS_POS | INVENTORY_SALE | NULL (legacy/unclassified, defaults to
+    // CARCASS_POS catalog). Deliberately nullable, no default, no backfill — every
     // pre-existing customer stays NULL until explicitly set via the Customer Form.
     // Never read by pricing, inventory, ledger, or reporting code — those domains
-    // continue to derive sales_flow per-item/per-bill from products.inventory_mode
-    // as before (Mixed Sales Phase 1A/1B), entirely unaffected by this column.
+    // continue to derive sales_flow per-item/per-bill from products.sales_flow (S1G),
+    // entirely unaffected by this column.
     await safeAddColumn(conn, 'customers', 'default_sales_flow', 'default_sales_flow VARCHAR(30) NULL');
 
     // BP-003: Domain B — add partner_id to supplier-side tables (dual-write, keep supplier_id for FK safety)
@@ -1628,7 +1638,6 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
     const appMenusSeed = [
       ['dashboard','AI Operating Center','Tổng quan điều hành, cảnh báo và hành động AI trong ngày.','dashboard','Home','sales',1,1,1,'Dashboard'],
       ['create-order','Tạo bill POS','Tạo bill nhanh, kiểm tồn, công nợ và hỗ trợ nhập bằng AI.','create-order','ShoppingCart','sales',2,1,1,'CreateOrder'],
-      ['inventory-sales','Bán hàng kho','Bán hàng có kiểm tồn kho thực tế, dành riêng cho mặt hàng quản lý tồn kho.','inventory-sales','Warehouse','sales',2,0,1,'InventorySales'],
       ['orders','Bill bán hàng','Theo dõi bill, in phiếu và trạng thái thanh toán.','orders','ClipboardList','sales',3,1,1,'Orders'],
       ['retail-daily-summary','Bán lẻ tổng hợp','Ghi nhận tổng tiền bán lẻ theo ngày kinh doanh (không liên kết đơn hàng).','retail-daily-summary','BarChart3','sales',4,0,1,'RetailDailySummary'],
       ['payments','Thu tiền','Ghi nhận tiền mặt, chuyển khoản và lịch sử thu.','payments','CreditCard','sales',5,1,1,'Payments'],
@@ -1738,6 +1747,18 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       `UPDATE app_menus SET is_active=0, visible_in_sidebar=0 WHERE menu_key='product-categories'`
     );
 
+    // UNIFIED-SALES-V1: retire the standalone 'inventory-sales' (Bán hàng kho) menu —
+    // CTO decision, CreateOrder.jsx is now the single unified sales screen for both
+    // CARCASS_POS and INVENTORY_SALE products (a seller browses the other flow's
+    // catalog from inside the same bill instead of switching screens). Same
+    // menu-retirement convention as MENU-CLEANUP-001 above: is_active=0 fully hides
+    // it from every sidebar/permission list (UserPermissionAgent gates on
+    // is_active=1) without deleting audit history; menu_key stays UNIQUE/reserved.
+    // Idempotent: no-op once already inactive, safe to re-run on every startup.
+    await conn.query(
+      `UPDATE app_menus SET is_active=0, visible_in_sidebar=0 WHERE menu_key='inventory-sales'`
+    );
+
     // MENU-MY-PREFERENCES-FINAL-FIX: place my-menu at the end of the system group — idempotent.
     // Fixes installs with group_key='personal' (002) and removes the hardcoded sort_order=6 (FINAL-FIX).
     // SELECT first to avoid MySQL's same-table subquery restriction in UPDATE.
@@ -1791,7 +1812,7 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       `INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled)
        SELECT 'ADMIN', menu_key, 1 FROM app_menus WHERE is_active = 1`
     );
-    for (const mk of ['create-order','inventory-sales','orders','retail-daily-summary','payments','customers','products','product-import','ocr-providers','price-matrix','lots','revenue','profit','portal','my-menu','inventory-purchases','inventory-receives','stock-ledger']) {
+    for (const mk of ['create-order','orders','retail-daily-summary','payments','customers','products','product-import','ocr-providers','price-matrix','lots','revenue','profit','portal','my-menu','inventory-purchases','inventory-receives','stock-ledger']) {
       await conn.query(`INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled) VALUES ('STAFF', ?, 1)`, [mk]);
     }
     for (const mk of ['orders','payments','portal','customers','my-menu']) {
@@ -1809,6 +1830,109 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
        JOIN users u ON u.id = ump.user_id
        WHERE u.role = 'ADMIN' AND ump.is_enabled = 0`
     );
+
+    // S9.2 FINAL — Sales Return Foundation, locked shape. These CREATE TABLE
+    // statements were never executed against any database (S9.2's report
+    // explicitly declined to run them), so this edits the pending definitions
+    // directly rather than emitting ALTER TABLE migrations — there is no live
+    // table anywhere to migrate away from. Fully additive relative to the rest of
+    // the schema: no ALTER of any existing table, no FK constraints (matches
+    // orders/order_items/payments/debt_transactions/stock_transactions).
+    // orders/order_items remain untouched; sales_returns.status is still the only
+    // source of return state (no orders.return_status cache column).
+    //
+    // Kept from S9.2A: status/return_reason_code/disposition_type/quality_result
+    // are all VARCHAR, never ENUM — business owns these value sets without an
+    // ALTER TABLE to add an option; all validation of allowed values lives in
+    // ReturnAgent.js (application layer), never the database. No
+    // sales_return_dispositions table (disposition stays on sales_return_items).
+    //
+    // S9.2 FINAL CTO decision, reversing part of S9.2A's Decision #5: the
+    // sales_return_items future-story columns and the entire sales_return_inspections
+    // table are RESTORED as schema-only additions. Reason (CTO's own words):
+    // "the table belongs to the Sales Return bounded context... creating it now
+    // avoids another production migration later." No code anywhere in this story
+    // INSERTs, UPDATEs, or SELECTs any of these columns/table — ReturnAgent.js is
+    // unchanged from S9.2A. sales_returns' own future-story columns (received_at/
+    // completed_at/rejected_at/received_by/completed_by/updated_at) were NOT
+    // restored — only the fields the CTO explicitly named in S9.2 FINAL Change #2.
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS sales_returns (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        return_code VARCHAR(50) NOT NULL UNIQUE,
+        order_id BIGINT NOT NULL,
+        customer_id BIGINT NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'REQUESTED',
+        return_reason_code VARCHAR(30) NOT NULL DEFAULT 'OTHER',
+        return_reason_note TEXT,
+        idempotency_key VARCHAR(100) NULL UNIQUE,
+        requested_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        created_by BIGINT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_sales_returns_order(order_id),
+        INDEX idx_sales_returns_customer_date(customer_id, requested_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+
+    // sales_return_items — the ASK (frozen at creation time, never mutated by S9.2)
+    // PLUS the restored disposition columns (schema-only — see note above).
+    // quantity_received/disposition_type/return_to_stock_qty/non_sellable_qty/
+    // decided_by/decided_at/disposition_reason_note exist now so S9.5
+    // (Disposition) is pure additive CODE with zero further schema change; no
+    // runtime in this story reads or writes any of them — ReturnAgent.create()
+    // only ever inserts the "ask" columns (return_id, order_item_id, product_id,
+    // source_stock_transaction_id, quantity_requested, frozen_unit_price,
+    // frozen_unit), identical to S9.2A. disposition_type is VARCHAR, not ENUM,
+    // per the kept S9.2A principle.
+    // Frozen unit (S9.2A Decision #2, unchanged): order_items has no
+    // unit_id/product_unit_id — the only unit_id in this codebase is
+    // supplier_purchase_options.unit_id (bootstrap.js ~line 654, FK to units(id)),
+    // a different domain (supplier purchase-side unit conversion), not applicable
+    // to a sold line. No canonical identifier exists for order_items.unit, so
+    // none is invented here — frozen_unit stays a VARCHAR copy of order_items.unit.
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS sales_return_items (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        return_id BIGINT NOT NULL,
+        order_item_id BIGINT NOT NULL,
+        product_id BIGINT NOT NULL,
+        source_stock_transaction_id BIGINT NULL,
+        quantity_requested DECIMAL(15,3) NOT NULL,
+        quantity_received DECIMAL(15,3) NOT NULL DEFAULT 0,
+        frozen_unit_price DECIMAL(15,2) NOT NULL DEFAULT 0,
+        frozen_unit VARCHAR(50) NOT NULL DEFAULT 'kg',
+        disposition_type VARCHAR(30) NULL,
+        return_to_stock_qty DECIMAL(15,3) NOT NULL DEFAULT 0,
+        non_sellable_qty DECIMAL(15,3) NOT NULL DEFAULT 0,
+        decided_by BIGINT NULL,
+        decided_at DATETIME NULL,
+        disposition_reason_note TEXT,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_sales_return_items_return(return_id),
+        INDEX idx_sales_return_items_order_item(order_item_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+
+    // sales_return_inspections — RESTORED, schema-only (S9.2 FINAL Change #1).
+    // No code anywhere in S9.2/S9.2A/S9.2 FINAL inserts, updates, or selects from
+    // this table — ReturnAgent.list() still returns `inspections: []` as a static
+    // field (unchanged from S9.2A), not a real query against this table, per the
+    // CTO's explicit "No SELECT" instruction. quality_result is VARCHAR, not
+    // ENUM, per the kept S9.2A principle. Exists now purely so S9.4 (Warehouse
+    // Receive/Inspection) starts writing to an already-migrated table instead of
+    // needing its own production migration.
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS sales_return_inspections (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        return_item_id BIGINT NOT NULL,
+        accepted_qty DECIMAL(15,3) NOT NULL DEFAULT 0,
+        rejected_qty DECIMAL(15,3) NOT NULL DEFAULT 0,
+        quality_result VARCHAR(20) NULL,
+        inspection_note TEXT,
+        inspector_id BIGINT NULL,
+        inspected_at DATETIME NULL,
+        is_final TINYINT(1) NOT NULL DEFAULT 0,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_sales_return_inspections_item(return_item_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
 
   } finally {
     conn.release();

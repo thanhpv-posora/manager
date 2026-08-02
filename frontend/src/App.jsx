@@ -5,6 +5,7 @@ import VerifyEmail from'./pages/VerifyEmail';
 import Dashboard from'./pages/Dashboard';
 import CreateOrder from'./pages/CreateOrder';
 import Orders from'./pages/Orders';
+import SalesReturns from'./pages/SalesReturns';
 import Payments from'./pages/Payments';
 import Customers from'./pages/Customers';
 import Products from'./pages/Products';import ProductImageImport from'./pages/ProductImageImport';import OCRProviders from'./pages/OCRProviders';
@@ -102,6 +103,7 @@ export default function App(){
     dashboard:<Dashboard/>,
     'create-order':<CreateOrder/>,
     orders:<Orders/>,
+    'sales-returns':<SalesReturns/>,
     payments:<Payments/>,
     installments:<Installments/>,
     customers:<Customers/>,

@@ -50,6 +50,7 @@ app.use('/api/auth',require('./routes/auth'));
 app.use('/api/customers',require('./routes/customers'));
 app.use('/api/products',require('./routes/products'));
 app.use('/api/orders',require('./routes/orders'));
+app.use('/api/sales-returns',require('./routes/sales-returns.routes'));
 app.use('/api/payments',require('./routes/payments'));
 app.use('/api/suppliers',require('./routes/suppliers'));
 app.use('/api/lots',require('./routes/lots'));

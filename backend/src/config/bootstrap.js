@@ -1643,6 +1643,10 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       ['payments','Thu tiền','Ghi nhận tiền mặt, chuyển khoản và lịch sử thu.','payments','CreditCard','sales',5,1,1,'Payments'],
       ['installments','Góp bill','Quản lý góp bill theo khách hàng và lịch âm/dương.','installments','CalendarDays','sales',6,0,1,'Installments'],
       ['customers','Đối tác','Quản lý đối tác, khách hàng và nhà cung cấp.','customers','Users','sales',7,0,1,'Customers'],
+      // S9.3: Sales Return UI + Business Workflow — Sales > Sales Return.
+      // Additive seed row only; sort_order=8 deliberately avoids any tie with
+      // the existing 1-7 values above rather than renumbering them.
+      ['sales-returns','Trả hàng','Yêu cầu trả hàng của khách: tạo, duyệt, hủy. Chưa xử lý tồn kho, công nợ hay hoàn tiền.','sales-returns','Undo2','sales',8,0,1,'SalesReturns'],
       ['products','Danh mục hàng hóa','Phân nhóm mặt hàng theo danh mục và quản lý giá bán.','products','Package','catalog',1,0,1,'Products'],
       ['product-import','Import mặt hàng từ ảnh','Nhập danh mục nhanh từ hình ảnh hoặc file dữ liệu.','product-import','Package','catalog',2,0,1,'ProductImageImport'],
       ['ocr-providers','Cấu hình OCR nâng cao','Thiết lập nhận diện hình ảnh và alias sản phẩm.','ocr-providers','Bot','catalog',3,0,1,'OCRProviders'],
@@ -1812,10 +1816,10 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       `INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled)
        SELECT 'ADMIN', menu_key, 1 FROM app_menus WHERE is_active = 1`
     );
-    for (const mk of ['create-order','orders','retail-daily-summary','payments','customers','products','product-import','ocr-providers','price-matrix','lots','revenue','profit','portal','my-menu','inventory-purchases','inventory-receives','stock-ledger']) {
+    for (const mk of ['create-order','orders','sales-returns','retail-daily-summary','payments','customers','products','product-import','ocr-providers','price-matrix','lots','revenue','profit','portal','my-menu','inventory-purchases','inventory-receives','stock-ledger']) {
       await conn.query(`INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled) VALUES ('STAFF', ?, 1)`, [mk]);
     }
-    for (const mk of ['orders','payments','portal','customers','my-menu']) {
+    for (const mk of ['orders','sales-returns','payments','portal','customers','my-menu']) {
       await conn.query(`INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled) VALUES ('CUSTOMER', ?, 1)`, [mk]);
     }
 
@@ -1852,10 +1856,13 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
     // table are RESTORED as schema-only additions. Reason (CTO's own words):
     // "the table belongs to the Sales Return bounded context... creating it now
     // avoids another production migration later." No code anywhere in this story
-    // INSERTs, UPDATEs, or SELECTs any of these columns/table — ReturnAgent.js is
-    // unchanged from S9.2A. sales_returns' own future-story columns (received_at/
-    // completed_at/rejected_at/received_by/completed_by/updated_at) were NOT
-    // restored — only the fields the CTO explicitly named in S9.2 FINAL Change #2.
+    // INSERTs, UPDATEs, or SELECTs any of these columns/table — ReturnAgent.js was
+    // unchanged from S9.2A at the time. sales_returns' own future-story columns
+    // (received_at/completed_at/rejected_at/received_by/completed_by/updated_at)
+    // were NOT restored then — only the fields the CTO explicitly named in S9.2
+    // FINAL Change #2. They ARE added below, by S9.4 (Warehouse Receive &
+    // Inspection), the first story that actually reads/writes them — see the
+    // safeAddColumn block right after the sales_return_inspections CREATE TABLE.
     await conn.query(`
       CREATE TABLE IF NOT EXISTS sales_returns (
         id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -1933,6 +1940,40 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         INDEX idx_sales_return_inspections_item(return_item_id)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+
+    // S9.4 — Warehouse Receive & Inspection. sales_returns header gets the
+    // received_at/received_by/completed_at/completed_by/rejected_at/updated_at
+    // columns anticipated (but deliberately not added) by S9.2 FINAL's own
+    // comment above — RECEIVED/INSPECTING/COMPLETED/REJECTED are now real
+    // status values (still VARCHAR, no ENUM — same S9.2A Decision #1
+    // principle: business owns the value set, no ALTER TABLE to add one).
+    // No rejected_by column: who rejected is captured via audit_logs
+    // (writeAuditLog), matching existing precedent — SALES_RETURN_CANCELLED
+    // never got a denormalized "cancelled_by" column on sales_returns either.
+    await safeAddColumn(conn, 'sales_returns', 'received_at', 'received_at DATETIME NULL');
+    await safeAddColumn(conn, 'sales_returns', 'received_by', 'received_by BIGINT NULL');
+    await safeAddColumn(conn, 'sales_returns', 'completed_at', 'completed_at DATETIME NULL');
+    await safeAddColumn(conn, 'sales_returns', 'completed_by', 'completed_by BIGINT NULL');
+    await safeAddColumn(conn, 'sales_returns', 'rejected_at', 'rejected_at DATETIME NULL');
+    await safeAddColumn(conn, 'sales_returns', 'updated_at', 'updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP');
+
+    // S9.4: add SALES_RETURN to stock_transactions.reference_type ENUM — the
+    // only inventory-affecting write this story makes (ReturnAgent.complete(),
+    // via InventoryService.in(), IN movement, RESTOCK-dispositioned qty only,
+    // reference_id = sales_returns.id). Same conditional-ALTER pattern as every
+    // prior addition to this ENUM (INV-002/INV-005/S6.6 above) — MySQL has no
+    // "ADD VALUE" syntax for ENUM columns, so MODIFY restates the full list.
+    {
+      const [[rtInfo]] = await conn.query(
+        `SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'stock_transactions' AND COLUMN_NAME = 'reference_type'`
+      );
+      if (rtInfo && !String(rtInfo.COLUMN_TYPE).includes('SALES_RETURN')) {
+        await conn.query(
+          `ALTER TABLE stock_transactions MODIFY reference_type ENUM('LOT','SALE','MANUAL','RECEIVE_VOUCHER','OPENING_BALANCE','ADJUSTMENT','SALES_RETURN') NOT NULL`
+        );
+      }
+    }
 
   } finally {
     conn.release();

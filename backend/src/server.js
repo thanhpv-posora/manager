@@ -89,6 +89,7 @@ app.use('/api/supplier-purchase-price', require('./routes/supplier-purchase-pric
 app.use('/api/supplier-catalog', require('./routes/supplier-catalog.routes'));
 app.use('/api/supplier-payable', require('./routes/supplier-payable.routes'));
 app.use('/api/stock-ledger', require('./routes/stock-ledger.routes'));
+app.use('/api/audit-logs', require('./routes/audit-logs.routes'));
 
 app.use(errorHandler);
 

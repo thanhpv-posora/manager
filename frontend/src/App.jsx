@@ -29,6 +29,7 @@ import BusinessPortal from'./pages/BusinessPortal';import SponsorVideos from'./p
 import UserPermissions from'./pages/UserPermissions';
 import MyMenuPreferences from'./pages/MyMenuPreferences';
 import Registrations from'./pages/Registrations';import UserCustomerMapping from'./pages/UserCustomerMapping';
+import AuditLogViewer from'./pages/AuditLogViewer';
 import LandingPage from'./pages/LandingPage';
 import MainLayout from'./layouts/MainLayout';
 import api from'./api/api';
@@ -124,6 +125,7 @@ export default function App(){
     'retail-daily-summary':<RetailDailySummary/>,
     agents:<Agents/>,
     trash:<Trash/>,
+    'audit-logs':<AuditLogViewer/>,
     settings:<SettingsPage/>,
     portal:<BusinessPortal/>,
     'sponsor-videos':<SponsorVideos/>,

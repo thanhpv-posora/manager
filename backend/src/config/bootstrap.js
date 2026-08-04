@@ -1669,6 +1669,12 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       ['user-permissions','Phân quyền user','Thiết lập quyền truy cập chức năng theo user.','user-permissions','Settings','system',3,1,1,'UserPermissions'],
       ['registrations','Đăng ký khách hàng','Duyệt tài khoản đăng ký mới.','registrations','Settings','system',4,0,1,'Registrations'],
       ['user-mapping','Quản lý tài khoản','Tạo user nội bộ, quản lý khách hàng và duyệt đăng ký.','user-mapping','Settings','system',5,1,1,'UserCustomerMapping'],
+      // P1-02: Audit Log Viewer — Hệ thống > Nhật ký hoạt động. Read-only over
+      // the existing audit_logs table (AuditLogAgent.js). Not in the STAFF/
+      // CUSTOMER default menu-key lists below — only auto-granted to ADMIN via
+      // the blanket "INSERT IGNORE ... SELECT 'ADMIN', menu_key, 1" seed
+      // further down, matching every other ADMIN-only system screen here.
+      ['audit-logs','Nhật ký hoạt động','Tra cứu nhật ký các hành động nhạy cảm đã ghi nhận (audit_logs) — chỉ Admin.','audit-logs','ClipboardList','system',6,0,1,'AuditLogViewer'],
       ['my-menu','Menu của tôi','Tuỳ chỉnh thứ tự và hiển thị menu cá nhân trên sidebar.','my-menu','Settings','system',99,0,1,'MyMenuPreferences'],
     ];
     for (const [menu_key,title,subtitle,route,icon_key,group_key,sort_order,is_system,visible_in_sidebar,page_component] of appMenusSeed) {
@@ -1974,6 +1980,23 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
         );
       }
     }
+
+    // P1-02 (Production Readiness audit finding C2) — audit_logs had zero
+    // indexes beyond its PRIMARY KEY (id) since it was first created (S9.3);
+    // that was fine while nothing read it. GET /api/audit-logs (AuditLogAgent.js)
+    // now filters/sorts on exactly these four columns, so all four are
+    // justified — none are speculative. Additive only, safeAddIndex is
+    // idempotent (no-op if already present).
+    //   - idx_audit_logs_created_at: ORDER BY created_at DESC (every request,
+    //     unfiltered or not) and the from_date/to_date range filter.
+    //   - idx_audit_logs_entity: composite (entity_type, entity_id) — the
+    //     "show me everything on this one record" lookup.
+    //   - idx_audit_logs_action: the action-code filter.
+    //   - idx_audit_logs_user: the user_id filter.
+    await safeAddIndex(conn, 'audit_logs', 'idx_audit_logs_created_at', 'INDEX idx_audit_logs_created_at(created_at)');
+    await safeAddIndex(conn, 'audit_logs', 'idx_audit_logs_entity', 'INDEX idx_audit_logs_entity(entity_type, entity_id)');
+    await safeAddIndex(conn, 'audit_logs', 'idx_audit_logs_action', 'INDEX idx_audit_logs_action(action)');
+    await safeAddIndex(conn, 'audit_logs', 'idx_audit_logs_user', 'INDEX idx_audit_logs_user(user_id)');
 
   } finally {
     conn.release();

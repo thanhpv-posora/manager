@@ -67,7 +67,10 @@ function StatusBadge({status}){
   return <span style={{...style,padding:'3px 10px',borderRadius:999,fontWeight:700,fontSize:12}}>{STATUS_LABELS[status]||status}</span>;
 }
 
-function printReturn(ret){
+// Exported (P1-02, purely additive — was module-private before) so
+// AuditLogViewer.jsx can reuse the exact same print output when it opens a
+// Sales Return from an audit_logs row, instead of duplicating this markup.
+export function printReturn(ret){
   const w=window.open('','_blank');
   if(!w)return;
   const rows=(ret.items||[]).map(it=>`

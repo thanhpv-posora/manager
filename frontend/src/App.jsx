@@ -125,7 +125,7 @@ export default function App(){
     'retail-daily-summary':<RetailDailySummary/>,
     agents:<Agents/>,
     trash:<Trash/>,
-    'audit-logs':<AuditLogViewer/>,
+    system_audit:<AuditLogViewer/>,
     settings:<SettingsPage/>,
     portal:<BusinessPortal/>,
     'sponsor-videos':<SponsorVideos/>,

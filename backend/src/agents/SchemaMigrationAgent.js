@@ -204,6 +204,34 @@ class SchemaMigrationAgent{
         }
       }
 
+      // P1-02A — audit_logs performance indexes for GET /api/audit-logs
+      // (AuditLogAgent.js). Moved here from bootstrap.js's every-startup
+      // ensureSchema(): these are purely additive, non-blocking performance
+      // indexes, not something the app requires to boot, so they belong in
+      // the deliberately-triggered migration path (this method, via
+      // POST /api/schema/migrate) rather than automatic startup DDL — same
+      // reasoning already applied to every other index in this file.
+      //   - idx_audit_logs_created_at: ORDER BY created_at DESC (every
+      //     request) and the from_date/to_date range filter.
+      //   - idx_audit_logs_entity: composite (entity_type, entity_id) — the
+      //     "show me everything on this one record" lookup.
+      //   - idx_audit_logs_action: the action-code filter.
+      //   - idx_audit_logs_user: the user_id filter.
+      if(await this.hasTable(conn,'audit_logs')){
+        if(!(await this.hasIndex(conn,'audit_logs','idx_audit_logs_created_at'))){
+          logs.push(await this.safeAlter(conn,`ALTER TABLE audit_logs ADD INDEX idx_audit_logs_created_at (created_at)`));
+        }
+        if(!(await this.hasIndex(conn,'audit_logs','idx_audit_logs_entity'))){
+          logs.push(await this.safeAlter(conn,`ALTER TABLE audit_logs ADD INDEX idx_audit_logs_entity (entity_type, entity_id)`));
+        }
+        if(!(await this.hasIndex(conn,'audit_logs','idx_audit_logs_action'))){
+          logs.push(await this.safeAlter(conn,`ALTER TABLE audit_logs ADD INDEX idx_audit_logs_action (action)`));
+        }
+        if(!(await this.hasIndex(conn,'audit_logs','idx_audit_logs_user'))){
+          logs.push(await this.safeAlter(conn,`ALTER TABLE audit_logs ADD INDEX idx_audit_logs_user (user_id)`));
+        }
+      }
+
       return {message:'Schema migration completed',logs};
     }finally{
       conn.release();
@@ -232,6 +260,25 @@ class SchemaMigrationAgent{
         const colOk=tableOk?await this.hasColumn(conn,table,column):false;
         checks.push({table,column,status:tableOk&&colOk?'OK':'MISSING'});
       }
+
+      // P1-02A — bootstrap.js intentionally does not create these (see
+      // migrate() above); this is the sole "verify" surface for them,
+      // reusing the exact same {table,column,status} row shape the
+      // Production Check page's Schema Health Check table already renders
+      // (column holds "INDEX <name>" here rather than a real column name —
+      // display-only, not a second real column check).
+      const requiredIndexes=[
+        ['audit_logs','idx_audit_logs_created_at'],
+        ['audit_logs','idx_audit_logs_entity'],
+        ['audit_logs','idx_audit_logs_action'],
+        ['audit_logs','idx_audit_logs_user'],
+      ];
+      for(const [table,indexName] of requiredIndexes){
+        const tableOk=await this.hasTable(conn,table);
+        const idxOk=tableOk?await this.hasIndex(conn,table,indexName):false;
+        checks.push({table,column:`INDEX ${indexName}`,status:tableOk&&idxOk?'OK':'MISSING'});
+      }
+
       return checks;
     }finally{
       conn.release();

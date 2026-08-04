@@ -1674,7 +1674,12 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       // CUSTOMER default menu-key lists below — only auto-granted to ADMIN via
       // the blanket "INSERT IGNORE ... SELECT 'ADMIN', menu_key, 1" seed
       // further down, matching every other ADMIN-only system screen here.
-      ['audit-logs','Nhật ký hoạt động','Tra cứu nhật ký các hành động nhạy cảm đã ghi nhận (audit_logs) — chỉ Admin.','audit-logs','ClipboardList','system',6,0,1,'AuditLogViewer'],
+      // P1-02A: menu_key is 'system_audit', not 'audit-logs' — deliberately
+      // distinct from the backend HTTP route (still GET /api/audit-logs,
+      // unchanged — an API contract, not a menu key). menu_key only ever
+      // drives frontend page routing/permissions (App.jsx `pages{}` object,
+      // role_menu_permissions/user_menu_permissions), never the REST path.
+      ['system_audit','Nhật ký hoạt động','Tra cứu nhật ký các hành động nhạy cảm đã ghi nhận (audit_logs) — chỉ Admin.','system_audit','ClipboardList','system',6,0,1,'AuditLogViewer'],
       ['my-menu','Menu của tôi','Tuỳ chỉnh thứ tự và hiển thị menu cá nhân trên sidebar.','my-menu','Settings','system',99,0,1,'MyMenuPreferences'],
     ];
     for (const [menu_key,title,subtitle,route,icon_key,group_key,sort_order,is_system,visible_in_sidebar,page_component] of appMenusSeed) {
@@ -1981,22 +1986,20 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       }
     }
 
-    // P1-02 (Production Readiness audit finding C2) — audit_logs had zero
-    // indexes beyond its PRIMARY KEY (id) since it was first created (S9.3);
-    // that was fine while nothing read it. GET /api/audit-logs (AuditLogAgent.js)
-    // now filters/sorts on exactly these four columns, so all four are
-    // justified — none are speculative. Additive only, safeAddIndex is
-    // idempotent (no-op if already present).
-    //   - idx_audit_logs_created_at: ORDER BY created_at DESC (every request,
-    //     unfiltered or not) and the from_date/to_date range filter.
-    //   - idx_audit_logs_entity: composite (entity_type, entity_id) — the
-    //     "show me everything on this one record" lookup.
-    //   - idx_audit_logs_action: the action-code filter.
-    //   - idx_audit_logs_user: the user_id filter.
-    await safeAddIndex(conn, 'audit_logs', 'idx_audit_logs_created_at', 'INDEX idx_audit_logs_created_at(created_at)');
-    await safeAddIndex(conn, 'audit_logs', 'idx_audit_logs_entity', 'INDEX idx_audit_logs_entity(entity_type, entity_id)');
-    await safeAddIndex(conn, 'audit_logs', 'idx_audit_logs_action', 'INDEX idx_audit_logs_action(action)');
-    await safeAddIndex(conn, 'audit_logs', 'idx_audit_logs_user', 'INDEX idx_audit_logs_user(user_id)');
+    // P1-02A (CTO architecture review): the audit_logs performance indexes
+    // (idx_audit_logs_created_at/entity/action/user) are deliberately NOT
+    // created here. ensureSchema() runs unconditionally on every startup —
+    // DDL for a purely additive, non-blocking performance index does not
+    // belong in the automatic-every-boot path. They are created by
+    // SchemaMigrationAgent.migrate() instead (POST /api/schema/migrate,
+    // ADMIN-triggered — the "Chạy migration" button on the Production Check
+    // page), following this codebase's own existing convention that
+    // ensureSchema() creates tables/columns/enum-values the app cannot run
+    // without, while SchemaMigrationAgent/AutoMigrationAgent hold changes an
+    // admin applies deliberately. SchemaMigrationAgent.check() reports their
+    // current status (GET /api/schema/check) — bootstrap.js does not
+    // duplicate that verification here to avoid two places drifting out of
+    // sync on the same question.
 
   } finally {
     conn.release();

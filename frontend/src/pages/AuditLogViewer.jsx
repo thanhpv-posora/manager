@@ -4,10 +4,16 @@ import api from'../api/api';
 import SafePage from'../components/SafePage';
 import Dialog from'../components/common/Dialog';
 import {showError}from'../utils/toast';
-import ReturnDetailDialog from'./salesReturns/ReturnDetailDialog';
-import {printReturn}from'./SalesReturns';
+import {getEntityViewerEntry,getEntityLabel,knownEntityTypes}from'./auditLog/entityViewerRegistry';
 
 // P1-02 — Audit Log Viewer (Production Readiness audit finding C2).
+// P1-02A — decoupled from any specific domain (CTO review correction): this
+// file no longer imports ReturnDetailDialog, printReturn, or any other
+// domain-specific detail component/label. Everything entity-type-specific
+// lives in ./auditLog/entityViewerRegistry.js — this page only calls
+// getEntityViewerEntry()/getEntityLabel()/knownEntityTypes(). Adding a new
+// entity type's detail view (customers, suppliers, inventory_adjustments,
+// ...) never requires touching this file.
 //
 // Read-only page over GET /api/audit-logs (AuditLogAgent.js), ADMIN-only —
 // backend enforces this with auth(['ADMIN']); the menu itself is also only
@@ -19,15 +25,11 @@ import {printReturn}from'./SalesReturns';
 // unifying those is explicitly out of scope for this story (see the audit's
 // finding M4).
 //
-// "Xem phiếu trả hàng" reuses the REAL ReturnDetailDialog + printReturn from
-// SalesReturns.jsx (not a reimplementation) when entity_type='sales_returns'
-// — canReview is always false here, so no mutation action (Receive/Inspect/
-// Complete/Reject/Cancel) is ever rendered from this read-only context; only
-// Đóng/In are available, matching what this page is for (inspection, not
-// workflow entry). There is no client-side router with deep-linkable URLs in
-// this app (App.jsx is a flat page-key switch, not React Router) — "opening"
-// a Sales Return from here is an in-place dialog, not a URL navigation; see
-// the PR report's Known Limitations for that trade-off.
+// "Xem đối tượng" only appears for entity_type values the registry can
+// actually resolve to a real detail component; every row can still always
+// be opened via "Xem chi tiết", which is this system's entity-agnostic
+// Generic Audit Detail view (action/entity_type/entity_id/note/user/time as
+// stored — no separate "unknown entity" component needed).
 
 const ACTION_LABELS = {
   SALES_RETURN_CREATED: 'Tạo yêu cầu trả hàng',
@@ -38,15 +40,11 @@ const ACTION_LABELS = {
   SALES_RETURN_REJECTED: 'Từ chối trả hàng',
   AI_CREATE_PURCHASE_ORDER_DRAFT: 'AI tạo nháp phiếu mua hàng',
 };
-const ENTITY_LABELS = {
-  sales_returns: 'Phiếu trả hàng',
-  purchase_orders: 'Phiếu mua hàng',
-};
-// Unknown action/entity_type values render safely as their raw code (React
-// text nodes are escaped by default — no dangerouslySetInnerHTML anywhere in
-// this file, satisfying "notes rendered as stored, never execute HTML").
+// Unknown action values render safely as their raw code (React text nodes
+// are escaped by default — no dangerouslySetInnerHTML anywhere in this
+// file, satisfying "notes rendered as stored, never execute HTML"). Entity
+// labels come from the registry (getEntityLabel), not a local map here.
 const actionLabel = a => ACTION_LABELS[a] || a || '';
-const entityLabel = e => ENTITY_LABELS[e] || e || '';
 
 const dt = v => {
   if (!v) return '';
@@ -79,8 +77,11 @@ export default function AuditLogViewer() {
 
   const [noteDlg, setNoteDlg] = useState(null); // { action, entity_type, entity_id, note, user_name, created_at } | null
 
-  const [salesReturnDetail, setSalesReturnDetail] = useState(null); // ReturnDetailDialog `detail` shape | null
-  const [salesReturnLoadingId, setSalesReturnLoadingId] = useState(null);
+  // Registry-resolved entity detail view — { entry, detail } | null. `entry`
+  // carries the Component + toProps this page renders generically below;
+  // this page never knows which domain component that actually is.
+  const [entityViewer, setEntityViewer] = useState(null);
+  const [entityViewerLoadingId, setEntityViewerLoadingId] = useState(null);
 
   useEffect(() => {
     api.get('/permissions/users').then(r => setUsers(r.data || [])).catch(() => setUsers([]));
@@ -113,14 +114,18 @@ export default function AuditLogViewer() {
   const applyFilters = () => { setPage(1); setAppliedFilters(filters); };
   const resetFilters = () => { setFilters(EMPTY_FILTERS); setPage(1); setAppliedFilters(EMPTY_FILTERS); };
 
-  const openSalesReturn = async (row) => {
-    if (salesReturnLoadingId) return;
+  // Entity-agnostic: resolves entity_type -> a registry entry, loads its
+  // detail via that entry's own `load(entityId)`, and stores { entry, detail }
+  // for the generic renderer below. Never references a specific entity type.
+  const openEntityViewer = async (row) => {
+    const entry = getEntityViewerEntry(row.entity_type);
+    if (!entry || !row.entity_id || entityViewerLoadingId) return;
     try {
-      setSalesReturnLoadingId(row.id);
-      const detail = (await api.get('/sales-returns/' + row.entity_id)).data;
-      setSalesReturnDetail(detail);
-    } catch (e) { showError(e.response?.data?.message || e.message || 'Không tải được phiếu trả hàng'); }
-    finally { setSalesReturnLoadingId(null); }
+      setEntityViewerLoadingId(row.id);
+      const detail = await entry.load(row.entity_id);
+      setEntityViewer({ entry, detail });
+    } catch (e) { showError(e.response?.data?.message || e.message || 'Không tải được chi tiết đối tượng'); }
+    finally { setEntityViewerLoadingId(null); }
   };
 
   return <SafePage loading={loading} error={error}>
@@ -145,7 +150,7 @@ export default function AuditLogViewer() {
         <label className="field-label"><span>Loại đối tượng</span>
           <select className="select" style={{ minWidth: 160 }} value={filters.entity_type} onChange={e => changeFilter('entity_type', e.target.value)}>
             <option value="">Tất cả loại</option>
-            {Object.keys(ENTITY_LABELS).map(t => <option key={t} value={t}>{ENTITY_LABELS[t]}</option>)}
+            {knownEntityTypes().map(t => <option key={t} value={t}>{getEntityLabel(t)}</option>)}
           </select>
         </label>
         <label className="field-label"><span>Người dùng</span>
@@ -168,24 +173,27 @@ export default function AuditLogViewer() {
             <th>Loại đối tượng</th><th>Mã đối tượng</th><th>Nội dung</th><th></th>
           </tr></thead>
           <tbody>
-            {rows.map(r => (
-              <tr key={r.id}>
-                <td>{dt(r.created_at)}</td>
-                <td>{r.user_name || (r.user_id ? `#${r.user_id}` : '—')}</td>
-                <td>{actionLabel(r.action)}</td>
-                <td>{entityLabel(r.entity_type)}</td>
-                <td>{r.entity_id ?? '—'}</td>
-                <td>{truncate(r.note)}</td>
-                <td>
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                    <button type="button" className="btn secondary" title="Xem chi tiết" onClick={() => setNoteDlg(r)}><Eye size={14} /></button>
-                    {r.entity_type === 'sales_returns' && r.entity_id && (
-                      <button type="button" className="btn secondary" title="Xem phiếu trả hàng" disabled={salesReturnLoadingId === r.id} onClick={() => openSalesReturn(r)}><FileSearch size={14} /></button>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            ))}
+            {rows.map(r => {
+              const viewerEntry = getEntityViewerEntry(r.entity_type);
+              return (
+                <tr key={r.id}>
+                  <td>{dt(r.created_at)}</td>
+                  <td>{r.user_name || (r.user_id ? `#${r.user_id}` : '—')}</td>
+                  <td>{actionLabel(r.action)}</td>
+                  <td>{getEntityLabel(r.entity_type)}</td>
+                  <td>{r.entity_id ?? '—'}</td>
+                  <td>{truncate(r.note)}</td>
+                  <td>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      <button type="button" className="btn secondary" title="Xem chi tiết" onClick={() => setNoteDlg(r)}><Eye size={14} /></button>
+                      {viewerEntry && r.entity_id && (
+                        <button type="button" className="btn secondary" title="Xem đối tượng" disabled={entityViewerLoadingId === r.id} onClick={() => openEntityViewer(r)}><FileSearch size={14} /></button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
             {!rows.length && <tr><td colSpan={7} style={{ textAlign: 'center', color: '#6b7280' }}>Không có nhật ký nào phù hợp.</td></tr>}
           </tbody>
         </table>
@@ -205,20 +213,20 @@ export default function AuditLogViewer() {
         <div><b>Thời gian:</b> {dt(noteDlg.created_at)}</div>
         <div><b>Người thực hiện:</b> {noteDlg.user_name || (noteDlg.user_id ? `#${noteDlg.user_id}` : '—')}</div>
         <div><b>Hành động:</b> {actionLabel(noteDlg.action)}</div>
-        <div><b>Loại đối tượng:</b> {entityLabel(noteDlg.entity_type)}</div>
+        <div><b>Loại đối tượng:</b> {getEntityLabel(noteDlg.entity_type)}</div>
         <div><b>Mã đối tượng:</b> {noteDlg.entity_id ?? '—'}</div>
         <div><b>Nội dung:</b></div>
         <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: '#f9fafb', borderRadius: 8, padding: 10 }}>{noteDlg.note || '—'}</div>
       </div>}
     </Dialog>
 
-    <ReturnDetailDialog
-      detail={salesReturnDetail}
-      onClose={() => setSalesReturnDetail(null)}
-      onPrint={printReturn}
-      canReview={false}
-      onCancel={() => {}} onReceive={() => {}} onInspect={() => {}} onComplete={() => {}} onReject={() => {}}
-      completingId={null}
-    />
+    {/* Entity-agnostic renderer: this is the ONLY place that ever mounts a
+        registry-resolved detail component, and it does so generically —
+        no reference to any specific domain component appears in this file. */}
+    {entityViewer && (() => {
+      const { entry, detail } = entityViewer;
+      const ViewerComponent = entry.Component;
+      return <ViewerComponent {...entry.toProps(detail, { onClose: () => setEntityViewer(null) })} />;
+    })()}
   </SafePage>;
 }

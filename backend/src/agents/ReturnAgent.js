@@ -68,6 +68,13 @@ const ALL_STATUSES = [STATUS_REQUESTED, STATUS_CANCELLED, STATUS_RECEIVED, STATU
 // consequence to a rejected unit in this story either).
 const DISPOSITIONS = ['RESTOCK', 'PROCESS', 'SCRAP'];
 
+// P1-01A (CTO review correction) — shared decimal tolerance for every
+// quantity-equality/quantity-cap check in this file, replacing the ad-hoc
+// 0.0001 literals that were already used inconsistently at several call
+// sites below. Same order of magnitude as the rest of the codebase's own
+// convention (InventoryReceiveService.js uses 0.001).
+const QTY_TOLERANCE = 0.0001;
+
 function badRequest(message, code) {
   const err = new Error(message);
   err.status = 400; err.statusCode = 400;
@@ -554,12 +561,20 @@ class ReturnAgent {
   // appends a new sales_return_inspections row per line (history, matching
   // that column's evident purpose) and overwrites the line's CURRENT
   // disposition_type/return_to_stock_qty/non_sellable_qty on sales_return_items
-  // — the latest call's decision is what complete() acts on. Disposition
-  // (locked rule #4) applies to accepted_qty only: return_to_stock_qty = the
-  // RESTOCK portion of accepted_qty, non_sellable_qty = the PROCESS/SCRAP
-  // portion; rejected_qty is tracked on the inspection row only and is never
-  // restocked regardless of disposition (rule #6: no financial consequence to
-  // a rejected unit in this story).
+  // — the latest call's decision is what complete()/reject() act on.
+  // Inspection drafts may remain partial while status stays INSPECTING (only
+  // Complete/Reject require every line fully classified — see
+  // _resolveFinalization()).
+  //
+  // P1-01A FIX4 (CTO review correction): disposition applies to accepted_qty
+  // only, and is required ONLY when accepted_qty > 0 — a line with nothing
+  // accepted has no RESTOCK/PROCESS/SCRAP decision to make. The previous
+  // version forced a disposition on every submitted line unconditionally,
+  // which pushed the UI to silently default to RESTOCK just to pass
+  // validation on a 0-accepted line; that default is removed here at the
+  // source instead. rejected_qty is tracked on the inspection row only and is
+  // never restocked regardless of disposition (rule #6: no financial
+  // consequence to a rejected unit in this story).
   async inspect(returnId, data = {}, user = {}) {
     returnId = Number(returnId);
     if (!returnId) throw badRequest('Thiếu mã yêu cầu trả hàng');
@@ -567,8 +582,9 @@ class ReturnAgent {
     if (!rawItems.length) throw badRequest('Vui lòng nhập kết quả kiểm tra cho ít nhất một dòng hàng');
 
     for (const line of rawItems) {
-      if (!DISPOSITIONS.includes(line.disposition)) {
-        throw badRequest(`Phương án xử lý không hợp lệ cho dòng #${line.return_item_id}`, 'RETURN_INVALID_DISPOSITION');
+      const acceptedQty = Number(line.accepted_qty || 0);
+      if (acceptedQty > 0 && !DISPOSITIONS.includes(line.disposition)) {
+        throw badRequest(`Phương án xử lý không hợp lệ hoặc còn thiếu cho dòng #${line.return_item_id}`, 'RETURN_INVALID_DISPOSITION');
       }
     }
 
@@ -588,7 +604,6 @@ class ReturnAgent {
         const itemId = Number(line.return_item_id);
         const acceptedQty = Number(line.accepted_qty || 0);
         const rejectedQty = Number(line.rejected_qty || 0);
-        const disposition = line.disposition;
         if (!itemId) throw badRequest('Thiếu dòng hàng trả (return_item_id)');
         if (!(acceptedQty >= 0) || !(rejectedQty >= 0)) {
           throw badRequest(`Số lượng kiểm tra không hợp lệ cho dòng #${itemId}`);
@@ -600,27 +615,57 @@ class ReturnAgent {
         if (!item || Number(item.return_id) !== returnId) {
           throw badRequest(`Không tìm thấy dòng hàng trả #${itemId} thuộc yêu cầu này`);
         }
-        if (acceptedQty + rejectedQty > Number(item.quantity_received) + 0.0001) {
+        if (acceptedQty + rejectedQty > Number(item.quantity_received) + QTY_TOLERANCE) {
           throw badRequest(
             `Tổng số lượng kiểm tra (${acceptedQty + rejectedQty}) vượt quá số lượng đã nhận (${item.quantity_received}) của dòng #${itemId}`,
             'INSPECT_QTY_EXCEEDS_RECEIVED'
           );
         }
 
+        // P1-01A FIX5 (CTO review correction): inspection_note (this
+        // inspection event's own remark, e.g. "found 2kg spoiled on arrival")
+        // and disposition_reason_note (why THIS disposition was chosen for
+        // the line, e.g. "PROCESS because still edible but off-grade") are
+        // different business meanings and are no longer conflated into one
+        // column the way the original S9.4 version did (it wrote the same
+        // `note` value into disposition_reason_note only, and
+        // sales_return_inspections.inspection_note was never written at all
+        // despite existing in the schema since S9.2 FINAL).
+        //
+        // Backward-compatible precedence: an explicit `inspection_note` field
+        // wins; the legacy single `note` field is accepted as a fallback ONLY
+        // for inspection_note (matching what callers actually meant by `note`
+        // before this fix — a remark about the inspection itself). Legacy
+        // `note` never populates disposition_reason_note — that field is
+        // explicit-only (`disposition_reason_note` in the request body) and
+        // defaults to null when omitted, so one note value is never silently
+        // duplicated into two different-meaning columns.
+        const inspectionNote = line.inspection_note != null
+          ? (String(line.inspection_note).trim() || null)
+          : (line.note != null ? (String(line.note).trim() || null) : null);
+        const dispositionReasonNote = line.disposition_reason_note != null
+          ? (String(line.disposition_reason_note).trim() || null)
+          : null;
+
         await conn.query(
-          `INSERT INTO sales_return_inspections (return_item_id, accepted_qty, rejected_qty, inspector_id, inspected_at)
-           VALUES (?,?,?,?,NOW())`,
-          [itemId, acceptedQty, rejectedQty, user?.id || null]
+          `INSERT INTO sales_return_inspections (return_item_id, accepted_qty, rejected_qty, inspection_note, inspector_id, inspected_at)
+           VALUES (?,?,?,?,?,NOW())`,
+          [itemId, acceptedQty, rejectedQty, inspectionNote, user?.id || null]
         );
 
+        // P1-01A FIX4: nothing accepted -> no disposition decision was made;
+        // persist the disposition state as null/zero rather than
+        // forcing/defaulting a value merely to satisfy a NOT NULL-style
+        // expectation (the column itself is nullable — see bootstrap.js).
+        const disposition = acceptedQty > 0 ? line.disposition : null;
         const restockQty = disposition === 'RESTOCK' ? acceptedQty : 0;
-        const nonSellableQty = disposition === 'RESTOCK' ? 0 : acceptedQty;
+        const nonSellableQty = (disposition && disposition !== 'RESTOCK') ? acceptedQty : 0;
         await conn.query(
           `UPDATE sales_return_items
              SET disposition_type=?, return_to_stock_qty=?, non_sellable_qty=?, decided_by=?, decided_at=NOW(),
                  disposition_reason_note=?
            WHERE id=?`,
-          [disposition, restockQty, nonSellableQty, user?.id || null, line.note || line.disposition_reason_note || null, itemId]
+          [disposition, restockQty, nonSellableQty, user?.id || null, dispositionReasonNote, itemId]
         );
       }
 
@@ -639,6 +684,71 @@ class ReturnAgent {
     }
   }
 
+  // P1-01A (CTO review correction) — shared finalization-state resolver for
+  // complete()/reject(), the single source of the "is every line fully
+  // classified" / "total accepted quantity" formulas (do not duplicate them
+  // per-caller). Called AFTER the caller's own header FOR UPDATE + status
+  // check, and itself:
+  //   1. Locks every return line (ascending id — same lock-ordering
+  //      discipline as create()'s item loop and
+  //      InventoryService.reverseOrderInventory()) — FIX1 step 1 / FIX2
+  //      step 2.
+  //   2. Resolves each line's LATEST inspection result. accepted_qty/
+  //      rejected_qty are never persisted on sales_return_items itself (only
+  //      the derived return_to_stock_qty/non_sellable_qty split is) — the
+  //      append-only sales_return_inspections table is the only place
+  //      rejected_qty lives at all, so this MUST read from there, not from
+  //      sales_return_items — FIX1 step 2.
+  //   3. Rejects (RETURN_INSPECTION_INCOMPLETE) unless accepted_qty +
+  //      rejected_qty equals quantity_received for every line, within
+  //      QTY_TOLERANCE. A line that was never received (quantity_received=0)
+  //      and never inspected trivially satisfies this (0+0=0) — inspection
+  //      drafts may stay partial while INSPECTING; only terminal actions
+  //      require full classification — FIX1 step 3 / FIX3.
+  //   4. Returns the locked items (for complete()'s stock-posting loop) and
+  //      totalAccepted, the document-level sum used by both callers'
+  //      opposite-direction guards — FIX1 step 4 / FIX2 step 4.
+  async _resolveFinalization(conn, returnId) {
+    const [items] = await conn.query(
+      `SELECT id, product_id, quantity_received, disposition_type, return_to_stock_qty, non_sellable_qty
+       FROM sales_return_items WHERE return_id=? ORDER BY id ASC FOR UPDATE`,
+      [returnId]
+    );
+    if (!items.length) throw badRequest('Yêu cầu trả hàng không có dòng hàng nào');
+
+    const itemIds = items.map(it => it.id);
+    const placeholders = itemIds.map(() => '?').join(',');
+    // Same MAX(id)-per-group "latest inspection" join complete() already used
+    // for its is_final update — reused here as the read, before that write.
+    const [latestRows] = await conn.query(
+      `SELECT i.* FROM sales_return_inspections i
+       JOIN (
+         SELECT return_item_id, MAX(id) max_id FROM sales_return_inspections
+         WHERE return_item_id IN (${placeholders})
+         GROUP BY return_item_id
+       ) latest ON latest.return_item_id = i.return_item_id AND latest.max_id = i.id`,
+      itemIds
+    );
+    const latestByItem = new Map(latestRows.map(r => [Number(r.return_item_id), r]));
+
+    let totalAccepted = 0;
+    for (const item of items) {
+      const received = Number(item.quantity_received || 0);
+      const latest = latestByItem.get(item.id);
+      const accepted = latest ? Number(latest.accepted_qty || 0) : 0;
+      const rejected = latest ? Number(latest.rejected_qty || 0) : 0;
+      if (Math.abs((accepted + rejected) - received) > QTY_TOLERANCE) {
+        throw badRequest(
+          'Cần phân loại đầy đủ số lượng đã nhận của tất cả mặt hàng.',
+          'RETURN_INSPECTION_INCOMPLETE'
+        );
+      }
+      totalAccepted += accepted;
+    }
+
+    return { items, latestByItem, totalAccepted };
+  }
+
   // POST /api/sales-returns/:id/complete — INSPECTING -> COMPLETED (S9.4 locked
   // rule #5): the ONLY transition in this whole agent that ever writes to
   // stock_transactions, and only for the RESTOCK-dispositioned qty of each
@@ -646,9 +756,27 @@ class ReturnAgent {
   // every other inventory-increasing caller in this codebase uses — reference
   // reference_type='SALES_RETURN', reference_id=returnId, mirroring how
   // reference_id already means "the header id, not the line id" for
-  // reference_type='SALE' elsewhere in this file). Requires every line to have
-  // a decided disposition (i.e. inspect() was called for all lines) — refuses
-  // to complete a partially-inspected return.
+  // reference_type='SALE' elsewhere in this file).
+  //
+  // P1-01A (CTO review correction, locked document outcome rule): Complete
+  // now additionally requires total accepted_qty > 0 across the whole
+  // document (RETURN_NOTHING_ACCEPTED otherwise) — a return where nothing was
+  // accepted belongs on the Reject path. Full-classification is enforced by
+  // _resolveFinalization() before any stock movement below.
+  //
+  // Idempotency audit (CTO review ask): retrying complete() on an
+  // already-COMPLETED return is already blocked by the status !==
+  // STATUS_INSPECTING check immediately below, evaluated under the SAME
+  // FOR UPDATE row lock acquired at the top of this method's transaction —
+  // by the time a retry's SELECT ... FOR UPDATE returns, the first call's
+  // commit (which flipped status to COMPLETED) has either already landed
+  // (retry sees COMPLETED, throws RETURN_INVALID_STATE, never reaches
+  // InventoryService.in()) or is still in-flight (retry blocks on the lock
+  // until it commits, then sees COMPLETED). No separate idempotency key is
+  // needed on top of this — the status transition IS the single-use gate,
+  // same pattern as receive()'s PENDING->RECEIVED guard in
+  // InventoryReceiveService.js. No code change required for this; documented
+  // here as the audit's conclusion.
   async complete(returnId, user = {}) {
     returnId = Number(returnId);
     if (!returnId) throw badRequest('Thiếu mã yêu cầu trả hàng');
@@ -665,18 +793,15 @@ class ReturnAgent {
         throw badRequest(`Không thể hoàn tất, yêu cầu đang ở trạng thái ${row.status}`, 'RETURN_INVALID_STATE');
       }
 
-      // Ascending id order — same lock-ordering discipline as create()'s item
-      // loop and InventoryService.reverseOrderInventory().
-      const [items] = await conn.query(
-        `SELECT id, product_id, disposition_type, return_to_stock_qty
-         FROM sales_return_items WHERE return_id=? ORDER BY id ASC FOR UPDATE`, [returnId]
-      );
-      if (!items.length) throw badRequest('Yêu cầu trả hàng không có dòng hàng nào');
-      const undecided = items.filter(it => !DISPOSITIONS.includes(it.disposition_type));
-      if (undecided.length) {
+      // Locks items, resolves latest inspection per line, refuses
+      // (RETURN_INSPECTION_INCOMPLETE) unless fully classified — before any
+      // stock movement.
+      const { items, totalAccepted } = await this._resolveFinalization(conn, returnId);
+
+      if (totalAccepted <= QTY_TOLERANCE) {
         throw badRequest(
-          'Cần kiểm tra và quyết định phương án xử lý cho tất cả các dòng hàng trước khi hoàn tất',
-          'RETURN_INSPECTION_INCOMPLETE'
+          'Không có số lượng nào được chấp nhận; hãy từ chối phiếu trả hàng thay vì hoàn tất.',
+          'RETURN_NOTHING_ACCEPTED'
         );
       }
 
@@ -726,11 +851,19 @@ class ReturnAgent {
   }
 
   // POST /api/sales-returns/:id/reject — INSPECTING -> REJECTED (S9.4 locked
-  // rule #5/#6 combined): a terminal outcome with ZERO inventory effect,
-  // regardless of what any line's disposition/accepted_qty was recorded as
-  // during inspection — inventory only ever moves on the COMPLETED path. No
-  // payment/refund/debt effect either (out of scope for this story). Reason
-  // required, same discipline as cancel().
+  // rule #5/#6 combined): a terminal outcome with ZERO inventory effect
+  // always — inventory only ever moves on the COMPLETED path via
+  // InventoryService.in() in complete(); nothing in this method touches
+  // stock_transactions. No payment/refund/debt effect either (out of scope
+  // for this story). Reason required, same discipline as cancel().
+  //
+  // P1-01A (CTO review correction, locked document outcome rule): Reject is
+  // now valid ONLY when total accepted_qty across the whole document equals
+  // zero (RETURN_HAS_ACCEPTED_QUANTITY otherwise) — the mirror image of
+  // complete()'s RETURN_NOTHING_ACCEPTED guard. A return with any accepted
+  // quantity must go through Complete instead. Full-classification is
+  // enforced by _resolveFinalization() before this status change, same as
+  // complete().
   async reject(returnId, data = {}, user = {}) {
     returnId = Number(returnId);
     if (!returnId) throw badRequest('Thiếu mã yêu cầu trả hàng');
@@ -747,6 +880,16 @@ class ReturnAgent {
       await assertCustomerScope(user, row.customer_id);
       if (row.status !== STATUS_INSPECTING) {
         throw badRequest(`Không thể từ chối, yêu cầu đang ở trạng thái ${row.status}`, 'RETURN_INVALID_STATE');
+      }
+
+      // Same completeness guard as complete(); no stock movement on this path
+      // regardless of the outcome.
+      const { totalAccepted } = await this._resolveFinalization(conn, returnId);
+      if (totalAccepted > QTY_TOLERANCE) {
+        throw badRequest(
+          'Phiếu có hàng đã được chấp nhận; phải hoàn tất phiếu thay vì từ chối.',
+          'RETURN_HAS_ACCEPTED_QUANTITY'
+        );
       }
 
       await conn.query(`UPDATE sales_returns SET status=?, rejected_at=NOW() WHERE id=?`, [STATUS_REJECTED, returnId]);

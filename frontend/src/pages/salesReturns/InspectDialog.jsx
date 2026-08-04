@@ -14,22 +14,38 @@ import {formatQtyTrim}from'../../utils/quantity';
 // no stock warning.
 //
 // `data` shape: { id, return_code, items:[{ id, product_id, product_name,
-// quantity_requested, quantity_received, frozen_unit, disposition_type,
-// disposition_reason_note, inspections:[{accepted_qty,rejected_qty,...}] }] }
-// — same items array the GET /api/sales-returns/:id detail response already
+// quantity_requested, quantity_received, frozen_unit,
+// inspections:[{accepted_qty,rejected_qty,inspection_note,...}] }] } — same
+// items array the GET /api/sales-returns/:id detail response already
 // returns (ReturnAgent.get()/list()), so no shape translation is needed by
 // the caller.
+//
+// P1-01A (CTO review correction, FIX4/FIX5):
+//  - Disposition is required ONLY when accepted_qty > 0. When accepted_qty is
+//    0, the select is disabled and cleared — never silently defaulted to
+//    RESTOCK just to satisfy a backend check (that default was the bug; the
+//    backend no longer requires a disposition for a 0-accepted line either —
+//    see ReturnAgent.inspect()).
+//  - The single "Ghi chú" input here is the per-inspection-event remark and
+//    is now submitted as `inspection_note` (persisted to
+//    sales_return_inspections.inspection_note), not `disposition_reason_note`
+//    (a separate, disposition-specific field this dialog does not currently
+//    expose — see ReturnAgent.inspect()'s FIX5 comment on precedence).
 const DISPOSITIONS=['RESTOCK','PROCESS','SCRAP'];
 const DISPOSITION_LABELS={RESTOCK:'Nhập lại kho',PROCESS:'Chuyển xử lý',SCRAP:'Tiêu hủy'};
 
 function initialRowState(item){
   const inspections=item.inspections||[];
   const latest=inspections.length?inspections[inspections.length-1]:null;
+  const acceptedQty=latest?Number(latest.accepted_qty||0):0;
   return {
-    accepted_qty:String(latest?Number(latest.accepted_qty||0):0),
+    accepted_qty:String(acceptedQty),
     rejected_qty:String(latest?Number(latest.rejected_qty||0):0),
-    disposition:item.disposition_type||'',
-    note:item.disposition_reason_note||'',
+    // Disposition only ever applies when accepted_qty > 0 — for a 0-accepted
+    // line (or a line never inspected yet), start blank rather than reusing a
+    // stale disposition_type value.
+    disposition:acceptedQty>0?(item.disposition_type||''):'',
+    note:latest?.inspection_note||'',
   };
 }
 
@@ -47,6 +63,19 @@ export default function InspectDialog({open,data,onClose,onSaved}){
   if(!data)return null;
 
   const setRow=(itemId,patch)=>setRows(r=>({...r,[itemId]:{...r[itemId],...patch}}));
+
+  // Accepted qty changed: once it drops to 0, the disposition choice no
+  // longer applies — clear it so the dialog never submits a stale value for a
+  // line that now has nothing accepted (FIX4).
+  const setAcceptedQty=(itemId,value)=>{
+    const acceptedQty=Number(value);
+    setRows(r=>{
+      const row=r[itemId]||{};
+      const next={...row,accepted_qty:value};
+      if(!(acceptedQty>0)) next.disposition='';
+      return {...r,[itemId]:next};
+    });
+  };
 
   const save=async()=>{
     if(saving)return;
@@ -73,6 +102,8 @@ export default function InspectDialog({open,data,onClose,onSaved}){
         showWarning(`Tổng số lượng kiểm tra (${formatQtyTrim(acceptedQty+rejectedQty)}) vượt quá số lượng đã nhận (${formatQtyTrim(receivedQty)}) của dòng "${it.product_name||('#'+it.product_id)}"`);
         return;
       }
+      // FIX4: disposition required only when accepted_qty > 0; not required
+      // (and never defaulted) when accepted_qty = 0.
       if(acceptedQty>0&&!DISPOSITIONS.includes(row.disposition)){
         showWarning(`Vui lòng chọn phương án xử lý cho dòng "${it.product_name||('#'+it.product_id)}"`);
         return;
@@ -81,13 +112,8 @@ export default function InspectDialog({open,data,onClose,onSaved}){
         return_item_id:it.id,
         accepted_qty:acceptedQty,
         rejected_qty:rejectedQty,
-        // A disposition is required by the backend on every submitted line
-        // (ReturnAgent.inspect() validates DISPOSITIONS.includes(line.disposition)
-        // unconditionally), even when accepted_qty is 0 for this line — default
-        // to RESTOCK in that case since it has no real effect (complete() only
-        // moves stock for return_to_stock_qty, which stays 0 when accepted_qty=0).
-        disposition:row.disposition||'RESTOCK',
-        note:row.note||null,
+        disposition:acceptedQty>0?row.disposition:null,
+        inspection_note:row.note||null,
       });
     }
     if(!payload.length){ showWarning('Không có dòng hàng nào để kiểm tra'); return; }
@@ -115,21 +141,27 @@ export default function InspectDialog({open,data,onClose,onSaved}){
       <tbody>
         {(data.items||[]).map(it=>{
           const row=rows[it.id]||initialRowState(it);
+          const acceptedQty=Number(row.accepted_qty||0);
+          const dispositionApplicable=acceptedQty>0;
           return <tr key={it.id}>
             <td>{it.product_name||('#'+it.product_id)}</td>
             <td style={{textAlign:'right'}}>{formatQtyTrim(it.quantity_requested)}</td>
             <td style={{textAlign:'right'}}>{formatQtyTrim(it.quantity_received)}</td>
             <td style={{textAlign:'right'}}>
               <input className="input" style={{maxWidth:90,textAlign:'right'}} type="number" min={0} step="0.001"
-                value={row.accepted_qty} onChange={e=>setRow(it.id,{accepted_qty:e.target.value})}/>
+                value={row.accepted_qty} onChange={e=>setAcceptedQty(it.id,e.target.value)}/>
             </td>
             <td style={{textAlign:'right'}}>
               <input className="input" style={{maxWidth:90,textAlign:'right'}} type="number" min={0} step="0.001"
                 value={row.rejected_qty} onChange={e=>setRow(it.id,{rejected_qty:e.target.value})}/>
             </td>
             <td>
-              <select className="select" style={{minWidth:140}} value={row.disposition} onChange={e=>setRow(it.id,{disposition:e.target.value})}>
-                <option value="">-- Chọn --</option>
+              {/* FIX4: disabled + cleared when accepted_qty = 0 — never a live
+                  choice for a line with nothing accepted. */}
+              <select className="select" style={{minWidth:140}} value={row.disposition}
+                disabled={!dispositionApplicable}
+                onChange={e=>setRow(it.id,{disposition:e.target.value})}>
+                <option value="">{dispositionApplicable?'-- Chọn --':'-- Không áp dụng --'}</option>
                 {DISPOSITIONS.map(d=><option key={d} value={d}>{DISPOSITION_LABELS[d]}</option>)}
               </select>
             </td>
@@ -140,7 +172,8 @@ export default function InspectDialog({open,data,onClose,onSaved}){
       </tbody>
     </table>
     <div style={{marginTop:12,color:'#6b7280',fontSize:13}}>
-      Có thể kiểm tra lại nhiều lần trước khi hoàn tất. Việc nhập lại kho chỉ xảy ra khi bấm "Hoàn tất".
+      Có thể kiểm tra lại nhiều lần trước khi hoàn tất. Việc nhập lại kho chỉ xảy ra khi bấm "Hoàn tất" —
+      Hoàn tất chỉ khả dụng khi có số lượng được chấp nhận; Từ chối chỉ khả dụng khi không có số lượng nào được chấp nhận.
     </div>
   </Dialog>;
 }

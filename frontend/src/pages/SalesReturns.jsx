@@ -9,6 +9,7 @@ import NewReturnDialog from'./salesReturns/NewReturnDialog';
 import ReturnDetailDialog from'./salesReturns/ReturnDetailDialog';
 import ReceiveDialog from'./salesReturns/ReceiveDialog';
 import InspectDialog from'./salesReturns/InspectDialog';
+import {computeReturnFinalization}from'./salesReturns/returnFinalization';
 
 // S9.3R — Sales Return UI + Business Workflow.
 //
@@ -204,23 +205,28 @@ export default function SalesReturns(){
     catch(e){ showError(e.response?.data?.message||e.message); }
   };
 
+  // P1-01A FIX6 (CTO review correction): a grid row has no `items`, so
+  // eligibility can't be computed reliably from it — per the review's own
+  // instruction, refresh (fetch) the full detail first, then gate on the
+  // freshly-loaded data using the SAME formula the detail dialog uses
+  // (computeReturnFinalization — one shared utility, not duplicated here).
+  // Backend remains authoritative regardless; this only avoids opening a
+  // confirmation dialog for an action the backend would reject anyway.
   const doComplete=async(rowOrDetail)=>{
     if(completingId)return;
     let detail;
     try{ detail=await ensureDetail(rowOrDetail); }
     catch(e){ showError(e.response?.data?.message||e.message); return; }
 
-    // Backend rejects Complete unless every line has a decided disposition
-    // (RETURN_INSPECTION_INCOMPLETE) — checked client-side first only to give
-    // a clearer warning; the backend re-validates this regardless.
-    const undecided=(detail.items||[]).some(it=>!['RESTOCK','PROCESS','SCRAP'].includes(it.disposition_type));
-    if(undecided){ showWarning('Cần kiểm tra và quyết định phương án xử lý cho tất cả các dòng hàng trước khi hoàn tất'); return; }
+    const {fullyClassified,totalAccepted,canComplete}=computeReturnFinalization(detail.items||[]);
+    if(!fullyClassified){ showWarning('Cần phân loại đầy đủ số lượng đã nhận của tất cả mặt hàng.'); return; }
+    if(!canComplete){ showWarning('Không có số lượng nào được chấp nhận; hãy từ chối phiếu trả hàng thay vì hoàn tất.'); return; }
 
     const restockLines=(detail.items||[]).filter(it=>it.disposition_type==='RESTOCK'&&Number(it.return_to_stock_qty)>0);
     const restockText=restockLines.length
       ? restockLines.map(it=>`${it.product_name||('#'+it.product_id)}: +${formatQtyTrim(it.return_to_stock_qty)} ${it.frozen_unit||''}`).join('\n')
       : 'Không có mặt hàng nào được nhập lại kho ở lần hoàn tất này.';
-    const confirmMsg=`Hoàn tất trả hàng ${detail.return_code||''}?\n\nTồn kho sẽ được CỘNG THÊM (nhập lại kho) cho các dòng sau:\n${restockText}\n\nHành động này không thể hoàn tác từ giao diện.`;
+    const confirmMsg=`Hoàn tất trả hàng ${detail.return_code||''}? (Tổng SL chấp nhận: ${formatQtyTrim(totalAccepted)})\n\nTồn kho sẽ được CỘNG THÊM (nhập lại kho) cho các dòng sau:\n${restockText}\n\nHành động này không thể hoàn tác từ giao diện.`;
     if(!await window.appConfirm(confirmMsg,{title:'Hoàn tất trả hàng',confirmText:'Hoàn tất',cancelText:'Đóng',variant:'danger'}))return;
 
     try{
@@ -232,7 +238,19 @@ export default function SalesReturns(){
     finally{ setCompletingId(null); }
   };
 
-  const openRejectDlg=(rowOrDetail)=>setRejectDlg({id:rowOrDetail.id,return_code:rowOrDetail.return_code,reason:''});
+  // Same fetch-then-check pattern as doComplete above, mirrored for Reject —
+  // one shared computeReturnFinalization() call, opposite-direction guard.
+  const openRejectDlg=async(rowOrDetail)=>{
+    let detail;
+    try{ detail=await ensureDetail(rowOrDetail); }
+    catch(e){ showError(e.response?.data?.message||e.message); return; }
+
+    const {fullyClassified,canReject}=computeReturnFinalization(detail.items||[]);
+    if(!fullyClassified){ showWarning('Cần phân loại đầy đủ số lượng đã nhận của tất cả mặt hàng.'); return; }
+    if(!canReject){ showWarning('Phiếu có hàng đã được chấp nhận; phải hoàn tất phiếu thay vì từ chối.'); return; }
+
+    setRejectDlg({id:detail.id,return_code:detail.return_code,reason:''});
+  };
   const doReject=async()=>{
     if(!rejectDlg||rejectSaving)return;
     const reason=String(rejectDlg.reason||'').trim();

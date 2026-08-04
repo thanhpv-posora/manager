@@ -2,6 +2,7 @@ import React,{useState}from'react';
 import {Printer}from'lucide-react';
 import Dialog from'../../components/common/Dialog';
 import {formatQtyTrim}from'../../utils/quantity';
+import {computeReturnFinalization}from'./returnFinalization';
 
 // S9.3R-01 — extracted verbatim from SalesReturns.jsx (was named ViewDialog
 // there; renamed to match this file's name).
@@ -79,7 +80,11 @@ function LineWarehouseInfo({item}){
       {latest&&<span>SL loại: <b>{formatQtyTrim(latest.rejected_qty)}</b></span>}
       {item.disposition_type&&<span>Xử lý: <b>{DISPOSITION_LABELS[item.disposition_type]||item.disposition_type}</b></span>}
     </div>
-    {item.disposition_reason_note&&<div style={{color:'#6b7280'}}>Ghi chú kiểm tra: {item.disposition_reason_note}</div>}
+    {/* P1-01A FIX5: inspection_note (this inspection event's own remark) and
+        disposition_reason_note (why this disposition was chosen) are
+        different fields now — shown separately rather than conflated. */}
+    {latest?.inspection_note&&<div style={{color:'#6b7280'}}>Ghi chú kiểm tra: {latest.inspection_note}</div>}
+    {item.disposition_reason_note&&<div style={{color:'#6b7280'}}>Lý do phân loại: {item.disposition_reason_note}</div>}
     {latest&&<div style={{color:'#6b7280'}}>Kiểm tra gần nhất: {latest.inspector_name||''} — {dt(latest.inspected_at)}</div>}
     {inspections.length>1&&(
       <div style={{marginTop:2}}>
@@ -90,6 +95,7 @@ function LineWarehouseInfo({item}){
           {inspections.map((insp,i)=>(
             <li key={insp.id||i}>
               Đạt {formatQtyTrim(insp.accepted_qty)} / Loại {formatQtyTrim(insp.rejected_qty)} — {insp.inspector_name||''} — {dt(insp.inspected_at)}
+              {insp.inspection_note?` — ${insp.inspection_note}`:''}
             </li>
           ))}
         </ul>}
@@ -101,6 +107,13 @@ function LineWarehouseInfo({item}){
 export default function ReturnDetailDialog({detail,onClose,onPrint,canReview,onCancel,onReceive,onInspect,onComplete,onReject,completingId}){
   if(!detail)return null;
   const status=detail.status;
+  // P1-01A FIX6: the detail dialog always has `items` loaded (GET
+  // /api/sales-returns/:id), so the final-state formula can be computed
+  // directly here — no extra fetch needed, unlike the grid row (see
+  // SalesReturns.jsx's ensureDetail()+precheck pattern for that case).
+  // Backend remains authoritative; this only decides which of Hoàn tất/Từ
+  // chối to offer.
+  const finalization=status==='INSPECTING'?computeReturnFinalization(detail.items||[]):null;
   return <Dialog open={!!detail} title={`Yêu cầu trả hàng ${detail.return_code}`} onClose={onClose} maxWidth={760}
     footer={<>
       <button type="button" className="btn secondary" onClick={onClose}>Đóng</button>
@@ -113,8 +126,10 @@ export default function ReturnDetailDialog({detail,onClose,onPrint,canReview,onC
         <button type="button" className="btn secondary" onClick={()=>onInspect(detail)}>Bắt đầu kiểm tra / Kiểm hàng</button>}
       {canReview&&status==='INSPECTING'&&<>
         <button type="button" className="btn secondary" onClick={()=>onInspect(detail)}>Chỉnh kết quả kiểm tra</button>
-        <button type="button" className="btn" disabled={completingId===detail.id} onClick={()=>onComplete(detail)}>Hoàn tất</button>
-        <button type="button" className="btn danger" onClick={()=>onReject(detail)}>Từ chối</button>
+        {finalization?.canComplete&&
+          <button type="button" className="btn" disabled={completingId===detail.id} onClick={()=>onComplete(detail)}>Hoàn tất</button>}
+        {finalization?.canReject&&
+          <button type="button" className="btn danger" onClick={()=>onReject(detail)}>Từ chối</button>}
       </>}
     </>}>
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16}}>

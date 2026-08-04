@@ -346,12 +346,20 @@ class ReturnAgent {
 
   // Shared by list()/get() — one lookup query for the inspection history of a
   // set of return_item ids. Returns a Map keyed by return_item_id.
+  //
+  // P1-01 additive read-model change: joins users for inspector_name, same
+  // created_by_name/received_by_name/completed_by_name convention already used
+  // above — the warehouse Inspection history needs "Inspector" as a name, not
+  // just inspector_id. Read-only join, no write-path change.
   async _inspectionsByItem(itemIds) {
     const map = new Map();
     if (!itemIds.length) return map;
     const placeholders = itemIds.map(() => '?').join(',');
     const [inspections] = await pool.query(
-      `SELECT * FROM sales_return_inspections WHERE return_item_id IN (${placeholders}) ORDER BY id ASC`, itemIds
+      `SELECT sri.*, ui.full_name inspector_name
+       FROM sales_return_inspections sri
+       LEFT JOIN users ui ON ui.id = sri.inspector_id
+       WHERE sri.return_item_id IN (${placeholders}) ORDER BY sri.id ASC`, itemIds
     );
     for (const insp of inspections) {
       const list = map.get(insp.return_item_id) || [];
@@ -395,20 +403,32 @@ class ReturnAgent {
     return rows;
   }
 
-  // GET /api/sales-returns/:id — View/Print detail (S9.3). Read-only, no
-  // inventory/financial data beyond what already exists on sales_return_items
-  // (frozen_unit_price is returned but the View/Print UI must not render it as
-  // a financial total, per the story's "no financial information" rule).
+  // GET /api/sales-returns/:id — View/Print detail (S9.3), extended by S9.4-UI
+  // (P1-01) to also surface the warehouse header actors for the detail dialog.
+  // Read-only, no inventory/financial data beyond what already exists on
+  // sales_return_items (frozen_unit_price is returned but the View/Print UI
+  // must not render it as a financial total, per the story's "no financial
+  // information" rule).
+  //
+  // P1-01 additive read-model change: sr.received_by/completed_by were already
+  // stored (S9.4 schema) but never joined to a human-readable name — only
+  // created_by_name existed. The warehouse detail view needs "Received by" /
+  // "Completed by" as names, same convention as created_by_name above, so two
+  // more LEFT JOINs are added here. No new column, no write-path change, no
+  // endpoint contract removed — purely additive fields on an existing response.
   async get(returnId, user = {}) {
     returnId = Number(returnId);
     if (!returnId) throw badRequest('Thiếu mã yêu cầu trả hàng');
 
     const [[header]] = await pool.query(
-      `SELECT sr.*, c.name customer_name, o.order_code, u.full_name created_by_name
+      `SELECT sr.*, c.name customer_name, o.order_code, u.full_name created_by_name,
+              ur.full_name received_by_name, uc.full_name completed_by_name
        FROM sales_returns sr
        JOIN customers c ON c.id = sr.customer_id
        JOIN orders o ON o.id = sr.order_id
        LEFT JOIN users u ON u.id = sr.created_by
+       LEFT JOIN users ur ON ur.id = sr.received_by
+       LEFT JOIN users uc ON uc.id = sr.completed_by
        WHERE sr.id = ?`,
       [returnId]
     );

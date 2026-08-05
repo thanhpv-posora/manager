@@ -150,6 +150,17 @@ async function main() {
     // S6.2 — InventoryService.adjustOrderItem
     // ══════════════════════════════════════════════════════════════════════════
 
+    // P0-001: adjustOrderItem() no longer derives whether to touch the
+    // balance from the product's CURRENT mode/allow_negative_stock — it now
+    // takes the caller-supplied, FROZEN order_items.stock_checked fact
+    // (0 or 1) instead, matching reverseOrderInventory()'s own discipline.
+    // Each call below passes the value postOut() would have returned at
+    // "original sale time" for that scenario's policy — 1 for plain
+    // TRACK_STOCK (needStockCheck=true), 0 for NON_STOCK or
+    // TRACK_STOCK+allow_negative_stock (needStockCheck=false) — since these
+    // scenarios simulate a line whose product had that exact policy when
+    // it was originally sold.
+
     // ── NON_STOCK: no-op regardless of quantity change ──
     {
       const id = await makeProduct('NON_STOCK', false, 10);
@@ -157,7 +168,7 @@ async function main() {
       const conn = await pool.getConnection();
       try {
         await conn.beginTransaction();
-        await InventoryService.adjustOrderItem(conn, id, 5, 8);
+        await InventoryService.adjustOrderItem(conn, id, 5, 8, 0);
         await conn.commit();
       } finally { conn.release(); }
       check('adjustOrderItem NON_STOCK: no-op, balance unchanged (still 10)', await getBalance(id) === 10);
@@ -171,7 +182,7 @@ async function main() {
       const conn = await pool.getConnection();
       try {
         await conn.beginTransaction();
-        await InventoryService.adjustOrderItem(conn, id, 5, 8); // delta=3, newQty>oldQty
+        await InventoryService.adjustOrderItem(conn, id, 5, 8, 1); // delta=3, newQty>oldQty
         await conn.commit();
       } finally { conn.release(); }
       check('adjustOrderItem TRACK_STOCK qty increase: balance decreased by delta (10→7)', await getBalance(id) === 7, `got ${await getBalance(id)}`);
@@ -185,7 +196,7 @@ async function main() {
       const conn = await pool.getConnection();
       try {
         await conn.beginTransaction();
-        await InventoryService.adjustOrderItem(conn, id, 8, 5); // delta=3, newQty<oldQty
+        await InventoryService.adjustOrderItem(conn, id, 8, 5, 1); // delta=3, newQty<oldQty
         await conn.commit();
       } finally { conn.release(); }
       check('adjustOrderItem TRACK_STOCK qty decrease: balance increased by delta (10→13)', await getBalance(id) === 13, `got ${await getBalance(id)}`);
@@ -199,11 +210,29 @@ async function main() {
       const conn = await pool.getConnection();
       try {
         await conn.beginTransaction();
-        await InventoryService.adjustOrderItem(conn, id, 5, 8);
+        await InventoryService.adjustOrderItem(conn, id, 5, 8, 0);
         await conn.commit();
       } finally { conn.release(); }
       check('adjustOrderItem TRACK_STOCK+allowNeg: no-op, balance unchanged (still 10)', await getBalance(id) === 10);
       check('adjustOrderItem TRACK_STOCK+allowNeg: no ledger row written', await getTxCount(id) === 0);
+    }
+
+    // ── P0-001: TRACK_STOCK, quantity increase requesting MORE than on hand
+    // → INSUFFICIENT_STOCK, no partial write ──
+    {
+      const id = await makeProduct('TRACK_STOCK', false, 10);
+      productIds.push(id);
+      const conn = await pool.getConnection();
+      let threw = null;
+      try {
+        await conn.beginTransaction();
+        await InventoryService.adjustOrderItem(conn, id, 5, 5 + 999, 1); // delta=999 > balance=10
+        await conn.commit();
+      } catch (e) { threw = e; await conn.rollback(); }
+      finally { conn.release(); }
+      check('adjustOrderItem TRACK_STOCK over-increase: throws INSUFFICIENT_STOCK', !!threw && threw.code === 'INSUFFICIENT_STOCK', threw && { message: threw.message, code: threw.code });
+      check('adjustOrderItem TRACK_STOCK over-increase: balance unchanged (still 10)', await getBalance(id) === 10);
+      check('adjustOrderItem TRACK_STOCK over-increase: no ledger row written', await getTxCount(id) === 0);
     }
 
     // ══════════════════════════════════════════════════════════════════════════

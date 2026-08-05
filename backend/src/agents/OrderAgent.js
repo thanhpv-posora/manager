@@ -973,7 +973,13 @@ const orderId = r.insertId;
       }
       const newTotal = newQty * newPrice;
       await conn.query(`UPDATE order_items SET quantity=?, sale_price=?, total_price=? WHERE id=?`, [newQty,newPrice,newTotal,itemId]);
-      await InventoryService.adjustOrderItem(conn, old.product_id, Number(old.quantity), newQty);
+      // P0-001: pass the frozen stock_checked fact already on `old` (read
+      // under FOR UPDATE above) — adjustOrderItem() throws
+      // INSUFFICIENT_STOCK before any ledger write if there isn't enough
+      // stock for a quantity increase; the catch below rolls back this
+      // entire transaction, including the order_items UPDATE just above, so
+      // a failed adjustment never leaves a partially-updated item.
+      await InventoryService.adjustOrderItem(conn, old.product_id, Number(old.quantity), newQty, old.stock_checked);
       await this.recalcOrderTotals(conn, orderId, user?.id || null);
       await conn.commit();
       return {message:'Đã sửa dòng bill'};

@@ -230,6 +230,41 @@ class InventoryMovementService {
   async postAdjustmentDecrease(conn, productId, delta, date, refType, refId, note, userId) {
     const d = normalizeNumber(delta);
     if (d <= 0) return;
+
+    // P0-001: this primitive previously did a blind UPDATE with no lock and
+    // no sufficiency check — the same class of gap postOut() already closed
+    // for the SALE path. Both current callers (InventoryService.
+    // adjustOrderItem() for an order-line quantity increase,
+    // InventoryAdjustmentAgent._applyOneAdjustment() for a manual stock-count
+    // decrease) already do their own FOR UPDATE + caller-specific-message
+    // pre-check before calling this — this is the authoritative,
+    // race-safe backstop inside the single writer itself, same
+    // pre-check-in-caller / guard-in-primitive split already established by
+    // applyOrderInventory() → postOut(). Generic message here (shared by
+    // both callers) is not expected to normally surface — each caller's own
+    // pre-check already prevents reaching this with insufficient stock; it
+    // exists only to make the primitive itself safe against negative stock
+    // under a genuine race.
+    //
+    // Policy-aware exactly like postOut()'s own backstop: allow_negative_stock
+    // is a genuine, existing feature of InventoryAdjustmentAgent's manual
+    // stock-count decrease (a product's CURRENT setting, checked live here —
+    // same as postOut(), not a frozen historical fact), so this backstop must
+    // skip the sufficiency check the same way postOut() does, or it would
+    // silently break that pre-existing, still-tested allowance.
+    const [rows] = await conn.query(
+      `SELECT id, name, stock_quantity, inventory_mode, allow_negative_stock FROM products WHERE id = ? AND del_flg = 0 FOR UPDATE`,
+      [productId]
+    );
+    if (!rows.length) throw new Error('Không tìm thấy mặt hàng');
+    const p = rows[0];
+    const policy = InventoryPolicyResolver.resolve(p);
+    if (policy.needStockCheck && Number(p.stock_quantity) < d) {
+      throw new Error(
+        `Không đủ tồn kho cho "${p.name}". Tồn hiện tại: ${formatQty(p.stock_quantity)}, cần giảm: ${formatQty(d)}.`
+      );
+    }
+
     await conn.query(`UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ?`, [d, productId]);
     await conn.query(
       `INSERT INTO stock_transactions

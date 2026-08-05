@@ -20,12 +20,17 @@ const InventoryPolicyResolver = require('./InventoryPolicyResolver');
 //                                           exist today. Left as-is to avoid a behavior change;
 //                                           revisit in a dedicated ticket if that gap should close.
 //
-// S6.2: the mode/allow_negative_stock decisions in adjustOrderItem() and
-// applyOrderInventory() below — previously duplicated inline conditionals,
-// separate from (but equivalent to) InventoryMovementService's own — now come
-// from the same InventoryPolicyResolver.resolve() used by postIn/postOut.
-// Branch structure and every observable outcome are unchanged; only where the
-// mode/allow_negative_stock decision is computed changed.
+// S6.2: the mode/allow_negative_stock decision in applyOrderInventory()
+// below — previously a duplicated inline conditional, separate from (but
+// equivalent to) InventoryMovementService's own — comes from the same
+// InventoryPolicyResolver.resolve() used by postIn/postOut. Branch structure
+// and every observable outcome are unchanged; only where the mode/
+// allow_negative_stock decision is computed changed.
+//
+// P0-001: adjustOrderItem() no longer uses InventoryPolicyResolver at all —
+// it now takes the caller-supplied, FROZEN order_items.stock_checked fact
+// instead of re-deriving from the product's current settings. See that
+// method's own doc comment for why.
 
 function normalizeNumber(value) {
   const v = Number(value || 0);
@@ -54,22 +59,21 @@ class InventoryService {
    * Before INV-004: silently modified stock_quantity with no stock_transactions entry.
    * After  INV-004: emits ADJUSTMENT_INCREASE or ADJUSTMENT_DECREASE — audit trail restored.
    *
-   * Only applies to TRACK_STOCK products.
-   * NON_STOCK / allow_negative_stock → no-op (unchanged).
+   * P0-001 root-cause fix: whether this line affects the balance at all is now
+   * decided by the FROZEN order_items.stock_checked fact the caller passes in
+   * (recorded at original sale/edit time by postOut()'s own return value) —
+   * NEVER re-derived from the product's CURRENT inventory_mode/
+   * allow_negative_stock. This is the exact same historical-fact discipline
+   * reverseOrderInventory() already documents and enforces: a product's mode
+   * can be reconfigured after the sale, and re-deriving from today's settings
+   * would silently start/stop balance-tracking a line based on a fact that
+   * was never true at sale time. Callers must pass the order_items row's own
+   * stock_checked value (already read under FOR UPDATE by OrderAgent.updateItem()).
+   *
+   * @param {number} stockChecked — order_items.stock_checked (0 or 1), frozen at sale time.
    */
-  async adjustOrderItem(conn, productId, oldQty, newQty) {
-    const [rows] = await conn.query(
-      `SELECT inventory_mode, allow_negative_stock FROM products WHERE id = ?`,
-      [productId]
-    );
-    // S6.2: identical shape to postOut's skip gate — a product skips real balance
-    // tracking here for exactly the same reasons it skips the stock-sufficiency
-    // check in postOut (NON_STOCK mode, or allow_negative_stock).
-    // resolve({}) when the product row is missing normalizes to NON_STOCK, so a
-    // missing productId silently no-ops here — unchanged from the original
-    // `rows[0]?.inventory_mode` optional-chaining behavior.
-    const policy = InventoryPolicyResolver.resolve(rows[0] || {});
-    if (!policy.needStockCheck) return;
+  async adjustOrderItem(conn, productId, oldQty, newQty, stockChecked) {
+    if (Number(stockChecked) !== 1) return;
 
     const delta = normalizeNumber(Math.abs(newQty - oldQty));
     if (delta < 0.001) return; // no meaningful change
@@ -77,10 +81,29 @@ class InventoryService {
     const note = `Điều chỉnh dòng đơn hàng (trước: ${oldQty}, sau: ${newQty})`;
 
     if (newQty > oldQty) {
-      // More quantity sold → more stock consumed → balance decreases
+      // More quantity sold → more stock consumed → balance decreases.
+      // P0-001: lock + sufficiency pre-check here so the order-editing path
+      // surfaces its own stable code/message; postAdjustmentDecrease() below
+      // still holds its own internal FOR UPDATE + backstop check (same
+      // pre-check-in-caller / guard-in-primitive split applyOrderInventory()
+      // → postOut() already uses), so a race between this read and the
+      // actual write can never let a negative balance through even if this
+      // read goes stale.
+      const [[p]] = await conn.query(
+        `SELECT id, name, stock_quantity FROM products WHERE id = ? AND del_flg = 0 FOR UPDATE`,
+        [productId]
+      );
+      if (!p) throw new Error('Không tìm thấy mặt hàng');
+      if (Number(p.stock_quantity) < delta) {
+        throw Object.assign(
+          new Error('Không đủ tồn kho để tăng số lượng mặt hàng trong bill.'),
+          { status: 400, code: 'INSUFFICIENT_STOCK' }
+        );
+      }
       await InventoryMovementService.postAdjustmentDecrease(conn, productId, delta, new Date(), 'MANUAL', null, note, null);
     } else {
-      // Less quantity sold → stock returned → balance increases
+      // Less quantity sold → stock returned → balance increases. Can never
+      // drive stock negative — unchanged.
       await InventoryMovementService.postAdjustmentIncrease(conn, productId, delta, new Date(), 'MANUAL', null, note, null);
     }
   }

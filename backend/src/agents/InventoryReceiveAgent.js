@@ -30,8 +30,8 @@ class InventoryReceiveAgent {
     return InventoryReceiveService.receive(id, userId);
   }
 
-  async cancel(id, userId) {
-    return InventoryReceiveService.cancel(id, userId);
+  async cancel(id, userId, reason) {
+    return InventoryReceiveService.cancel(id, userId, reason);
   }
 }
 

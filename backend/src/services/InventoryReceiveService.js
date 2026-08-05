@@ -3,9 +3,27 @@
 const pool = require('../config/db');
 const { nextCode } = require('../utils/code');
 const InventoryService = require('./InventoryService');
+const InventoryMovementService = require('./InventoryMovementService');
 const WarehouseAgent = require('../agents/WarehouseAgent');
 const SupplierPayableAgent = require('../agents/SupplierPayableAgent');
 const { formatQty } = require('../utils/quantityFormat');
+
+// P2-02 audit logging: reuses the existing audit_logs table (id, user_id,
+// action, entity_type, entity_id, note, created_at — bootstrap.js), the same
+// shape ReturnAgent.js already writes to for Sales Return cancel/reject.
+// No new table, no new logging service. Never allowed to block the
+// calling action if the write itself fails — same discipline ReturnAgent.js
+// uses for this exact table.
+async function writeAuditLog(conn, userId, action, receiveId, note) {
+  try {
+    await conn.query(
+      `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, note) VALUES (?,?,?,?,?)`,
+      [userId || null, action, 'inventory_receives', receiveId, note || null]
+    );
+  } catch (e) {
+    // best-effort — audit_logs must never fail the Cancel/Reversal itself.
+  }
+}
 
 class InventoryReceiveService {
 
@@ -374,34 +392,181 @@ class InventoryReceiveService {
     return rows;
   }
 
-  async cancel(receiveId, userId) {
+  // P2-02 — Inventory Receive Reversal (Production Readiness Audit H-11/H2).
+  //
+  // status === 'PENDING'  → unchanged fast path: no stock was ever committed,
+  //                         plain CANCELLED, no movements.
+  // status === 'RECEIVED' → full reversal path: compensating OUT movements
+  //                         (InventoryMovementService.postReversal, the sole
+  //                         writer of stock), purchase_order_items/
+  //                         purchase_orders bookkeeping unwound to mirror
+  //                         receive()'s own forward bookkeeping, and an
+  //                         append-only supplier payable reversal if the
+  //                         receive posted one. New terminal status
+  //                         'CANCELLED_REVERSAL' (VARCHAR, not ENUM — no
+  //                         schema change) keeps it distinguishable from a
+  //                         PENDING cancel, which never touched stock.
+  //
+  // Original stock_transactions rows, inventory_receive_items rows, and the
+  // original supplier_payable_transactions PURCHASE row are never updated or
+  // deleted — every effect here is a new, append-only, traceable row.
+  async cancel(receiveId, userId, reason) {
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
 
+      // Lock the receive header first — also the single idempotency guard:
+      // a retried/duplicate cancel call blocks here until the first
+      // transaction commits, then fails the status check below because the
+      // row is no longer PENDING/RECEIVED.
       const [[header]] = await conn.query(
         `SELECT * FROM inventory_receives WHERE id = ? FOR UPDATE`,
         [receiveId]
       );
       if (!header) throw Object.assign(new Error('Không tìm thấy phiếu nhận hàng'), { status: 404 });
-      if (header.status === 'CANCELLED') {
+      if (header.status === 'CANCELLED' || header.status === 'CANCELLED_REVERSAL') {
         throw Object.assign(new Error('Phiếu nhận hàng đã bị hủy rồi'), { status: 400 });
       }
-      if (header.status === 'RECEIVED') {
+      if (!['PENDING', 'RECEIVED'].includes(header.status)) {
         throw Object.assign(
-          new Error('Phiếu nhận đã nhập kho. Chưa hỗ trợ hủy phiếu đã nhập kho; cần chức năng reversal movement.'),
-          { status: 422 }
+          new Error(`Phiếu nhận hàng ở trạng thái "${header.status}", không thể hủy`),
+          { status: 400 }
         );
       }
 
-      // status === 'PENDING': safe to cancel — no stock was committed
-      await conn.query(
-        `UPDATE inventory_receives SET status = 'CANCELLED' WHERE id = ?`,
+      const reasonText = String(reason || '').trim();
+      if (!reasonText) {
+        throw Object.assign(new Error('Cần nhập lý do hủy phiếu nhận hàng'), { status: 400 });
+      }
+
+      if (header.status === 'PENDING') {
+        // No stock was committed — safe cancel, no reversal movement needed.
+        await conn.query(
+          `UPDATE inventory_receives
+           SET status = 'CANCELLED', cancelled_at = NOW(), cancelled_by = ?, cancel_reason = ?
+           WHERE id = ?`,
+          [userId || null, reasonText, receiveId]
+        );
+        await writeAuditLog(conn, userId, 'CANCEL_RECEIVE', receiveId, JSON.stringify({
+          previous_status: header.status, new_status: 'CANCELLED', reason: reasonText,
+        }));
+        await conn.commit();
+        return { id: receiveId, receive_code: header.receive_code, status: 'CANCELLED', message: 'Đã hủy phiếu nhận hàng' };
+      }
+
+      // header.status === 'RECEIVED' — full reversal path.
+
+      // Lock related receive lines before touching anything else.
+      const [items] = await conn.query(
+        `SELECT * FROM inventory_receive_items WHERE receive_id = ? ORDER BY id ASC FOR UPDATE`,
         [receiveId]
       );
+      if (!items.length) {
+        throw Object.assign(new Error('Phiếu nhận hàng không có dòng hàng để hủy'), { status: 400 });
+      }
+
+      // Single Writer: InventoryMovementService performs every product lock
+      // (ascending id), stock-sufficiency check, and compensating OUT write.
+      // Throws { status:409, code:'INSUFFICIENT_STOCK_FOR_RECEIVE_REVERSAL' }
+      // if any product's current stock can't absorb the reversal, which
+      // rolls back this entire transaction via the catch below — no partial
+      // movement is ever left behind.
+      const reversedMovements = await InventoryMovementService.postReversal(conn, receiveId, userId, reasonText);
+      if (!reversedMovements.length) {
+        throw Object.assign(
+          new Error('Không tìm thấy bút toán nhập kho gốc để đảo cho phiếu này — dữ liệu không nhất quán'),
+          { status: 409 }
+        );
+      }
+
+      // Decrement purchase_order_items.received_stock_qty by exactly what
+      // this voucher contributed — the reverse of the increment receive()
+      // does (S4.2-A). Ascending id order + per-row FOR UPDATE mirrors
+      // receive()'s own lock pattern for this same table.
+      const poItemIds = [...new Set(items.map(i => Number(i.purchase_order_item_id)).filter(Boolean))].sort((a, b) => a - b);
+      for (const poItemId of poItemIds) {
+        const line = items.find(i => Number(i.purchase_order_item_id) === poItemId);
+        if (!line) continue;
+        const [[poItemRow]] = await conn.query(
+          `SELECT id FROM purchase_order_items WHERE id = ? FOR UPDATE`,
+          [poItemId]
+        );
+        if (!poItemRow) continue; // PO line no longer exists — nothing to unwind
+        await conn.query(
+          `UPDATE purchase_order_items SET received_stock_qty = GREATEST(0, received_stock_qty - ?) WHERE id = ?`,
+          [Number(line.actual_stock_qty), poItemId]
+        );
+      }
+
+      // Recompute purchase_orders.status the same formula receive() uses
+      // going forward (S4.2-B), applied in reverse. Only touched when the PO
+      // is still RECEIVED/PARTIAL_RECEIVED — SHORT_CLOSED/CANCELLED/DRAFT are
+      // deliberate terminal or pre-receiving states this task must not
+      // invent new transitions for.
+      const [[po]] = await conn.query(
+        `SELECT id, status FROM purchase_orders WHERE id = ? FOR UPDATE`,
+        [header.purchase_order_id]
+      );
+      if (po && ['RECEIVED', 'PARTIAL_RECEIVED'].includes(po.status)) {
+        const [[poStats]] = await conn.query(
+          `SELECT
+             SUM(CASE WHEN expected_stock_qty - received_stock_qty > 0.001 THEN 1 ELSE 0 END) remaining_cnt,
+             SUM(CASE WHEN received_stock_qty > 0 THEN 1 ELSE 0 END) received_cnt
+           FROM purchase_order_items WHERE purchase_order_id = ?`,
+          [header.purchase_order_id]
+        );
+        let newPoStatus;
+        if (Number(poStats.remaining_cnt) === 0) newPoStatus = 'RECEIVED';
+        else if (Number(poStats.received_cnt) > 0) newPoStatus = 'PARTIAL_RECEIVED';
+        else newPoStatus = 'CONFIRMED';
+        if (newPoStatus !== po.status) {
+          await conn.query(`UPDATE purchase_orders SET status = ? WHERE id = ?`, [newPoStatus, header.purchase_order_id]);
+        }
+      }
+
+      // Supplier payable reversal — append-only compensating
+      // ADJUSTMENT_DECREASE, amount taken from the original PURCHASE row
+      // itself (never recomputed from current PO/product prices, which can
+      // drift) so the reversal is exact. No-op if this receive never posted
+      // a payable (amount would be 0 or the row wouldn't exist).
+      const [[payable]] = await conn.query(
+        `SELECT amount FROM supplier_payable_transactions WHERE inventory_receive_id = ? AND type = 'PURCHASE' LIMIT 1`,
+        [receiveId]
+      );
+      if (payable && Number(payable.amount) > 0) {
+        await SupplierPayableAgent.postPurchasePayableReversal(conn, {
+          supplierId: header.supplier_id,
+          purchaseOrderId: header.purchase_order_id,
+          inventoryReceiveId: receiveId,
+          transactionDate: new Date(),
+          amount: Number(payable.amount),
+          note: `Đảo công nợ do hủy phiếu nhận ${header.receive_code}`,
+          userId,
+        });
+      }
+
+      await conn.query(
+        `UPDATE inventory_receives
+         SET status = 'CANCELLED_REVERSAL', cancelled_at = NOW(), cancelled_by = ?, cancel_reason = ?
+         WHERE id = ?`,
+        [userId || null, reasonText, receiveId]
+      );
+
+      await writeAuditLog(conn, userId, 'REVERSE_RECEIVE', receiveId, JSON.stringify({
+        previous_status: header.status,
+        new_status: 'CANCELLED_REVERSAL',
+        reason: reasonText,
+        reversed_movements: reversedMovements,
+      }));
 
       await conn.commit();
-      return { id: receiveId, receive_code: header.receive_code, status: 'CANCELLED', message: 'Đã hủy phiếu nhận hàng' };
+      return {
+        id: receiveId,
+        receive_code: header.receive_code,
+        status: 'CANCELLED_REVERSAL',
+        message: 'Đã hủy phiếu nhận hàng và đảo tồn kho',
+        reversed_movements: reversedMovements,
+      };
     } catch (e) {
       await conn.rollback();
       throw e;

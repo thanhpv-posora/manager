@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import api from '../api/api';
 import SafePage from '../components/SafePage';
+import Dialog from '../components/common/Dialog';
 import { showSuccess, showError, showWarning } from '../utils/toast';
 import { formatQty as fmtQty } from '../utils/quantity';
 
@@ -21,11 +22,13 @@ const STATUS_LABEL = {
   PENDING: 'Chờ nhập kho',
   RECEIVED: 'Đã nhập kho',
   CANCELLED: 'Đã hủy',
+  CANCELLED_REVERSAL: 'Đã hủy (đã đảo tồn kho)',
 };
 const STATUS_STYLE = {
   PENDING:   { background: '#fef9c3', color: '#854d0e' },
   RECEIVED:  { background: '#dcfce7', color: '#166534' },
   CANCELLED: { background: '#fee2e2', color: '#991b1b' },
+  CANCELLED_REVERSAL: { background: '#fee2e2', color: '#991b1b' },
 };
 const PO_STATUS_LABEL = {
   CONFIRMED:        'Đã xác nhận',
@@ -68,7 +71,13 @@ export default function InventoryReceives() {
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [posting, setPosting] = useState(false);
-  const [cancelling, setCancelling] = useState(false);
+
+  // P2-02: single dialog + endpoint for both the PENDING plain-cancel path
+  // and the RECEIVED inventory-reversal path — status carried on the dialog
+  // decides which warning copy/title to show, mirroring SalesReturns.jsx's
+  // reason-dialog pattern (cancelDlg={id,...,reason}).
+  const [cancelDlg, setCancelDlg] = useState(null); // { id, receive_code, status, reason } | null
+  const [cancelSaving, setCancelSaving] = useState(false);
 
   // ── List ───────────────────────────────────────────────────────────────────
   const loadList = useCallback(async () => {
@@ -254,18 +263,32 @@ export default function InventoryReceives() {
     finally { setPosting(false); }
   };
 
-  const cancelVoucher = async () => {
+  const openCancelDlg = () => {
+    if (!detail) return;
+    setCancelDlg({ id: detail.id, receive_code: detail.receive_code, status: detail.status, reason: '' });
+  };
+
+  const doCancel = async () => {
+    if (!cancelDlg || cancelSaving) return;
+    const reason = String(cancelDlg.reason || '').trim();
+    if (!reason) { showWarning('Vui lòng nhập lý do hủy phiếu nhận hàng'); return; }
+    const isReversal = cancelDlg.status === 'RECEIVED';
+    const confirmMsg = isReversal
+      ? `Hủy phiếu ${cancelDlg.receive_code}? Hệ thống sẽ tạo bút toán đảo tồn kho cho toàn bộ số lượng đã nhập từ phiếu này.`
+      : `Hủy phiếu ${cancelDlg.receive_code}?`;
     const ok = window.appConfirm
-      ? await window.appConfirm(`Hủy phiếu ${detail.receive_code}?`, { title: 'Hủy phiếu nhận', confirmText: 'Hủy phiếu', variant: 'danger' })
-      : window.confirm(`Hủy phiếu ${detail.receive_code}?`);
+      ? await window.appConfirm(confirmMsg, { title: isReversal ? 'Hủy & đảo tồn kho' : 'Hủy phiếu nhận', confirmText: 'Xác nhận hủy', cancelText: 'Đóng', variant: 'danger' })
+      : window.confirm(confirmMsg);
     if (!ok) return;
-    setCancelling(true);
     try {
-      const r = await api.post(`/inventory-receives/${detail.id}/cancel`);
+      setCancelSaving(true);
+      const r = await api.post(`/inventory-receives/${cancelDlg.id}/cancel`, { reason });
       showSuccess(r.data.message || 'Đã hủy');
-      await openDetail(detail.id);
+      const cancelledId = cancelDlg.id;
+      setCancelDlg(null);
+      await openDetail(cancelledId);
     } catch (e) { showError(e.response?.data?.message || e.message || 'Hủy thất bại'); }
-    finally { setCancelling(false); }
+    finally { setCancelSaving(false); }
   };
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -282,6 +305,7 @@ export default function InventoryReceives() {
               <option value="PENDING">Chờ nhập kho</option>
               <option value="RECEIVED">Đã nhập kho</option>
               <option value="CANCELLED">Đã hủy</option>
+              <option value="CANCELLED_REVERSAL">Đã hủy (đã đảo tồn kho)</option>
             </select>
           </div>
           <button className="btn secondary" onClick={loadList} disabled={listLoading}>Tải lại</button>
@@ -583,8 +607,8 @@ export default function InventoryReceives() {
                 <button className="btn" onClick={postVoucher} disabled={posting}>
                   {posting ? 'Đang nhập kho...' : '✓ Nhập kho'}
                 </button>
-                <button className="btn danger" style={{ marginLeft: 'auto' }} onClick={cancelVoucher} disabled={cancelling}>
-                  {cancelling ? 'Đang hủy...' : '✕ Hủy phiếu'}
+                <button className="btn danger" style={{ marginLeft: 'auto' }} onClick={openCancelDlg}>
+                  ✕ Hủy phiếu
                 </button>
               </div>
               <p className="muted" style={{ marginTop: 6, fontSize: 12 }}>
@@ -598,16 +622,54 @@ export default function InventoryReceives() {
               <p style={{ margin: 0, color: '#166534', fontWeight: 600 }}>
                 ✓ Phiếu đã nhập kho thành công. Tồn kho đã được cộng.
               </p>
+              <div style={{ marginTop: 12 }}>
+                <button className="btn danger" onClick={openCancelDlg}>
+                  ✕ Hủy phiếu & đảo tồn kho
+                </button>
+                <p className="muted" style={{ marginTop: 6, fontSize: 12 }}>
+                  Hệ thống sẽ tạo bút toán đảo tồn kho cho toàn bộ số lượng đã nhập từ phiếu này.
+                </p>
+              </div>
             </div>
           )}
 
-          {detail.status === 'CANCELLED' && (
+          {(detail.status === 'CANCELLED' || detail.status === 'CANCELLED_REVERSAL') && (
             <div className="card" style={{ background: '#fef2f2', border: '1px solid #fca5a5' }}>
-              <p style={{ margin: 0, color: '#991b1b', fontWeight: 600 }}>✕ Phiếu đã bị hủy.</p>
+              <p style={{ margin: 0, color: '#991b1b', fontWeight: 600 }}>
+                ✕ {detail.status === 'CANCELLED_REVERSAL' ? 'Phiếu đã bị hủy và tồn kho đã được đảo.' : 'Phiếu đã bị hủy.'}
+              </p>
+              {detail.cancel_reason && (
+                <p style={{ margin: '6px 0 0', fontSize: 12, color: '#7f1d1d' }}>
+                  Lý do: {detail.cancel_reason}
+                </p>
+              )}
             </div>
           )}
         </>}
       </>}
+
+      <Dialog
+        open={!!cancelDlg}
+        title={cancelDlg?.status === 'RECEIVED' ? `Hủy & đảo tồn kho ${cancelDlg?.receive_code || ''}` : `Hủy phiếu ${cancelDlg?.receive_code || ''}`}
+        onClose={() => setCancelDlg(null)}
+        primaryAction={{ label: 'Xác nhận hủy', onClick: doCancel }}
+        submitting={cancelSaving}
+      >
+        {cancelDlg?.status === 'RECEIVED' && (
+          <p style={{ margin: '0 0 12px', fontSize: 13, color: '#991b1b', fontWeight: 600 }}>
+            ⚠ Hệ thống sẽ tạo bút toán đảo tồn kho cho toàn bộ số lượng đã nhập từ phiếu này.
+          </p>
+        )}
+        <label className="field-label"><span>Lý do hủy *</span>
+          <textarea
+            className="input"
+            rows={3}
+            value={cancelDlg?.reason || ''}
+            onChange={e => setCancelDlg(d => ({ ...d, reason: e.target.value }))}
+            placeholder="VD: Nhập sai phiếu / sai số lượng"
+          />
+        </label>
+      </Dialog>
 
     </SafePage>
   );

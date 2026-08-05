@@ -270,13 +270,100 @@ class InventoryMovementService {
     );
   }
 
-  async postReversal(conn, receiveVoucherId, userId) {
-    // TODO INV-REVERSAL: reverse a RECEIVED inventory_receives voucher.
-    //   Must: re-open receive voucher → CANCELLED_REVERSAL status,
-    //   emit ADJUSTMENT_DECREASE for each item (reverse the IN),
-    //   decrement purchase_order_items.received_quantity,
-    //   recalculate purchase_orders.status.
-    throw new Error('postReversal not implemented — pending INV-REVERSAL ticket');
+  // P2-02 — reverse every original RECEIVE_VOUCHER IN movement for a
+  // RECEIVED inventory_receives voucher with exactly one compensating OUT
+  // movement each. This is the movement PRIMITIVE only — the header status
+  // transition (→ CANCELLED_REVERSAL), purchase_order_items accumulator
+  // decrement, purchase_orders status recalculation, and supplier payable
+  // reversal are the caller's job (InventoryReceiveService.cancel()),
+  // exactly mirroring how postIn() only writes the movement while
+  // InventoryReceiveService.receive() owns those same side effects on the
+  // way in. Caller MUST already hold the receive header locked FOR UPDATE
+  // and have validated status === 'RECEIVED' — this method does not
+  // re-validate voucher state, same division of responsibility as postIn()
+  // trusting receive()'s PENDING check.
+  //
+  // Source of truth is stock_transactions itself — the actual movements
+  // postIn() wrote — not inventory_receive_items: it's what actually changed
+  // products.stock_quantity, and each row's write-time affect_stock flag
+  // (S5.2-C) records, per movement, whether it touched the balance at all.
+  // This mirrors InventoryService.reverseOrderInventory()'s use of
+  // order_items.stock_checked as the frozen historical-fact record — NEVER
+  // today's product.inventory_mode/allow_negative_stock, which may have been
+  // reconfigured since the receive.
+  //
+  // @returns {Array<{product_id:number, action:'REVERSED'|'REVERSED_NO_BALANCE', qty:number, original_transaction_id:number}>}
+  async postReversal(conn, receiveVoucherId, userId, reason) {
+    const [movements] = await conn.query(
+      `SELECT id, product_id, quantity, warehouse_id, affect_stock
+       FROM stock_transactions
+       WHERE reference_type = 'RECEIVE_VOUCHER' AND reference_id = ? AND type = 'IN'
+       ORDER BY product_id ASC`,
+      [receiveVoucherId]
+    );
+    if (!movements.length) return [];
+
+    // Pass 1 — lock every balance-affecting product FOR UPDATE in ascending
+    // product_id order (single, stable lock order across the app — the one
+    // correct pattern InventoryService.reverseOrderInventory() already uses)
+    // and verify sufficient current stock BEFORE writing any compensating
+    // movement, so an insufficient-stock rejection never leaves a partial
+    // reversal behind — rule: "no partial movement" on failure.
+    const productRows = new Map();
+    for (const m of movements) {
+      if (Number(m.affect_stock) !== 1) continue;
+      const [[p]] = await conn.query(
+        `SELECT id, name, stock_quantity FROM products WHERE id = ? FOR UPDATE`,
+        [m.product_id]
+      );
+      if (!p) throw Object.assign(new Error(`Không tìm thấy mặt hàng ID=${m.product_id}`), { status: 404 });
+      const qty = Number(m.quantity);
+      if (Number(p.stock_quantity) < qty - 0.001) {
+        throw Object.assign(
+          new Error(
+            `Không đủ tồn kho để hủy phiếu nhập; hàng từ phiếu này đã được xuất hoặc điều chỉnh. ` +
+            `"${p.name}": tồn hiện tại ${formatQty(p.stock_quantity)} kg, cần đảo ${formatQty(qty)} kg.`
+          ),
+          { status: 409, code: 'INSUFFICIENT_STOCK_FOR_RECEIVE_REVERSAL' }
+        );
+      }
+      productRows.set(m.product_id, p);
+    }
+
+    // Pass 2 — every check above passed; now write the compensating OUT
+    // movement + balance update for each original IN.
+    const note = `Đảo tồn kho do hủy phiếu nhận #${receiveVoucherId}${reason ? ' — ' + reason : ''}`;
+    const results = [];
+    for (const m of movements) {
+      const qty = Number(m.quantity);
+      const skipBalance = Number(m.affect_stock) !== 1;
+      try {
+        await conn.query(
+          `INSERT INTO stock_transactions
+             (product_id, transaction_date, type, quantity, reference_type, reference_id, note, created_by, warehouse_id, affect_stock)
+           VALUES (?, ?, 'OUT', ?, 'RECEIVE_VOUCHER', ?, ?, ?, ?, ?)`,
+          [m.product_id, new Date(), qty, receiveVoucherId, note, userId || null, m.warehouse_id || null, skipBalance ? 0 : 1]
+        );
+      } catch (e) {
+        const isDupReversalKey = e && (e.code === 'ER_DUP_ENTRY' || e.errno === 1062) &&
+          /reversal_dedup/i.test(e.sqlMessage || e.message || '');
+        if (isDupReversalKey) {
+          throw new Error('Phiếu nhận hàng này đã được đảo tồn kho cho sản phẩm này, không thể ghi trùng');
+        }
+        throw e;
+      }
+
+      if (!skipBalance) {
+        await conn.query(`UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ?`, [qty, m.product_id]);
+      }
+      results.push({
+        product_id: m.product_id,
+        action: skipBalance ? 'REVERSED_NO_BALANCE' : 'REVERSED',
+        qty,
+        original_transaction_id: m.id,
+      });
+    }
+    return results;
   }
 }
 

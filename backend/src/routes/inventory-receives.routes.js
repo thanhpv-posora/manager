@@ -41,8 +41,10 @@ router.post('/:id/receive', auth(['ADMIN', 'STAFF']), async (req, res, next) => 
 });
 
 // POST /api/inventory-receives/:id/cancel
+// P2-02: body.reason is required by InventoryReceiveService.cancel() for
+// both the PENDING-cancel and RECEIVED-reversal paths.
 router.post('/:id/cancel', auth(['ADMIN', 'STAFF']), async (req, res, next) => {
-  try { res.json(await InventoryReceiveAgent.cancel(req.params.id, req.user.id)); } catch (e) { next(e); }
+  try { res.json(await InventoryReceiveAgent.cancel(req.params.id, req.user.id, req.body?.reason)); } catch (e) { next(e); }
 });
 
 module.exports = router;

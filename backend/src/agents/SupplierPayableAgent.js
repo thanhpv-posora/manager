@@ -49,6 +49,38 @@ class SupplierPayableAgent {
     }
   }
 
+  // P2-02 — compensating payable reversal for a reversed inventory receive.
+  // Same append-only, insert-first idiom as postPurchasePayable() above —
+  // never updates/deletes the original PURCHASE row. Idempotent via the same
+  // uq_supplier_payable_receive_purchase(inventory_receive_id, type) unique
+  // key: 'ADJUSTMENT_DECREASE' is a different type value than 'PURCHASE', so
+  // one receive can carry exactly one of each; a genuine duplicate reversal
+  // attempt is rejected atomically and the existing row is returned instead
+  // of throwing, matching postPurchasePayable()'s own dup handling.
+  async postPurchasePayableReversal(conn, { supplierId, purchaseOrderId, inventoryReceiveId, transactionDate, amount, note, userId }) {
+    const amt = Number(amount || 0);
+    if (!(amt > 0)) return null; // nothing to reverse for a zero-value payable
+    try {
+      const [r] = await conn.query(
+        `INSERT INTO supplier_payable_transactions
+           (supplier_id, purchase_order_id, inventory_receive_id, transaction_date, type, amount, note, created_by)
+         VALUES (?, ?, ?, ?, 'ADJUSTMENT_DECREASE', ?, ?, ?)`,
+        [supplierId, purchaseOrderId || null, inventoryReceiveId || null, transactionDate, amt, note || null, userId || null]
+      );
+      return { id: r.insertId, amount: amt };
+    } catch (e) {
+      const isDup = e && (e.code === 'ER_DUP_ENTRY' || e.errno === 1062);
+      if (isDup && inventoryReceiveId) {
+        const [[existing]] = await conn.query(
+          `SELECT id, amount FROM supplier_payable_transactions WHERE inventory_receive_id=? AND type='ADJUSTMENT_DECREASE' LIMIT 1`,
+          [inventoryReceiveId]
+        );
+        if (existing) return existing;
+      }
+      throw e;
+    }
+  }
+
   async summary(supplierId) {
     if (!supplierId) throw Object.assign(new Error('Thiếu nhà cung cấp'), { status: 400 });
     const [[row]] = await pool.query(

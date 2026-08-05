@@ -33,9 +33,48 @@ class SchemaMigrationAgent{
     return Number(rows[0].cnt)>0;
   }
 
-  async safeAlter(conn,sql){
-    try{ await conn.query(sql); return {sql,status:'OK'}; }
+  // params is optional (defaults to none) — every pre-existing call site in
+  // this file passes fixed DDL/DML with no placeholders, so this stays fully
+  // backward-compatible; mergeMenuKey() below is the first caller to pass
+  // params, to keep its dynamic WHERE/SET values parameterized rather than
+  // string-interpolated.
+  async safeAlter(conn,sql,params=[]){
+    try{ await conn.query(sql,params); return {sql,status:'OK'}; }
     catch(e){ return {sql,status:'ERROR',message:e.message}; }
+  }
+
+  // P1-02A follow-up (CTO review correction) — extracted from migrate() as
+  // its own method so it can be exercised in isolation (unit-style, against
+  // a minimal mock conn) without needing to also mock every other unrelated
+  // statement migrate() issues. Merges a retired app_menus.menu_key into its
+  // replacement, preserving role_menu_permissions/user_menu_permissions
+  // grants. See migrate()'s call site below for the full case-by-case
+  // reasoning (rename vs. merge-then-delete vs. no-op) — unchanged here,
+  // just relocated. All statements parameterized (? placeholders) — oldKey/
+  // newKey are always fixed literals from the call site today, but this
+  // never string-interpolates them into SQL regardless.
+  async mergeMenuKey(conn,oldKey,newKey){
+    const logs=[];
+    const [oldMenuRows]=await conn.query(`SELECT id FROM app_menus WHERE menu_key=?`,[oldKey]);
+    const [newMenuRows]=await conn.query(`SELECT id FROM app_menus WHERE menu_key=?`,[newKey]);
+    if(oldMenuRows.length && !newMenuRows.length){
+      logs.push(await this.safeAlter(conn,`UPDATE app_menus SET menu_key=?, route=? WHERE menu_key=?`,[newKey,newKey,oldKey]));
+      logs.push(await this.safeAlter(conn,`UPDATE role_menu_permissions SET menu_key=? WHERE menu_key=?`,[newKey,oldKey]));
+      logs.push(await this.safeAlter(conn,`UPDATE user_menu_permissions SET menu_key=? WHERE menu_key=?`,[newKey,oldKey]));
+    } else if(oldMenuRows.length && newMenuRows.length){
+      logs.push(await this.safeAlter(conn,`
+        INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled)
+        SELECT role, ?, is_enabled FROM role_menu_permissions WHERE menu_key=?
+      `,[newKey,oldKey]));
+      logs.push(await this.safeAlter(conn,`
+        INSERT IGNORE INTO user_menu_permissions (user_id, menu_key, is_enabled, updated_by)
+        SELECT user_id, ?, is_enabled, updated_by FROM user_menu_permissions WHERE menu_key=?
+      `,[newKey,oldKey]));
+      logs.push(await this.safeAlter(conn,`DELETE FROM role_menu_permissions WHERE menu_key=?`,[oldKey]));
+      logs.push(await this.safeAlter(conn,`DELETE FROM user_menu_permissions WHERE menu_key=?`,[oldKey]));
+      logs.push(await this.safeAlter(conn,`DELETE FROM app_menus WHERE menu_key=?`,[oldKey]));
+    }
+    return logs;
   }
 
   async migrate(){
@@ -232,6 +271,18 @@ class SchemaMigrationAgent{
         }
       }
 
+      // P1-02A follow-up (CTO review correction) — merges the transient
+      // duplicate 'audit-logs' app_menus row into the canonical 'system_audit'
+      // key (mergeMenuKey() above). Live read-only audit against the shared
+      // dev DB confirmed BOTH rows can coexist (the server booted against it
+      // once on the pre-rename bootstrap.js seed, and again after) — "the
+      // old key was never deployed" must never be assumed, it must be
+      // checked. mergeMenuKey() is existence-guarded end to end, so this is
+      // a no-op on every run after the first successful one.
+      if(await this.hasTable(conn,'app_menus')){
+        logs.push(...(await this.mergeMenuKey(conn,'audit-logs','system_audit')));
+      }
+
       return {message:'Schema migration completed',logs};
     }finally{
       conn.release();
@@ -262,11 +313,15 @@ class SchemaMigrationAgent{
       }
 
       // P1-02A — bootstrap.js intentionally does not create these (see
-      // migrate() above); this is the sole "verify" surface for them,
-      // reusing the exact same {table,column,status} row shape the
-      // Production Check page's Schema Health Check table already renders
-      // (column holds "INDEX <name>" here rather than a real column name —
-      // display-only, not a second real column check).
+      // migrate() above); this is the sole "verify" surface for them. Row
+      // shape preserves {table,column,status} so the Production Check page's
+      // existing table (table/column/status columns only) renders these
+      // unchanged — column holds "INDEX <name>" for a readable label there.
+      // type/index_name are ADDITIVE fields (CTO review correction): a real
+      // index-name lookup against INFORMATION_SCHEMA.STATISTICS via
+      // this.hasIndex() decides status — never inferred from the column
+      // merely existing, which would be a false positive (a column can exist
+      // with zero indexes on it).
       const requiredIndexes=[
         ['audit_logs','idx_audit_logs_created_at'],
         ['audit_logs','idx_audit_logs_entity'],
@@ -276,7 +331,16 @@ class SchemaMigrationAgent{
       for(const [table,indexName] of requiredIndexes){
         const tableOk=await this.hasTable(conn,table);
         const idxOk=tableOk?await this.hasIndex(conn,table,indexName):false;
-        checks.push({table,column:`INDEX ${indexName}`,status:tableOk&&idxOk?'OK':'MISSING'});
+        checks.push({table,column:`INDEX ${indexName}`,type:'INDEX',index_name:indexName,status:tableOk&&idxOk?'OK':'MISSING'});
+      }
+
+      // P1-02A follow-up — reports the live menu-key merge state (see the
+      // matching block in migrate() above) using the same row shape.
+      {
+        const [[oldMenu]]=await conn.query(`SELECT COUNT(*) cnt FROM app_menus WHERE menu_key='audit-logs'`);
+        const [[newMenu]]=await conn.query(`SELECT COUNT(*) cnt FROM app_menus WHERE menu_key='system_audit'`);
+        checks.push({table:'app_menus',column:"legacy 'audit-logs' row retired",status:Number(oldMenu.cnt)===0?'OK':'MISSING'});
+        checks.push({table:'app_menus',column:"'system_audit' row present",status:Number(newMenu.cnt)>0?'OK':'MISSING'});
       }
 
       return checks;

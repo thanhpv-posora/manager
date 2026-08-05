@@ -325,6 +325,28 @@ class SchemaMigrationAgent{
         }
       }
 
+      // fix(partner): remove duplicate supplier management menu — the
+      // standalone 'suppliers' app_menus row (P2-01, ea5ac47/5c655c4)
+      // duplicated the Partner ('customers', "Đối tác") workflow and was
+      // removed from bootstrap.js's seed. That seed is INSERT IGNORE, so an
+      // already-migrated DB still has the row from a prior boot — deleting it
+      // (and its role_menu_permissions/user_menu_permissions grants) is a
+      // deliberately-triggered cleanup, same reasoning as mergeMenuKey()
+      // above for the 'audit-logs' → 'system_audit' rename. Order matches the
+      // task's own listed order: permission grants first, then the menu row
+      // itself. Idempotent — every DELETE is a no-op once the rows are gone.
+      // Never touches the suppliers TABLE (business data) or the 'customers'
+      // (Đối tác) menu row.
+      if(await this.hasTable(conn,'role_menu_permissions')){
+        logs.push(await this.safeAlter(conn,`DELETE FROM role_menu_permissions WHERE menu_key='suppliers'`));
+      }
+      if(await this.hasTable(conn,'user_menu_permissions')){
+        logs.push(await this.safeAlter(conn,`DELETE FROM user_menu_permissions WHERE menu_key='suppliers'`));
+      }
+      if(await this.hasTable(conn,'app_menus')){
+        logs.push(await this.safeAlter(conn,`DELETE FROM app_menus WHERE menu_key='suppliers'`));
+      }
+
       return {message:'Schema migration completed',logs};
     }finally{
       conn.release();
@@ -390,6 +412,18 @@ class SchemaMigrationAgent{
         const [[newMenu]]=await conn.query(`SELECT COUNT(*) cnt FROM app_menus WHERE menu_key='system_audit'`);
         checks.push({table:'app_menus',column:"legacy 'audit-logs' row retired",status:Number(oldMenu.cnt)===0?'OK':'MISSING'});
         checks.push({table:'app_menus',column:"'system_audit' row present",status:Number(newMenu.cnt)>0?'OK':'MISSING'});
+      }
+
+      // fix(partner): reports the live cleanup state for the removed
+      // standalone 'suppliers' menu (see the matching DELETE block in
+      // migrate() above) using the same row shape. 'OK' means gone.
+      {
+        const [[menuRow]]=await conn.query(`SELECT COUNT(*) cnt FROM app_menus WHERE menu_key='suppliers'`);
+        const [[roleRow]]=await conn.query(`SELECT COUNT(*) cnt FROM role_menu_permissions WHERE menu_key='suppliers'`);
+        const [[userRow]]=await conn.query(`SELECT COUNT(*) cnt FROM user_menu_permissions WHERE menu_key='suppliers'`);
+        checks.push({table:'app_menus',column:"obsolete 'suppliers' menu row retired",status:Number(menuRow.cnt)===0?'OK':'MISSING'});
+        checks.push({table:'role_menu_permissions',column:"'suppliers' grants retired",status:Number(roleRow.cnt)===0?'OK':'MISSING'});
+        checks.push({table:'user_menu_permissions',column:"'suppliers' grants retired",status:Number(userRow.cnt)===0?'OK':'MISSING'});
       }
 
       return checks;

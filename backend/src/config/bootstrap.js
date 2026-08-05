@@ -1573,12 +1573,20 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       }
     }
 
-    // BP-009B: Partner → Supplier sync (idempotent — links customers.partner_type=1 that have no supplier_partner_map entry)
+    // BP-009B: Partner → Supplier sync (idempotent — links customers with the
+    // supplier bit set that have no supplier_partner_map entry).
+    // fix/partner cleanup: partner_type is a bitmask (1=supplier, 2=customer,
+    // 3=both — see PartnerAgent.listPartners()/InventoryPurchaseAgent.
+    // _resolvePartner(), which already read it that way). This backfill used
+    // an exact `= 1` match, which would silently skip a partner_type=3
+    // ("both") row — bitmask-matched here for consistency with every other
+    // partner_type check in the codebase, and so this backfill keeps working
+    // as a reliable catch-all going forward now that CustomerAgent can write 3.
     if (await hasTable(conn, 'supplier_partner_map')) {
       const [partnerRows] = await conn.query(
         `SELECT c.id, c.name, c.phone, c.address, c.note, c.billing_calendar_type, c.is_active
          FROM customers c
-         WHERE c.partner_type = 1 AND c.del_flg = 0
+         WHERE (c.partner_type & 1) = 1 AND c.del_flg = 0
            AND NOT EXISTS (SELECT 1 FROM supplier_partner_map m WHERE m.partner_id = c.id)`
       );
       for (const p of partnerRows) {
@@ -1651,12 +1659,17 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       ['product-import','Import mặt hàng từ ảnh','Nhập danh mục nhanh từ hình ảnh hoặc file dữ liệu.','product-import','Package','catalog',2,0,1,'ProductImageImport'],
       ['ocr-providers','Cấu hình OCR nâng cao','Thiết lập nhận diện hình ảnh và alias sản phẩm.','ocr-providers','Bot','catalog',3,0,1,'OCRProviders'],
       ['price-matrix','Bảng giá riêng','Sắp xếp danh mục và bảng giá theo từng bạn hàng.','price-matrix','TableProperties','catalog',4,1,1,'PriceMatrix'],
-      // P2-01: Supplier Management UI — backend (SupplierAgent.js + routes/
-      // suppliers.js) already existed with full CRUD; only the menu/page was
-      // missing. sort_order=0 places it before 'lots' (1) since a supplier
-      // record is prerequisite data for Nhập xô/purchase options, without
-      // renumbering any existing 'purchase' group row.
-      ['suppliers','Nhà cung cấp','Quản lý danh sách nhà cung cấp: thông tin liên hệ, lịch tính bill và giá thu mua bò xô.','suppliers','Truck','purchase',0,0,1,'Suppliers'],
+      // CTO decision (fix/partner cleanup): the standalone 'suppliers' menu
+      // (P2-01, ea5ac47/5c655c4) duplicated the Partner ('customers', title
+      // "Đối tác") workflow and was removed. Đối tác remains the single
+      // user-facing management path — a Partner marked Nhà cung cấp
+      // synchronizes to a backend suppliers row via
+      // CustomerAgent._syncPartnerToSupplier(), never through a standalone
+      // CRUD screen. An already-migrated DB's now-obsolete app_menus/
+      // role_menu_permissions/user_menu_permissions rows for menu_key=
+      // 'suppliers' are removed by SchemaMigrationAgent.migrate() (this seed
+      // being INSERT IGNORE means simply deleting this line does not, by
+      // itself, retract a row already seeded on a prior boot).
       ['lots','Nhập xô','Quản lý nhập lô, trọng lượng, thanh toán và nhà cung cấp.','lots','Truck','purchase',1,0,1,'Lots'],
       ['units','Đơn vị tính','Quản lý đơn vị quy đổi dùng cho nhập hàng và tồn kho.','units','TableProperties','purchase',2,0,1,'Units'],
       ['supplier-purchase-options','Cấu hình quy cách nhập','Cấu hình đơn vị và quy đổi kg theo từng nhà cung cấp và sản phẩm.','supplier-purchase-options','Truck','purchase',3,0,1,'SupplierPurchaseOptions'],
@@ -1833,10 +1846,7 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       `INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled)
        SELECT 'ADMIN', menu_key, 1 FROM app_menus WHERE is_active = 1`
     );
-    // P2-01: 'suppliers' added — matches suppliers.js's own auth(['ADMIN','STAFF'])
-    // on every route (list/create/update/delete); STAFF already had full API
-    // access, this only makes the menu reachable to match it.
-    for (const mk of ['create-order','orders','sales-returns','retail-daily-summary','payments','customers','products','product-import','ocr-providers','price-matrix','lots','revenue','profit','portal','my-menu','inventory-purchases','inventory-receives','stock-ledger','suppliers']) {
+    for (const mk of ['create-order','orders','sales-returns','retail-daily-summary','payments','customers','products','product-import','ocr-providers','price-matrix','lots','revenue','profit','portal','my-menu','inventory-purchases','inventory-receives','stock-ledger']) {
       await conn.query(`INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled) VALUES ('STAFF', ?, 1)`, [mk]);
     }
     for (const mk of ['orders','sales-returns','payments','portal','customers','my-menu']) {

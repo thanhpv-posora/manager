@@ -1,14 +1,21 @@
 import React,{useEffect,useState,useRef}from'react';
-import {Pencil,Trash2,Plus}from'lucide-react';
+import {Pencil,Trash2,Plus,ChevronDown,ChevronRight}from'lucide-react';
 import api from'../api/api';
 import SafePage from'../components/SafePage';
 import {moneyVnd}from'../utils/money';
 import {showSuccess,showError,showWarning}from'../utils/toast';
 import Dialog from'../components/common/Dialog';
 
+// fix(partner): customers.partner_type is a bitmask — 1=Nhà cung cấp
+// (supplier bit), 2=Khách hàng (customer bit), 3=Khách hàng và Nhà cung cấp
+// (both). Matches PartnerAgent.listPartners()/InventoryPurchaseAgent.
+// _resolvePartner() on the backend, which already read it this way.
+const partnerTypeLabel=pt=>pt===3?'Khách hàng & NCC':pt===1?'Nhà cung cấp':'Khách hàng';
+const EMPTY_FORM={price_mode:'COMMON_PRICE',billing_calendar_type:'SOLAR',is_active:1,partner_type:2,male_price:'',female_price:'',fragment_price:''};
+
 export default function Customers(){
   const[rows,setRows]=useState([]);
-  const[form,setForm]=useState({price_mode:'COMMON_PRICE',billing_calendar_type:'SOLAR',is_active:1,partner_type:2});
+  const[form,setForm]=useState(EMPTY_FORM);
   const[editing,setEditing]=useState(null);
   // Partner Dialog standardization: the Add/Edit form moves into this Dialog.
   // Same form/editing state as before, unchanged — this flag only controls
@@ -22,15 +29,27 @@ export default function Customers(){
   const[search,setSearch]=useState('');
   const[page,setPage]=useState(1);
   const[pageSize,setPageSize]=useState(10);
+  // fix(partner): Bò Xô price section (male_price/female_price/fragment_price,
+  // moved here from the removed Suppliers.jsx) — collapsed by default, only
+  // relevant when the Partner has the supplier bit set. Same
+  // collapsed-by-default UX as Suppliers.jsx's own "Thông tin giá Bò Xô".
+  const[bxOpen,setBxOpen]=useState(false);
   const user=JSON.parse(localStorage.getItem('user')||'{}');
   const isCustomer=user.role==='CUSTOMER';
 
+  const isSupplierCapable=(Number(form.partner_type)||2)&1;
+  // Last focusable field index depends on whether the Bò Xô section is both
+  // eligible (supplier bit set) AND expanded — computed instead of a fixed
+  // constant so Enter/ArrowDown on the last VISIBLE field always triggers
+  // Save, never a no-op focus() on a field that isn't currently mounted
+  // (same fix Suppliers.jsx already needed for this same pattern).
+  const lastFieldIndex=()=>(isSupplierCapable&&bxOpen)?11:8;
   const fieldRefs=useRef([]);
   const handleFormKey=(e,idx)=>{
     const isSelect=e.target.tagName==='SELECT';
     if(e.key==='Enter'||(!isSelect&&e.key==='ArrowDown')){
       e.preventDefault();
-      if(idx<fieldRefs.current.length-1) fieldRefs.current[idx+1]?.focus();
+      if(idx<lastFieldIndex()) fieldRefs.current[idx+1]?.focus();
       else save();
     } else if(!isSelect&&e.key==='ArrowUp'){
       e.preventDefault();
@@ -55,14 +74,17 @@ export default function Customers(){
 
   useEffect(()=>{load();loadNextCode()},[]);
 
-  const reset=()=>{setEditing(null);setForm({price_mode:'COMMON_PRICE',billing_calendar_type:'SOLAR',is_active:1,partner_type:2});loadNextCode()};
+  const reset=()=>{setEditing(null);setForm(EMPTY_FORM);setBxOpen(false);loadNextCode()};
 
   const save=async()=>{
     if(!String(form.name||'').trim()){
       showWarning('Nhập tên khách hàng');
       return;
     }
-    if(!editing&&Number(form.partner_type)!==1&&!form.default_sales_flow){
+    // fix(partner): bitmask-aware — required whenever the customer bit is
+    // set (partner_type 2 Khách hàng or 3 Khách hàng và Nhà cung cấp), not
+    // just the exact old binary "not exactly 1" check.
+    if(!editing&&(Number(form.partner_type)&2)===2&&!form.default_sales_flow){
       showWarning('Vui lòng chọn luồng bán hàng mặc định (Bò Xô hoặc Bán hàng kho) cho khách hàng mới');
       return;
     }
@@ -85,7 +107,19 @@ export default function Customers(){
 
   const edit=x=>{
     setEditing(x.id);
-    setForm({...x,is_active:x.is_active?1:0});
+    // fix(partner): pre-fill from the linked supplier's CURRENT saved beef
+    // prices (supplier_male_price/... — aliased by CustomerAgent.list()'s
+    // LEFT JOIN) rather than leaving them blank, which would otherwise
+    // silently zero them out on the next save (_syncPartnerToSupplier always
+    // writes whatever is in the form).
+    setForm({
+      ...x,
+      is_active:x.is_active?1:0,
+      male_price:x.supplier_male_price||'',
+      female_price:x.supplier_female_price||'',
+      fragment_price:x.supplier_fragment_price||'',
+    });
+    setBxOpen(false);
   };
 
   // Single set of Dialog open/close handlers, reused by both Add and Edit
@@ -142,7 +176,7 @@ export default function Customers(){
 
   const q=search.toLowerCase().trim();
   const filtered=q?rows.filter(x=>{
-    const label=x.partner_type===1?'nhà cung cấp':'khách hàng';
+    const label=partnerTypeLabel(x.partner_type).toLowerCase();
     return [x.customer_code,x.name,x.phone,x.address].some(f=>String(f||'').toLowerCase().includes(q))||label.includes(q);
   }):rows;
   const totalPages=Math.max(1,Math.ceil(filtered.length/pageSize));
@@ -203,10 +237,11 @@ export default function Customers(){
         <select className="select" value={form.partner_type||2} onChange={e=>setForm({...form,partner_type:Number(e.target.value)})} ref={el=>fieldRefs.current[6]=el} onKeyDown={e=>handleFormKey(e,6)}>
           <option value={2}>Khách hàng</option>
           <option value={1}>Nhà cung cấp</option>
+          <option value={3}>Khách hàng và Nhà cung cấp</option>
         </select>
         <input className="input" placeholder="Ghi chú" value={form.note||''} onChange={e=>setForm({...form,note:e.target.value})} ref={el=>fieldRefs.current[7]=el} onKeyDown={e=>handleFormKey(e,7)}/>
         <label className="field-label">
-          <span>Luồng bán hàng mặc định{!editing&&Number(form.partner_type)!==1?' *':''}</span>
+          <span>Luồng bán hàng mặc định{!editing&&(Number(form.partner_type)&2)===2?' *':''}</span>
           <select className="select" value={form.default_sales_flow||''} onChange={e=>setForm({...form,default_sales_flow:e.target.value||null})} ref={el=>fieldRefs.current[8]=el} onKeyDown={e=>handleFormKey(e,8)}>
             <option value="">-- Chưa phân loại (khách cũ) --</option>
             <option value="CARCASS_POS">Bò Xô (Tạo bill POS)</option>
@@ -214,6 +249,41 @@ export default function Customers(){
           </select>
         </label>
       </div>
+
+      {/* fix(partner): Bò Xô price section, moved here from the removed
+          Suppliers.jsx — same collapsed-by-default UX, same fields
+          (male_price/female_price/fragment_price), only relevant once the
+          Partner has the supplier bit set ((partner_type & 1) === 1). Values
+          persist to the linked suppliers row via _syncPartnerToSupplier(). */}
+      {isSupplierCapable===1 && <>
+        <button type="button" className="btn secondary" onClick={()=>setBxOpen(o=>!o)}
+          style={{marginTop:16,display:'inline-flex',alignItems:'center',gap:6}}
+          aria-expanded={bxOpen}>
+          {bxOpen?<ChevronDown size={14}/>:<ChevronRight size={14}/>}
+          Thông tin giá Bò Xô
+        </button>
+        {bxOpen&&<>
+          <p className="muted" style={{marginTop:8,marginBottom:8}}>Tuỳ chọn — dùng cho nghiệp vụ Nhập xô, không bắt buộc.</p>
+          <div className="form-grid">
+            <label className="field-label">
+              <span>Giá bò đực</span>
+              <input className="input" type="number" min={0} step="0.01" value={form.male_price} onChange={e=>setForm({...form,male_price:e.target.value})}
+                ref={el=>fieldRefs.current[9]=el} onKeyDown={e=>handleFormKey(e,9)}/>
+            </label>
+            <label className="field-label">
+              <span>Giá bò cái</span>
+              <input className="input" type="number" min={0} step="0.01" value={form.female_price} onChange={e=>setForm({...form,female_price:e.target.value})}
+                ref={el=>fieldRefs.current[10]=el} onKeyDown={e=>handleFormKey(e,10)}/>
+            </label>
+            <label className="field-label">
+              <span>Giá thịt vụn</span>
+              <input className="input" type="number" min={0} step="0.01" value={form.fragment_price} onChange={e=>setForm({...form,fragment_price:e.target.value})}
+                ref={el=>fieldRefs.current[11]=el} onKeyDown={e=>handleFormKey(e,11)}/>
+            </label>
+          </div>
+        </>}
+      </>}
+
       {/* CTO decision applied here too (same finding as Products.jsx): visible
           only in Add mode, since reset() also clears `editing` and would
           otherwise silently abandon an in-progress edit. PRESENTATION GUARD
@@ -241,7 +311,7 @@ export default function Customers(){
         <tbody>{paginated.map(x=><tr key={x.id}>
           <td>{x.customer_code}</td>
           <td><b>{x.name}</b><br/><span className="muted">{x.price_mode}</span></td>
-          <td>{x.partner_type===1?'Nhà cung cấp':'Khách hàng'}</td>
+          <td>{partnerTypeLabel(x.partner_type)}</td>
           <td>{x.phone}<br/><span className="muted">{x.address}</span></td>
           <td>{x.billing_calendar_type==='LUNAR'?'Âm lịch':'Dương lịch'}</td>
           <td>{moneyVnd(x.current_debt)}</td>

@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const { auth } = require('../middleware/auth');
 
 const customerAgent = require('../agents/customer.agent');
 const debtAgent = require('../agents/debt.agent');
@@ -12,6 +13,20 @@ const aiSkillAgent = require('../agents/aiSkill.agent');
 const inventoryAgent = require('../agents/inventory.agent');
 const aiInventoryPredictionAgent = require('../agents/aiInventoryPrediction.agent');
 const aiBugInvestigatorRoutes = require('./aiBugInvestigator.routes');
+
+// GO-LIVE P0: this entire router had NO auth middleware at all — every route
+// below (including order confirmation, payment creation, supplier order
+// confirmation, customer debt/PII lookup, and daily revenue reports) was
+// reachable by anyone, unauthenticated. auth(['ADMIN','STAFF']) matches the
+// role pair every other business-write route in this codebase already uses
+// (inventory-receives, supplier-payable, ...) and matches this feature's own
+// menu grants (dashboard/agents are ADMIN-only by default; the AI panels
+// that call these routes are embedded in CreateOrder.jsx, which STAFF also
+// has access to). Applied once, router-wide, so it also covers the
+// '/bug-investigator' sub-router mounted below — none of the handlers behind
+// these routes read req.user for their own logic (verified), so this is a
+// pure auth gate with no behavior change for already-authenticated callers.
+router.use(auth(['ADMIN', 'STAFF']));
 
 router.post('/chat', chatAgent.handleChat);
 router.use('/bug-investigator', aiBugInvestigatorRoutes);

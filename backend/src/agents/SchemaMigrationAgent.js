@@ -325,6 +325,103 @@ class SchemaMigrationAgent{
         }
       }
 
+      // GO-LIVE cleanup — V65.47 (Order/Payment lock + reallocation) was only
+      // ever applied by hand, via the standalone
+      // backend/sql/V65_47_ORDER_PAYMENT_LOCK_AND_REALLOCATION.sql, never
+      // onboarded into either ensureSchema() or this agent. A fresh deploy
+      // with no operator having manually run that file is missing every
+      // column below — OrderAgent.ensureOrderEditable()/lock() SELECT
+      // is_locked/locked_at unconditionally (no missing-column fallback) and
+      // hard-crash on any order edit/lock/cancel; PaymentAgent.cancel()
+      // silently degrades (its ER_BAD_FIELD_ERROR fallback zeroes the amount
+      // but never sets a status, so the payment reports success without ever
+      // being marked CANCELLED). Also folds in V6.51.11's
+      // payment_calendar_type/payment_lunar_date_text (same fate, same fix).
+      if(await this.hasTable(conn,'orders')){
+        if(!(await this.hasColumn(conn,'orders','is_locked')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE orders ADD COLUMN is_locked TINYINT(1) NOT NULL DEFAULT 0`));
+        if(!(await this.hasColumn(conn,'orders','locked_at')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE orders ADD COLUMN locked_at DATETIME NULL`));
+        if(!(await this.hasColumn(conn,'orders','locked_by')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE orders ADD COLUMN locked_by BIGINT NULL`));
+        if(!(await this.hasColumn(conn,'orders','lock_note')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE orders ADD COLUMN lock_note VARCHAR(255) NULL`));
+        if(!(await this.hasIndex(conn,'orders','idx_orders_lock')))
+          logs.push(await this.safeAlter(conn,`CREATE INDEX idx_orders_lock ON orders(is_locked, locked_at)`));
+      }
+
+      if(await this.hasTable(conn,'payments')){
+        if(!(await this.hasColumn(conn,'payments','status')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE payments ADD COLUMN status VARCHAR(30) NOT NULL DEFAULT 'ACTIVE'`));
+        if(!(await this.hasColumn(conn,'payments','is_locked')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE payments ADD COLUMN is_locked TINYINT(1) NOT NULL DEFAULT 0`));
+        if(!(await this.hasColumn(conn,'payments','locked_at')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE payments ADD COLUMN locked_at DATETIME NULL`));
+        if(!(await this.hasColumn(conn,'payments','locked_by')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE payments ADD COLUMN locked_by BIGINT NULL`));
+        if(!(await this.hasColumn(conn,'payments','lock_note')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE payments ADD COLUMN lock_note VARCHAR(255) NULL`));
+        if(!(await this.hasColumn(conn,'payments','updated_at')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE payments ADD COLUMN updated_at DATETIME NULL`));
+        if(!(await this.hasColumn(conn,'payments','payment_calendar_type')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE payments ADD COLUMN payment_calendar_type ENUM('SOLAR','LUNAR') NOT NULL DEFAULT 'SOLAR'`));
+        if(!(await this.hasColumn(conn,'payments','payment_lunar_date_text')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE payments ADD COLUMN payment_lunar_date_text VARCHAR(30) NULL`));
+        if(!(await this.hasIndex(conn,'payments','idx_payments_lock')))
+          logs.push(await this.safeAlter(conn,`CREATE INDEX idx_payments_lock ON payments(is_locked, locked_at, status)`));
+
+        // GO-LIVE — Payment Cancel/Reversal gaps. cancel() previously zeroed
+        // amount/cash_amount/bank_amount in place with no way to recover what
+        // the payment was originally for, and had no cancelled_at/
+        // cancelled_by/cancel_reason (unlike orders/inventory_receives, which
+        // both already have this exact triad). original_* columns are
+        // populated only by cancel() going forward; amount/cash_amount/
+        // bank_amount continue to zero out unchanged, so every existing
+        // SUM(amount)-style reporting query (PaymentAgent.summary()) is
+        // unaffected — this is purely additive recoverability, not a
+        // behavior change to any existing read path.
+        if(!(await this.hasColumn(conn,'payments','original_amount')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE payments ADD COLUMN original_amount DECIMAL(15,2) NULL`));
+        if(!(await this.hasColumn(conn,'payments','original_cash_amount')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE payments ADD COLUMN original_cash_amount DECIMAL(15,2) NULL`));
+        if(!(await this.hasColumn(conn,'payments','original_bank_amount')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE payments ADD COLUMN original_bank_amount DECIMAL(15,2) NULL`));
+        if(!(await this.hasColumn(conn,'payments','cancelled_at')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE payments ADD COLUMN cancelled_at DATETIME NULL`));
+        if(!(await this.hasColumn(conn,'payments','cancelled_by')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE payments ADD COLUMN cancelled_by BIGINT NULL`));
+        if(!(await this.hasColumn(conn,'payments','cancel_reason')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE payments ADD COLUMN cancel_reason TEXT NULL`));
+      }
+
+      // GO-LIVE — Supplier Payment cancel/reversal did not exist at all
+      // (SupplierPayableAgent had createPayment() but no way to undo one).
+      // Same cancel-metadata triad as every other domain in this file.
+      if(await this.hasTable(conn,'supplier_purchase_payments')){
+        if(!(await this.hasColumn(conn,'supplier_purchase_payments','status')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE supplier_purchase_payments ADD COLUMN status VARCHAR(30) NOT NULL DEFAULT 'ACTIVE'`));
+        if(!(await this.hasColumn(conn,'supplier_purchase_payments','cancelled_at')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE supplier_purchase_payments ADD COLUMN cancelled_at DATETIME NULL`));
+        if(!(await this.hasColumn(conn,'supplier_purchase_payments','cancelled_by')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE supplier_purchase_payments ADD COLUMN cancelled_by BIGINT NULL`));
+        if(!(await this.hasColumn(conn,'supplier_purchase_payments','cancel_reason')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE supplier_purchase_payments ADD COLUMN cancel_reason TEXT NULL`));
+      }
+
+      // Idempotency for the supplier payment reversal ledger row — same
+      // insert-first + UNIQUE idiom as uq_supplier_payable_receive_purchase
+      // above, scoped to supplier_payment_id instead of inventory_receive_id.
+      // NULL supplier_payment_id rows (PURCHASE/receive-reversal rows, the
+      // vast majority) are each distinct under MySQL's NULL-in-UNIQUE
+      // semantics, so this only ever constrains the new payment-reversal path.
+      if(await this.hasTable(conn,'supplier_payable_transactions')){
+        if(!(await this.hasIndex(conn,'supplier_payable_transactions','uq_supplier_payable_payment_reversal'))){
+          logs.push(await this.safeAlter(conn,
+            `ALTER TABLE supplier_payable_transactions ADD UNIQUE KEY uq_supplier_payable_payment_reversal (supplier_payment_id, type)`
+          ));
+        }
+      }
+
       // fix(partner): remove duplicate supplier management menu — the
       // standalone 'suppliers' app_menus row (P2-01, ea5ac47/5c655c4)
       // duplicated the Partner ('customers', "Đối tác") workflow and was
@@ -373,7 +470,31 @@ class SchemaMigrationAgent{
         ['inventory_receives','cancelled_at'],
         ['inventory_receives','cancelled_by'],
         ['inventory_receives','cancel_reason'],
-        ['stock_transactions','reversal_dedup_key']
+        ['stock_transactions','reversal_dedup_key'],
+        // GO-LIVE cleanup — V65.47 lock/status parity
+        ['orders','is_locked'],
+        ['orders','locked_at'],
+        ['orders','locked_by'],
+        ['orders','lock_note'],
+        ['payments','status'],
+        ['payments','is_locked'],
+        ['payments','locked_at'],
+        ['payments','locked_by'],
+        ['payments','lock_note'],
+        ['payments','updated_at'],
+        ['payments','payment_calendar_type'],
+        ['payments','payment_lunar_date_text'],
+        // GO-LIVE — Payment Cancel/Reversal gaps
+        ['payments','original_amount'],
+        ['payments','original_cash_amount'],
+        ['payments','original_bank_amount'],
+        ['payments','cancelled_at'],
+        ['payments','cancelled_by'],
+        ['payments','cancel_reason'],
+        ['supplier_purchase_payments','status'],
+        ['supplier_purchase_payments','cancelled_at'],
+        ['supplier_purchase_payments','cancelled_by'],
+        ['supplier_purchase_payments','cancel_reason']
       ];
       for(const [table,column] of required){
         const tableOk=await this.hasTable(conn,table);
@@ -398,6 +519,10 @@ class SchemaMigrationAgent{
         ['audit_logs','idx_audit_logs_user'],
         // P2-02 (production cleanup)
         ['stock_transactions','uq_stock_transactions_reversal_dedup'],
+        // GO-LIVE cleanup — V65.47 lock/status parity
+        ['orders','idx_orders_lock'],
+        ['payments','idx_payments_lock'],
+        ['supplier_payable_transactions','uq_supplier_payable_payment_reversal'],
       ];
       for(const [table,indexName] of requiredIndexes){
         const tableOk=await this.hasTable(conn,table);

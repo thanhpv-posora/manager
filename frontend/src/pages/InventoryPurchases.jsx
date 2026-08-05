@@ -324,6 +324,26 @@ export default function InventoryPurchases() {
     } finally { setPaySaving(false); }
   };
 
+  // GO-LIVE F6 — cancel/reverse a supplier payment. Same reason-required-
+  // dialog pattern as InventoryReceives.jsx's reversal action.
+  const [cancelPayDlg, setCancelPayDlg] = useState(null); // { supplier_payment_id, amount, reason } | null
+  const [cancelPaySaving, setCancelPaySaving] = useState(false);
+  const openCancelPayDlg = row => setCancelPayDlg({ supplier_payment_id: row.supplier_payment_id, amount: row.amount, reason: '' });
+  const submitCancelPayment = async () => {
+    if (!cancelPayDlg || cancelPaySaving) return;
+    const reason = String(cancelPayDlg.reason || '').trim();
+    if (!reason) { showWarning('Nhập lý do hủy thanh toán'); return; }
+    setCancelPaySaving(true);
+    try {
+      await api.post(`/supplier-payable/payment/${cancelPayDlg.supplier_payment_id}/cancel`, { reason });
+      setCancelPayDlg(null);
+      await loadPayable(order.supplier_id);
+      showSuccess('Đã hủy thanh toán NCC');
+    } catch (e) {
+      showError(e.response?.data?.message || e.message || 'Không hủy được thanh toán');
+    } finally { setCancelPaySaving(false); }
+  };
+
   // ── Add-dialog SPO load ────────────────────────────────────────────────────
   useEffect(() => {
     if (!addDlg?.product_id || !order?.partner_id) { setAddDlgOpts([]); return; }
@@ -786,7 +806,7 @@ export default function InventoryPurchases() {
                         <summary style={{ cursor: 'pointer', fontSize: 13, color: '#374151' }}>Lịch sử công nợ ({payableHistory.length})</summary>
                         <div className="table-wrap" style={{ marginTop: 8 }}>
                           <table className="table" style={{ fontSize: 13 }}>
-                            <thead><tr><th>Ngày</th><th>Loại</th><th>Bill mua hàng</th><th>Phiếu nhận</th><th>Số tiền</th><th>Ghi chú</th></tr></thead>
+                            <thead><tr><th>Ngày</th><th>Loại</th><th>Bill mua hàng</th><th>Phiếu nhận</th><th>Số tiền</th><th>Ghi chú</th><th></th></tr></thead>
                             <tbody>
                               {payableHistory.map(h => (
                                 <tr key={h.id}>
@@ -795,7 +815,12 @@ export default function InventoryPurchases() {
                                   <td>{h.purchase_order_code || '—'}</td>
                                   <td>{h.inventory_receive_code || '—'}</td>
                                   <td>{fmt(h.amount)}đ</td>
-                                  <td>{h.note || ''}</td>
+                                  <td>{h.note || ''}{h.payment_status === 'CANCELLED' ? ' (đã hủy)' : ''}</td>
+                                  <td>
+                                    {h.type === 'PAYMENT' && h.payment_status !== 'CANCELLED' && (
+                                      <button className="btn secondary" style={{ padding: '2px 8px', fontSize: 12 }} onClick={() => openCancelPayDlg(h)}>Hủy</button>
+                                    )}
+                                  </td>
                                 </tr>
                               ))}
                             </tbody>
@@ -827,6 +852,26 @@ export default function InventoryPurchases() {
                 <div className="actions" style={{ justifyContent: 'flex-end' }}>
                   <button className="btn secondary" onClick={() => setPayDlg(null)} disabled={paySaving}>Đóng</button>
                   <button className="btn" onClick={submitPayment} disabled={paySaving}>{paySaving ? 'Đang lưu...' : 'Xác nhận thanh toán'}</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {cancelPayDlg && (
+            <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1200,
+              display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              onMouseDown={e => { if (e.target === e.currentTarget) setCancelPayDlg(null); }}>
+              <div className="card" style={{ width: 420, maxWidth: '92vw' }}>
+                <h3 style={{ marginTop: 0 }}>Hủy thanh toán NCC</h3>
+                <p className="muted">Số tiền: <b>{fmt(cancelPayDlg.amount)}đ</b></p>
+                <p style={{ fontSize: 13, color: '#991b1b' }}>Hệ thống sẽ tạo bút toán đảo công nợ cho khoản thanh toán này.</p>
+                <div style={{ marginBottom: 10 }}>
+                  <label style={LBL}>Lý do hủy *</label>
+                  <input className="input" value={cancelPayDlg.reason} onChange={e => setCancelPayDlg(d => ({ ...d, reason: e.target.value }))} placeholder="VD: Thanh toán nhầm số tiền" />
+                </div>
+                <div className="actions" style={{ justifyContent: 'flex-end' }}>
+                  <button className="btn secondary" onClick={() => setCancelPayDlg(null)} disabled={cancelPaySaving}>Đóng</button>
+                  <button className="btn danger" onClick={submitCancelPayment} disabled={cancelPaySaving}>{cancelPaySaving ? 'Đang hủy...' : 'Xác nhận hủy'}</button>
                 </div>
               </div>
             </div>

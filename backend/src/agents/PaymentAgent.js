@@ -112,30 +112,11 @@ class PaymentAgent {
     return pay;
   }
 
-  async allocate(conn, customerId, amount, excludeOrderId=null) {
-    let remaining=Number(amount||0);
-    const allocations=[];
-    const params=[customerId];
-    let extra='';
-    if(excludeOrderId){ extra=' AND id<>?'; params.push(excludeOrderId); }
-    const [orders]=await conn.query(
-      `SELECT id,order_code,
-              GREATEST(COALESCE(debt_amount,0), COALESCE(total_amount,0)-COALESCE(paid_amount,0)) debt_amount
-       FROM orders
-       WHERE customer_id=? AND COALESCE(status,'CONFIRMED')<>'CANCELLED'
-         AND GREATEST(COALESCE(debt_amount,0), COALESCE(total_amount,0)-COALESCE(paid_amount,0))>0 ${extra}
-       ORDER BY order_date ASC,id ASC FOR UPDATE`,
-      params
-    );
-    for (const o of orders) {
-      if (remaining<=0) break;
-      const pay=Math.min(remaining, Number(o.debt_amount||0));
-      const applied=await this.applyPaymentToOrder(conn,o.id,pay);
-      if (applied>0) { remaining-=applied; allocations.push(`${o.order_code}:${applied}`); }
-    }
-    return allocations.join(', ');
-  }
-
+  // GO-LIVE F7: allocate() (the pre-payment_allocations, note-string-only
+  // helper) was removed here — its sole caller in create() now goes through
+  // allocateCustomerOpenBillsByDate() unconditionally (see F7 comment at
+  // that call site), which does everything this did plus writes reversible
+  // payment_allocations rows and tracks leftover money as unapplied credit.
 
 
 
@@ -612,7 +593,7 @@ class PaymentAgent {
       let orderAllocations=[];
       let oldDebtAllocations=[];
       let unusedAmount=0;
-      if(data.order_id){
+      {
         // V65.41: Do not depend on manual checkbox selection anymore.
         // When the customer has open bills, the payment must be allocated automatically
         // from the oldest shipping/order date to the newest. This means:
@@ -620,10 +601,28 @@ class PaymentAgent {
         // - any remaining money must flow into BILL2, BILL3, ...
         // - every receiving bill gets its own payment_allocations row so printing the bill
         //   shows the amount actually applied to that bill.
+        //
+        // GO-LIVE F7: this used to run only when data.order_id was set; a
+        // payment made with no pre-selected bill (customer_id only — reachable
+        // from Payments.jsx whenever the user pays down general debt without
+        // clicking a specific bill row) fell through to the older allocate()
+        // helper instead, which updated orders.paid_amount/debt_amount
+        // directly but wrote zero payment_allocations rows and dropped any
+        // leftover amount instead of tracking it as unapplied credit.
+        // revertPaymentEffects()'s fallback path requires payments.order_id
+        // (never set on this path), so that payment's debt effect was
+        // permanently unrecoverable on cancel/edit. Running the same
+        // allocateCustomerOpenBillsByDate() unconditionally makes every
+        // payment reversible the same way, whether or not a bill was
+        // pre-selected — "current bill" labeling below only applies when one was.
         const allocResult=await this.allocateCustomerOpenBillsByDate(conn,data.customer_id,remainingPaid);
         orderAllocations=this.splitAllocationsByTender(allocResult.allocations, cashAmount, bankAmount);
-        oldDebtAllocations=orderAllocations.filter(a=>Number(a.order_id)!==Number(data.order_id));
-        billApplied=orderAllocations.filter(a=>Number(a.order_id)===Number(data.order_id)).reduce((sum,a)=>sum+Number(a.applied_amount||0),0);
+        oldDebtAllocations = data.order_id
+          ? orderAllocations.filter(a=>Number(a.order_id)!==Number(data.order_id))
+          : orderAllocations;
+        billApplied = data.order_id
+          ? orderAllocations.filter(a=>Number(a.order_id)===Number(data.order_id)).reduce((sum,a)=>sum+Number(a.applied_amount||0),0)
+          : 0;
         remainingPaid=allocResult.remaining;
         if(allocResult.note){
           note = note ? `${note} / Tự động phân bổ theo ngày xuất hàng: ${allocResult.note}` : `Tự động phân bổ theo ngày xuất hàng: ${allocResult.note}`;
@@ -633,11 +632,6 @@ class PaymentAgent {
         if(unusedAmount>0){
           note = note ? `${note} / Tiền dư chưa phân bổ: ${unusedAmount}` : `Tiền dư chưa phân bổ: ${unusedAmount}`;
         }
-      }
-
-      if(!data.order_id && remainingPaid>0){
-        const alloc=await this.allocate(conn,data.customer_id,remainingPaid);
-        note = note || alloc;
       }
 
       const method=(cashAmount>0 && bankAmount>0) ? 'MIXED' : (cashAmount>0?'CASH':(bankAmount>0?'BANK_TRANSFER':(data.payment_method||'CASH')));
@@ -813,8 +807,54 @@ class PaymentAgent {
 
     for (const oid of affected) await this.recalcOrderAfterPaymentChange(conn, oid);
 
+    // GO-LIVE F3: debt_installment_payments was never touched by revert —
+    // a cancelled/edited payment that included an installment contribution
+    // left this row behind forever, permanently over-stating
+    // DebtInstallmentAgent.plans()'s SUM(debt_installment_payments.amount)
+    // paid progress for that plan. Snapshot+delete, same treatment as the
+    // allocation/credit rows below.
+    let installmentRows = [];
+    try {
+      const [rows] = await conn.query(`SELECT * FROM debt_installment_payments WHERE payment_id=? FOR UPDATE`, [paymentId]);
+      installmentRows = rows || [];
+    } catch (e) {
+      if (!(e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146 || e.code === 'ER_BAD_FIELD_ERROR' || e.errno === 1054))) throw e;
+    }
+
+    let unappliedCreditRows = [];
+    try {
+      const [rows] = await conn.query(`SELECT * FROM payment_unapplied_credits WHERE payment_id=? FOR UPDATE`, [paymentId]);
+      unappliedCreditRows = rows || [];
+    } catch (e) {
+      if (!(e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146))) throw e;
+    }
+
+    // GO-LIVE F2 (H-12): payment_allocations/payment_unapplied_credits/
+    // debt_installment_payments are about to be hard-deleted below — none of
+    // the three has a soft-cancel column of its own (adding one would
+    // require every read path, e.g. PaymentAgent.list()'s allocation join
+    // and DebtInstallmentAgent.plans()/summary(), to start filtering it — a
+    // much wider change than this cleanup calls for). Snapshotting the full
+    // row set to audit_logs first — the same shared, entity-agnostic table
+    // ReturnAgent.js already writes to — recovers "what did this payment
+    // cover before it was reverted" without touching any existing read path.
+    // Best-effort: never blocks the revert if audit_logs itself fails to write.
+    if (allocRows.length || unappliedCreditRows.length || installmentRows.length) {
+      try {
+        await conn.query(
+          `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, note) VALUES (?,?,?,?,?)`,
+          [userId || null, 'PAYMENT_REVERT_SNAPSHOT', 'payments', paymentId, JSON.stringify({
+            payment_allocations: allocRows,
+            payment_unapplied_credits: unappliedCreditRows,
+            debt_installment_payments: installmentRows,
+          })]
+        );
+      } catch (e) { /* best-effort — audit_logs must never block a payment revert */ }
+    }
+
     try { await conn.query(`DELETE FROM payment_allocations WHERE payment_id=?`, [paymentId]); } catch(e) { if (!(e && (e.code==='ER_NO_SUCH_TABLE'||e.errno===1146))) throw e; }
     try { await conn.query(`DELETE FROM payment_unapplied_credits WHERE payment_id=?`, [paymentId]); } catch(e) { if (!(e && (e.code==='ER_NO_SUCH_TABLE'||e.errno===1146))) throw e; }
+    try { await conn.query(`DELETE FROM debt_installment_payments WHERE payment_id=?`, [paymentId]); } catch(e) { if (!(e && (e.code==='ER_NO_SUCH_TABLE'||e.errno===1146||e.code==='ER_BAD_FIELD_ERROR'||e.errno===1054))) throw e; }
     try { await this.reverseDebtLedgerForPayment(conn, paymentId, p.customer_id, userId); } catch(e) { if (!(e && (e.code==='ER_BAD_FIELD_ERROR'||e.errno===1054))) throw e; }
     return p;
   }
@@ -887,18 +927,53 @@ class PaymentAgent {
     } catch(e) { await conn.rollback(); throw e; } finally { conn.release(); }
   }
 
+  // GO-LIVE F5: reason is now mandatory, matching OrderAgent.cancel() /
+  // InventoryReceiveService.cancel() — both already require a non-empty
+  // reason, checked before a connection is even opened. Payment cancel used
+  // to default to a generic reason when none was given.
   async cancel(paymentId, data={}, user={}) {
+    const reason = String(data.reason || data.note || '').trim();
+    if (!reason) throw Object.assign(new Error('Vui lòng nhập lý do hủy phiếu thu'), { status: 400 });
+
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
       const old = await this.revertPaymentEffects(conn, paymentId, user?.id || null);
       if (user?.role === 'CUSTOMER' && Number(user.customer_id) !== Number(old.customer_id)) throw new Error('Không có quyền');
-      const note = data.note || data.reason || 'Hủy phiếu thu nhập sai';
+
+      // GO-LIVE F4: `old` was read (SELECT ... FOR UPDATE) inside
+      // revertPaymentEffects() BEFORE anything below zeroes it — these are
+      // still the pre-cancel amounts. amount/cash_amount/bank_amount
+      // continue to zero out exactly as before (every existing
+      // SUM(amount)-style reporting query depends on that), but the
+      // original values are now preserved in original_* instead of being
+      // silently lost, and cancelled_at/cancelled_by/cancel_reason record
+      // who/when/why — the same triad orders/inventory_receives already have.
+      const originalAmount = Number(old.amount || 0);
+      const originalCash = Number(old.cash_amount || 0);
+      const originalBank = Number(old.bank_amount || 0);
+
       try {
-        await conn.query(`UPDATE payments SET status='CANCELLED', amount=0, cash_amount=0, bank_amount=0, note=CONCAT(COALESCE(note,''),' / HỦY: ',?), updated_at=NOW() WHERE id=?`, [note, paymentId]);
+        await conn.query(
+          `UPDATE payments
+           SET status='CANCELLED', amount=0, cash_amount=0, bank_amount=0,
+               original_amount=?, original_cash_amount=?, original_bank_amount=?,
+               cancelled_at=NOW(), cancelled_by=?, cancel_reason=?,
+               note=CONCAT(COALESCE(note,''),' / HỦY: ',?), updated_at=NOW()
+           WHERE id=?`,
+          [originalAmount, originalCash, originalBank, user?.id || null, reason, reason, paymentId]
+        );
       } catch(e) {
         if (e && (e.code==='ER_BAD_FIELD_ERROR' || e.errno===1054)) {
-          await conn.query(`UPDATE payments SET amount=0, cash_amount=0, bank_amount=0, note=CONCAT(COALESCE(note,''),' / HỦY: ',?) WHERE id=?`, [note, paymentId]);
+          // Pre-GO-LIVE-migration environment (SchemaMigrationAgent not run
+          // yet) — degrade gracefully instead of failing the cancel outright.
+          try {
+            await conn.query(`UPDATE payments SET status='CANCELLED', amount=0, cash_amount=0, bank_amount=0, note=CONCAT(COALESCE(note,''),' / HỦY: ',?), updated_at=NOW() WHERE id=?`, [reason, paymentId]);
+          } catch(e2) {
+            if (e2 && (e2.code==='ER_BAD_FIELD_ERROR' || e2.errno===1054)) {
+              await conn.query(`UPDATE payments SET amount=0, cash_amount=0, bank_amount=0, note=CONCAT(COALESCE(note,''),' / HỦY: ',?) WHERE id=?`, [reason, paymentId]);
+            } else throw e2;
+          }
         } else throw e;
       }
       await conn.commit();

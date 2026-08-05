@@ -8,9 +8,12 @@ const pool = require('../config/db');
 //
 // Append-only, same signed-ledger convention as debt_transactions
 // (customers) and stock_transactions (inventory): `amount` is always a
-// positive magnitude; signed meaning comes from `type`. No UPDATE/DELETE
-// path exists anywhere in this file — corrections are future compensating
-// ADJUSTMENT_INCREASE/ADJUSTMENT_DECREASE rows (not implemented this sprint).
+// positive magnitude; signed meaning comes from `type`. supplier_payable_
+// transactions itself has no UPDATE/DELETE path anywhere in this file —
+// corrections are compensating ADJUSTMENT_INCREASE/ADJUSTMENT_DECREASE rows
+// (postPurchasePayableReversal for receive reversal, cancelPayment below for
+// payment cancel). The only UPDATE in this file targets the header tables
+// (supplier_purchase_payments.status/cancelled_*), never the ledger rows.
 class SupplierPayableAgent {
   constructor() {
     this.version = '1.0.0';
@@ -110,11 +113,14 @@ class SupplierPayableAgent {
     );
     const [rows] = await pool.query(
       `SELECT t.id, t.transaction_date, t.type, t.amount, t.note,
+              t.supplier_payment_id,
               po.order_code purchase_order_code,
-              ir.receive_code inventory_receive_code
+              ir.receive_code inventory_receive_code,
+              sp.status payment_status
        FROM supplier_payable_transactions t
        LEFT JOIN purchase_orders po ON po.id = t.purchase_order_id
        LEFT JOIN inventory_receives ir ON ir.id = t.inventory_receive_id
+       LEFT JOIN supplier_purchase_payments sp ON sp.id = t.supplier_payment_id
        WHERE t.supplier_id=?
        ORDER BY t.transaction_date DESC, t.id DESC
        LIMIT ? OFFSET ?`,
@@ -192,6 +198,77 @@ class SupplierPayableAgent {
 
       await conn.commit();
       return { message: 'Đã thanh toán NCC', payment_id: paymentId, amount, outstanding_after: Math.max(0, outstanding - amount) };
+    } catch (e) {
+      await conn.rollback();
+      throw e;
+    } finally {
+      conn.release();
+    }
+  }
+
+  // GO-LIVE F6 — Supplier Payment cancel/reversal. Was entirely missing:
+  // createPayment() had no undo path at all, leaving the final stage of the
+  // Purchase flow (PO → Receive → Payable → Payment → Cancel/Reverse)
+  // incomplete. Same append-only compensating-row design already proven by
+  // postPurchasePayableReversal() (P2-02) — the original PAYMENT row is
+  // never updated or deleted, a new ADJUSTMENT_INCREASE row nets it back out.
+  // ADMIN-only at the route layer, matching createPayment().
+  async cancelPayment(paymentId, data = {}, user = {}) {
+    const reason = String(data.reason || data.note || '').trim();
+    if (!reason) throw Object.assign(new Error('Vui lòng nhập lý do hủy thanh toán NCC'), { status: 400 });
+
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+
+      const [[payment]] = await conn.query(
+        `SELECT * FROM supplier_purchase_payments WHERE id=? FOR UPDATE`, [paymentId]
+      );
+      if (!payment) throw Object.assign(new Error('Không tìm thấy phiếu thanh toán NCC'), { status: 404 });
+      if (String(payment.status || 'ACTIVE').toUpperCase() === 'CANCELLED') {
+        throw Object.assign(new Error('Phiếu thanh toán NCC đã bị hủy rồi'), { status: 400 });
+      }
+
+      // Reversal amount comes from the actual posted ledger effect (the
+      // PAYMENT row createPayment() inserted), not re-derived from
+      // supplier_purchase_payments.amount alone — same "reverse the real
+      // movement, not a recomputation" discipline as postPurchasePayableReversal().
+      const [[ledgerRow]] = await conn.query(
+        `SELECT amount FROM supplier_payable_transactions WHERE supplier_payment_id=? AND type='PAYMENT' FOR UPDATE`,
+        [paymentId]
+      );
+      const reversalAmount = ledgerRow ? Number(ledgerRow.amount) : Number(payment.amount || 0);
+
+      if (reversalAmount > 0) {
+        try {
+          await conn.query(
+            `INSERT INTO supplier_payable_transactions
+               (supplier_id, purchase_order_id, inventory_receive_id, supplier_payment_id, transaction_date, type, amount, note, created_by)
+             VALUES (?, NULL, NULL, ?, ?, 'ADJUSTMENT_INCREASE', ?, ?, ?)`,
+            [payment.supplier_id, paymentId, new Date().toISOString().slice(0, 10), reversalAmount,
+             `Đảo thanh toán NCC do hủy phiếu #${paymentId}: ${reason}`, user?.id || null]
+          );
+        } catch (e) {
+          const isDup = e && (e.code === 'ER_DUP_ENTRY' || e.errno === 1062);
+          if (isDup) throw Object.assign(new Error('Phiếu thanh toán này đã được đảo, không thể hủy trùng'), { status: 409 });
+          throw e;
+        }
+      }
+
+      try {
+        await conn.query(
+          `UPDATE supplier_purchase_payments SET status='CANCELLED', cancelled_at=NOW(), cancelled_by=?, cancel_reason=? WHERE id=?`,
+          [user?.id || null, reason, paymentId]
+        );
+      } catch (e) {
+        if (e && (e.code === 'ER_BAD_FIELD_ERROR' || e.errno === 1054)) {
+          throw new Error('Chưa chạy migration hủy thanh toán NCC — vào Production Check để chạy SchemaMigrationAgent');
+        }
+        throw e;
+      }
+
+      await conn.commit();
+      return { message: 'Đã hủy thanh toán NCC và đảo công nợ', payment_id: Number(paymentId), reversed_amount: reversalAmount };
     } catch (e) {
       await conn.rollback();
       throw e;

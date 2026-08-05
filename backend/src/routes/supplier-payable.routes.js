@@ -22,4 +22,10 @@ router.post('/payment', auth(['ADMIN']), async (req, res, next) => {
   try { res.json(await SupplierPayableAgent.createPayment(req.body, req.user)); } catch (e) { next(e); }
 });
 
+// GO-LIVE F6 — cancel/reverse a supplier payment. Same ADMIN-only default as
+// payment creation.
+router.post('/payment/:id/cancel', auth(['ADMIN']), async (req, res, next) => {
+  try { res.json(await SupplierPayableAgent.cancelPayment(req.params.id, req.body, req.user)); } catch (e) { next(e); }
+});
+
 module.exports = router;

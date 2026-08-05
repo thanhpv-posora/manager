@@ -95,6 +95,11 @@ export default function Products(){
   const[manageSearch,setManageSearch]=useState('');
   const currentUser=(()=>{try{return JSON.parse(localStorage.getItem('user')||'{}')}catch{return {}}})();
   const isAdmin=currentUser.role==='ADMIN';
+  // P0-003: mutation routes (product add/edit/delete, category add/edit) are
+  // now backend-enforced ADMIN/STAFF only — mirror that here so a CUSTOMER
+  // who somehow reaches this page (e.g. an ADMIN-granted menu override)
+  // never sees a mutation control that would just 403 when clicked.
+  const canWrite=currentUser.role==='ADMIN'||currentUser.role==='STAFF';
 
   const saveDefaults=async(nextDefaults)=>{
     setDefaults(nextDefaults);
@@ -526,7 +531,7 @@ export default function Products(){
         {/* Issue 3: single, always-available Add entry point. openAddDialog()
             calls reset() before opening, so it can never inherit stale edit
             state left over from a previous Edit. */}
-        <button className="btn" style={{marginLeft:'auto'}} onClick={openAddDialog}><Plus size={14}/> Thêm mặt hàng</button>
+        {canWrite&&<button className="btn" style={{marginLeft:'auto'}} onClick={openAddDialog}><Plus size={14}/> Thêm mặt hàng</button>}
       </div>
       <table className="table product-inline-table">
         {/* Issue 4: Mã (product_code) column removed from the visible list —
@@ -547,11 +552,11 @@ export default function Products(){
           <td><MoneyInput value={rowValue(x,'sale_price')} onChange={v=>updateGrid(x.id,{sale_price:v})} data-pos-nav="true" onKeyDown={handlePosInputKeyNavigation}/></td>
           <td>{SALES_FLOW_DISPLAY_LABELS[x.sales_flow]||<span className="muted">Chưa xác định</span>}</td>
           <td>
-            <div style={{display:'flex',flexWrap:'nowrap',gap:6,alignItems:'center',justifyContent:'center'}}>
+            {canWrite&&<div style={{display:'flex',flexWrap:'nowrap',gap:6,alignItems:'center',justifyContent:'center'}}>
               <button className="btn secondary" title="Sửa" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>openEditDialog(x)}><Pencil size={14}/></button>
               <button className="btn secondary" title="Lưu" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>saveGridRow(x)} disabled={!gridEdits[x.id]}><Save size={14}/></button>
               <button className="btn danger" title="Xóa" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>remove(x)}><Trash2 size={14}/></button>
-            </div>
+            </div>}
           </td>
         </tr>)}
         {!filteredRows.length&&<tr><td colSpan="6" className="muted">Không tìm thấy mặt hàng phù hợp.</td></tr>}

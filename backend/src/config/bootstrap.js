@@ -1651,6 +1651,12 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       ['product-import','Import mặt hàng từ ảnh','Nhập danh mục nhanh từ hình ảnh hoặc file dữ liệu.','product-import','Package','catalog',2,0,1,'ProductImageImport'],
       ['ocr-providers','Cấu hình OCR nâng cao','Thiết lập nhận diện hình ảnh và alias sản phẩm.','ocr-providers','Bot','catalog',3,0,1,'OCRProviders'],
       ['price-matrix','Bảng giá riêng','Sắp xếp danh mục và bảng giá theo từng bạn hàng.','price-matrix','TableProperties','catalog',4,1,1,'PriceMatrix'],
+      // P2-01: Supplier Management UI — backend (SupplierAgent.js + routes/
+      // suppliers.js) already existed with full CRUD; only the menu/page was
+      // missing. sort_order=0 places it before 'lots' (1) since a supplier
+      // record is prerequisite data for Nhập xô/purchase options, without
+      // renumbering any existing 'purchase' group row.
+      ['suppliers','Nhà cung cấp','Quản lý danh sách nhà cung cấp: thông tin liên hệ, lịch tính bill và giá thu mua bò xô.','suppliers','Truck','purchase',0,0,1,'Suppliers'],
       ['lots','Nhập xô','Quản lý nhập lô, trọng lượng, thanh toán và nhà cung cấp.','lots','Truck','purchase',1,0,1,'Lots'],
       ['units','Đơn vị tính','Quản lý đơn vị quy đổi dùng cho nhập hàng và tồn kho.','units','TableProperties','purchase',2,0,1,'Units'],
       ['supplier-purchase-options','Cấu hình quy cách nhập','Cấu hình đơn vị và quy đổi kg theo từng nhà cung cấp và sản phẩm.','supplier-purchase-options','Truck','purchase',3,0,1,'SupplierPurchaseOptions'],
@@ -1827,7 +1833,10 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       `INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled)
        SELECT 'ADMIN', menu_key, 1 FROM app_menus WHERE is_active = 1`
     );
-    for (const mk of ['create-order','orders','sales-returns','retail-daily-summary','payments','customers','products','product-import','ocr-providers','price-matrix','lots','revenue','profit','portal','my-menu','inventory-purchases','inventory-receives','stock-ledger']) {
+    // P2-01: 'suppliers' added — matches suppliers.js's own auth(['ADMIN','STAFF'])
+    // on every route (list/create/update/delete); STAFF already had full API
+    // access, this only makes the menu reachable to match it.
+    for (const mk of ['create-order','orders','sales-returns','retail-daily-summary','payments','customers','products','product-import','ocr-providers','price-matrix','lots','revenue','profit','portal','my-menu','inventory-purchases','inventory-receives','stock-ledger','suppliers']) {
       await conn.query(`INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled) VALUES ('STAFF', ?, 1)`, [mk]);
     }
     for (const mk of ['orders','sales-returns','payments','portal','customers','my-menu']) {

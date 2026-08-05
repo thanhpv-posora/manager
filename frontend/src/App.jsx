@@ -8,6 +8,7 @@ import Orders from'./pages/Orders';
 import SalesReturns from'./pages/SalesReturns';
 import Payments from'./pages/Payments';
 import Customers from'./pages/Customers';
+import Suppliers from'./pages/Suppliers';
 import Products from'./pages/Products';import ProductImageImport from'./pages/ProductImageImport';import OCRProviders from'./pages/OCRProviders';
 import Prices from'./pages/Prices';
 import Lots from'./pages/Lots';
@@ -108,6 +109,7 @@ export default function App(){
     payments:<Payments/>,
     installments:<Installments/>,
     customers:<Customers/>,
+    suppliers:<Suppliers/>,
     products:<Products/>,
     'product-import':<ProductImageImport/>,
     'ocr-providers':<OCRProviders/>,

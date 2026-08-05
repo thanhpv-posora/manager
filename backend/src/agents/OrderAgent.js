@@ -283,6 +283,49 @@ async function assertItemsCategoryPerFlow(conn, customerId, items, itemFlowByPro
           'AMBIGUOUS_PRICE_SOURCE'
         );
       }
+
+      // P0-002: no price_book_id means no category to check the item's flow
+      // against — but the item's own resolved sales_flow must still be
+      // validated against the customer, exactly like the price_book_id
+      // branch's own NULL-category fallback does (lines ~232-261 above).
+      // Previously this branch validated ONLY that price_type was
+      // unambiguous, never the flow itself, so a COMMON_PRICE/MANUAL_PRICE
+      // item bypassed sales-flow isolation entirely — the write-path gap
+      // this fix closes. Same resolver, same "no category information"
+      // input (null) the price_book_id branch's own NULL-category case
+      // already passes it — no second resolver, no new business rule.
+      //
+      // This branch also mirrors that same case's per-flow ASYMMETRY, not a
+      // stricter symmetric rule invented for here alone: CARCASS_POS keeps
+      // the pre-existing legacy-compat allowance (a customer with no
+      // resolvable flow at all is NOT blocked from buying a CARCASS_POS item
+      // with no price book — matches real production data, and existing
+      // regression coverage in verify-mixed-sales-dual-price-category.js
+      // depends on this), while INVENTORY_SALE requires an explicitly
+      // resolved flow and fails closed when nothing can be resolved. Both
+      // directions of a genuine, resolvable mismatch are still rejected —
+      // exactly the required examples (CARCASS_POS customer +
+      // INVENTORY_SALE product, and the reverse, both reject).
+      const effectiveFlow = resolveEffectiveSalesFlow(null, customerDefaultFlow);
+      if (flow === 'INVENTORY_SALE') {
+        if (!effectiveFlow) {
+          throw businessError('Khách hàng chưa được thiết lập luồng bán hợp lệ.', 'CUSTOMER_SALES_FLOW_NOT_CONFIGURED');
+        }
+        if (effectiveFlow !== 'INVENTORY_SALE') {
+          throw businessError('Danh mục giá không thuộc phân hệ bán hàng kho.', 'PRICE_CATEGORY_NOT_INVENTORY_SALE');
+        }
+      } else if (effectiveFlow === 'INVENTORY_SALE') {
+        // Symmetric counterpart: an INVENTORY_SALE customer buying a
+        // CARCASS_POS item with no price book — same rejection the
+        // price_book_id branch's own NULL-category case applies.
+        throw businessError(
+          `Sản phẩm '${label}' không phù hợp với luồng bán của khách hàng.`,
+          'PRICE_CATEGORY_SALES_FLOW_MISMATCH'
+        );
+      }
+      // else: flow === CARCASS_POS and effectiveFlow is null or CARCASS_POS
+      // — legacy-compat allowance preserved, matches existing Bò Xô happy paths.
+
       categoryByProductId.set(pid, null);
     }
   }

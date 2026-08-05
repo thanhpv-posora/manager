@@ -58,14 +58,33 @@ async function main() {
   const productIds = [];
   const orderIds = [];
   let customerId = null;
+  let carcassCustomerId = null;
 
   try {
+    // default_sales_flow=INVENTORY_SALE: this script's scenarios are almost
+    // all TRACK_STOCK/INVENTORY_SALE products bought with manual_price:true
+    // and no price book — P0-002's sales-flow enforcement on that same write
+    // path now requires a resolvable customer flow for INVENTORY_SALE items
+    // (fail closed otherwise), so the test customer needs one set, same as
+    // any real INVENTORY_SALE customer would have.
     const [custIns] = await pool.query(
-      `INSERT INTO customers(customer_code,name,phone,address,price_mode,debt_limit,payment_term_days,billing_calendar_type)
-       VALUES(?,?,?,?,?,?,?,?)`,
-      [`P001-CUST-${Date.now()}`, 'P0-001 Qty Guard Test Customer', '0', 'test', 'PRIVATE_PRICE', 0, 0, 'SOLAR']
+      `INSERT INTO customers(customer_code,name,phone,address,price_mode,debt_limit,payment_term_days,billing_calendar_type,default_sales_flow)
+       VALUES(?,?,?,?,?,?,?,?,?)`,
+      [`P001-CUST-${Date.now()}`, 'P0-001 Qty Guard Test Customer', '0', 'test', 'PRIVATE_PRICE', 0, 0, 'SOLAR', 'INVENTORY_SALE']
     );
     customerId = custIns.insertId;
+
+    // Scenario 6 below buys a NON_STOCK/CARCASS_POS product — under P0-002's
+    // sales-flow enforcement that would mismatch against the INVENTORY_SALE
+    // customer above, so it gets its own CARCASS_POS-flow customer. Unrelated
+    // to what scenario 6 actually tests (NON_STOCK balance behavior), purely
+    // a flow-compatible counterpart.
+    const [carcassCustIns] = await pool.query(
+      `INSERT INTO customers(customer_code,name,phone,address,price_mode,debt_limit,payment_term_days,billing_calendar_type,default_sales_flow)
+       VALUES(?,?,?,?,?,?,?,?,?)`,
+      [`P001-CUST-CARCASS-${Date.now()}`, 'P0-001 Qty Guard Test Customer (CARCASS_POS)', '0', 'test', 'PRIVATE_PRICE', 0, 0, 'SOLAR', 'CARCASS_POS']
+    );
+    carcassCustomerId = carcassCustIns.insertId;
 
     // ══════════════════ 1: sufficient stock + increase -> succeeds, exact stock OUT ══════════════════
     let p1, o1;
@@ -189,7 +208,7 @@ async function main() {
       const p = await makeProduct('NON_STOCK', 0);
       productIds.push(p.id);
       const r = await OrderAgent.create({
-        customer_id: customerId, order_date: today,
+        customer_id: carcassCustomerId, order_date: today,
         items: [{ product_id: p.id, product_name: 'boxo', unit: 'kg', quantity: 3, sale_price: 6000, manual_price: true }],
       }, user);
       orderIds.push(r.order_id);
@@ -235,6 +254,10 @@ async function main() {
     if (customerId) {
       await pool.query(`DELETE FROM debt_transactions WHERE customer_id=?`, [customerId]).catch(() => {});
       await pool.query(`DELETE FROM customers WHERE id=?`, [customerId]).catch(() => {});
+    }
+    if (carcassCustomerId) {
+      await pool.query(`DELETE FROM debt_transactions WHERE customer_id=?`, [carcassCustomerId]).catch(() => {});
+      await pool.query(`DELETE FROM customers WHERE id=?`, [carcassCustomerId]).catch(() => {});
     }
     console.log('Cleanup done.');
   }

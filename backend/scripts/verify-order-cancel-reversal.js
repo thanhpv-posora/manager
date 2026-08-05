@@ -18,6 +18,7 @@ const OrderAgent = require('../src/agents/OrderAgent');
 const PaymentAgent = require('../src/agents/PaymentAgent');
 const CustomerAgent = require('../src/agents/CustomerAgent');
 const ProductAgent = require('../src/agents/ProductAgent');
+const PriceMatrixAgent = require('../src/agents/PriceMatrixAgent');
 const StockLedgerAgent = require('../src/agents/StockLedgerAgent');
 const { getCustomerDebt } = require('../src/services/debt.service');
 
@@ -94,16 +95,30 @@ async function main() {
   const paymentIds = [];
   const reconciliationExemptIds = new Set(); // test-only forced stock_quantity, not a ledger-driven value
   let customerId = null;
+  let carcassCustomerId = null;
+  const s4CategoryIds = [];
   const user = { id: null, role: 'ADMIN' };
   const today = new Date().toISOString().slice(0, 10);
 
   try {
+    // default_sales_flow=INVENTORY_SALE: most scenarios below buy TRACK_STOCK
+    // products with manual_price:true and no price book — P0-002's sales-flow
+    // enforcement on that same write path now requires a resolvable customer
+    // flow for INVENTORY_SALE items. The few pure-NON_STOCK (Bò Xô) scenarios
+    // (S2, S3, S10b) use a separate carcassCustomerId below instead.
     const [custIns] = await pool.query(
-      `INSERT INTO customers(customer_code,name,phone,address,price_mode,debt_limit,payment_term_days,billing_calendar_type)
-       VALUES(?,?,?,?,?,?,?,?)`,
-      [`S82-CUST-${Date.now()}`, 'S8.2 Cancel Test Customer', '0', 'test', 'PRIVATE_PRICE', 0, 0, 'SOLAR']
+      `INSERT INTO customers(customer_code,name,phone,address,price_mode,debt_limit,payment_term_days,billing_calendar_type,default_sales_flow)
+       VALUES(?,?,?,?,?,?,?,?,?)`,
+      [`S82-CUST-${Date.now()}`, 'S8.2 Cancel Test Customer', '0', 'test', 'PRIVATE_PRICE', 0, 0, 'SOLAR', 'INVENTORY_SALE']
     );
     customerId = custIns.insertId;
+
+    const [carcassCustIns] = await pool.query(
+      `INSERT INTO customers(customer_code,name,phone,address,price_mode,debt_limit,payment_term_days,billing_calendar_type,default_sales_flow)
+       VALUES(?,?,?,?,?,?,?,?,?)`,
+      [`S82-CUST-CARCASS-${Date.now()}`, 'S8.2 Cancel Test Customer (CARCASS_POS)', '0', 'test', 'PRIVATE_PRICE', 0, 0, 'SOLAR', 'CARCASS_POS']
+    );
+    carcassCustomerId = carcassCustIns.insertId;
 
     // ══════════════════════ Scenario 1: cancel unpaid TRACK_STOCK order ══════════════════════
     let s1OrderId;
@@ -165,7 +180,7 @@ async function main() {
       const p = await makeProduct('NON_STOCK', 0);
       productIds.push(p.id);
       const r = await OrderAgent.create({
-        customer_id: customerId, order_date: today,
+        customer_id: carcassCustomerId, order_date: today,
         items: [{ product_id: p.id, product_name: 'boxo', unit: 'kg', quantity: 5, sale_price: 80000, manual_price: true }],
       }, user);
       orderIds.push(r.order_id);
@@ -185,7 +200,7 @@ async function main() {
       const p = await makeProduct('NON_STOCK', 0);
       productIds.push(p.id);
       const r = await OrderAgent.create({
-        customer_id: customerId, order_date: today,
+        customer_id: carcassCustomerId, order_date: today,
         items: [{ product_id: p.id, product_name: 'service', unit: 'kg', quantity: 2, sale_price: 30000, manual_price: true }],
       }, user);
       orderIds.push(r.order_id);
@@ -195,18 +210,37 @@ async function main() {
     }
 
     // ══════════════════════ Scenario 4: cancel mixed-mode order (same category) ══════════════════════
+    // P0-002: a MIXED bill (one INVENTORY_SALE line + one CARCASS_POS line)
+    // with no price book at all can no longer resolve both lines' flows
+    // against one customer default_sales_flow — that's exactly the ambient
+    // cross-flow bypass P0-002 closes. Mixed-flow support still exists, the
+    // same way verify-mixed-sales-dual-price-category.js's own "one category
+    // per flow" scenario already proves: each line needs its OWN
+    // flow-classified price category. Gives this scenario real price books
+    // (via PriceMatrixAgent, same helper pattern as that script) instead of
+    // manual_price — the thing S4 actually verifies (mixed-order cancel
+    // reversal) is unaffected either way.
     {
-      const [[cat]] = await pool.query(`SELECT id FROM product_categories LIMIT 1`);
+      const [prodCats] = await pool.query(`SELECT id FROM product_categories WHERE del_flg=0 ORDER BY id LIMIT 2`);
+      if (prodCats.length < 2) throw new Error('Need at least 2 product_categories in DB for Scenario 4');
+      const [catTrack, catCarcass] = prodCats.map(r => r.id);
       const pTrack = await makeProduct('TRACK_STOCK', 40);
       const pCarcass = await makeProduct('NON_STOCK', 0);
       productIds.push(pTrack.id, pCarcass.id);
-      await pool.query(`UPDATE products SET category_id=? WHERE id IN (?,?)`, [cat.id, pTrack.id, pCarcass.id]);
+      await pool.query(`UPDATE products SET category_id=? WHERE id=?`, [catTrack, pTrack.id]);
+      await pool.query(`UPDATE products SET category_id=? WHERE id=?`, [catCarcass, pCarcass.id]);
+
+      const cpcTrack = await PriceMatrixAgent.createCustomerPriceCategory(customerId, catTrack, { sales_flow: 'INVENTORY_SALE' });
+      await PriceMatrixAgent.saveMatrix(customerId, [{ product_id: pTrack.id, private_price: 40000, in_catalog: true }], null, { effective_from: '2024-01-01', effective_calendar_type: 'SOLAR' }, catTrack);
+      const cpcCarcass = await PriceMatrixAgent.createCustomerPriceCategory(customerId, catCarcass, { sales_flow: 'CARCASS_POS' });
+      await PriceMatrixAgent.saveMatrix(customerId, [{ product_id: pCarcass.id, private_price: 60000, in_catalog: true }], null, { effective_from: '2024-01-01', effective_calendar_type: 'SOLAR' }, catCarcass);
+      s4CategoryIds.push(cpcTrack.id, cpcCarcass.id);
 
       const r = await OrderAgent.create({
         customer_id: customerId, order_date: today,
         items: [
-          { product_id: pTrack.id, product_name: 'trackline', unit: 'kg', quantity: 6, sale_price: 40000, manual_price: true },
-          { product_id: pCarcass.id, product_name: 'boxoline', unit: 'kg', quantity: 3, sale_price: 60000, manual_price: true },
+          { product_id: pTrack.id, product_name: 'trackline', unit: 'kg', quantity: 6 },
+          { product_id: pCarcass.id, product_name: 'boxoline', unit: 'kg', quantity: 3 },
         ],
       }, user);
       orderIds.push(r.order_id);
@@ -380,7 +414,7 @@ async function main() {
       const p2 = await makeProduct('NON_STOCK', 0);
       productIds.push(p2.id);
       const r2 = await OrderAgent.create({
-        customer_id: customerId, order_date: today,
+        customer_id: carcassCustomerId, order_date: today,
         items: [{ product_id: p2.id, product_name: 'modeflip2', unit: 'kg', quantity: 5, sale_price: 12000, manual_price: true }],
       }, user);
       orderIds.push(r2.order_id);
@@ -468,14 +502,24 @@ async function main() {
       await pool.query(`DELETE FROM orders WHERE id=?`, [oid]).catch(() => {});
     }
     for (const id of productIds) {
+      await pool.query(`DELETE FROM customer_price_book_items WHERE product_id=?`, [id]).catch(() => {});
       await pool.query(`DELETE FROM stock_transactions WHERE product_id=?`, [id]).catch(() => {});
       await pool.query(`DELETE FROM products WHERE id=?`, [id]).catch(() => {});
+    }
+    for (const cpcId of s4CategoryIds) {
+      await pool.query(`DELETE FROM customer_price_books WHERE customer_price_category_id=?`, [cpcId]).catch(() => {});
+      await pool.query(`DELETE FROM customer_price_categories WHERE id=?`, [cpcId]).catch(() => {});
     }
     if (customerId) {
       await pool.query(`DELETE FROM debt_transactions WHERE customer_id=?`, [customerId]).catch(() => {});
       await pool.query(`DELETE FROM customer_product_catalogs WHERE customer_id=?`, [customerId]).catch(() => {});
       await pool.query(`DELETE FROM customer_product_prices WHERE customer_id=?`, [customerId]).catch(() => {});
+      await pool.query(`DELETE FROM price_change_logs WHERE customer_id=?`, [customerId]).catch(() => {});
       await pool.query(`DELETE FROM customers WHERE id=?`, [customerId]).catch(() => {});
+    }
+    if (carcassCustomerId) {
+      await pool.query(`DELETE FROM debt_transactions WHERE customer_id=?`, [carcassCustomerId]).catch(() => {});
+      await pool.query(`DELETE FROM customers WHERE id=?`, [carcassCustomerId]).catch(() => {});
     }
     console.log('Cleanup done.');
   }

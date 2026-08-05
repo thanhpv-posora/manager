@@ -41,10 +41,18 @@ async function main() {
   const today = new Date().toISOString().slice(0, 10);
 
   try {
+    // default_sales_flow=INVENTORY_SALE: every OrderAgent.create/addItem/
+    // updateItem() call below (F3) uses TRACK_STOCK/INVENTORY_SALE products
+    // with manual_price:true and no price book — P0-002's sales-flow
+    // enforcement on that same write path now requires a resolvable customer
+    // flow for INVENTORY_SALE items. The F5 section below goes through
+    // confirmOrderDraft() (order.service.js), a separate path that doesn't
+    // call assertItemsCategoryPerFlow() at all (documented gap, out of
+    // P0-002's scope) — unaffected either way.
     const [custIns] = await pool.query(
-      `INSERT INTO customers(customer_code,name,phone,address,price_mode,debt_limit,payment_term_days,billing_calendar_type)
-       VALUES(?,?,?,?,?,?,?,?)`,
-      [`S80-CUST-${Date.now()}`, 'S8.0 F3F5 Test Customer', '0', 'test', 'PRIVATE_PRICE', 0, 0, 'SOLAR']
+      `INSERT INTO customers(customer_code,name,phone,address,price_mode,debt_limit,payment_term_days,billing_calendar_type,default_sales_flow)
+       VALUES(?,?,?,?,?,?,?,?,?)`,
+      [`S80-CUST-${Date.now()}`, 'S8.0 F3F5 Test Customer', '0', 'test', 'PRIVATE_PRICE', 0, 0, 'SOLAR', 'INVENTORY_SALE']
     );
     customerId = custIns.insertId;
 

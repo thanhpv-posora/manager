@@ -1995,47 +1995,16 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       }
     }
 
-    // P2-02: Inventory Receive Reversal — additive schema only, mirrors two
-    // proven existing patterns rather than inventing new ones.
-    //
-    // 1) inventory_receives.cancelled_at/cancelled_by/cancel_reason — same
-    //    three column names/types already used on orders (see
-    //    orders.cancelled_at/cancelled_by/cancel_reason above). Covers BOTH
-    //    the pre-existing PENDING→CANCELLED path and the new
-    //    RECEIVED→CANCELLED_REVERSAL path (CANCELLED_REVERSAL is a plain
-    //    string value — status is VARCHAR(30), not an ENUM — chosen instead
-    //    of reusing 'CANCELLED' because the two are not the same fact: a
-    //    PENDING cancel never touched stock, a RECEIVED reversal always
-    //    posts compensating movements. This is exactly the status this
-    //    file's own InventoryMovementService.postReversal() stub already
-    //    named in its TODO before this task implemented it).
-    await safeAddColumn(conn, 'inventory_receives', 'cancelled_at', 'cancelled_at DATETIME NULL');
-    await safeAddColumn(conn, 'inventory_receives', 'cancelled_by', 'cancelled_by BIGINT NULL');
-    await safeAddColumn(conn, 'inventory_receives', 'cancel_reason', 'cancel_reason TEXT NULL');
-
-    // 2) stock_transactions.reversal_dedup_key — same generated-column +
-    //    UNIQUE-index idempotency idiom as receive_dedup_key above, just for
-    //    the reversal's OUT side instead of the receive's IN side: NULL for
-    //    every row except reference_type='RECEIVE_VOUCHER' AND type='OUT',
-    //    so at most one compensating OUT can ever exist per
-    //    (product_id, receive_id) — a genuine concurrent double-reversal is
-    //    rejected atomically by MySQL, the same guarantee receive_dedup_key
-    //    gives the original IN side. No ENUM change needed — 'RECEIVE_VOUCHER'
-    //    and 'OUT' are both already valid values on their respective columns.
-    await safeAddColumn(
-      conn,
-      'stock_transactions',
-      'reversal_dedup_key',
-      `reversal_dedup_key VARCHAR(64) GENERATED ALWAYS AS
-         (CASE WHEN reference_type = 'RECEIVE_VOUCHER' AND type = 'OUT'
-               THEN CONCAT(product_id, ':', reference_id) ELSE NULL END) STORED`
-    );
-    await safeAddIndex(
-      conn,
-      'stock_transactions',
-      'uq_stock_transactions_reversal_dedup',
-      'UNIQUE KEY uq_stock_transactions_reversal_dedup(reversal_dedup_key)'
-    );
+    // P2-02 (production cleanup): Inventory Receive Reversal's additive
+    // schema — inventory_receives.cancelled_at/cancelled_by/cancel_reason and
+    // stock_transactions.reversal_dedup_key + its UNIQUE index — is
+    // deliberately NOT created here. Same reasoning as the P1-02A audit_logs
+    // indexes immediately below: purely additive, not something the app
+    // requires to boot, so it belongs in the deliberately-triggered
+    // SchemaMigrationAgent.migrate() path, not automatic every-startup DDL.
+    // SchemaMigrationAgent.check() is the verify surface for these columns —
+    // ensureSchema() does not duplicate that check here, matching this
+    // file's existing precedent for every other migrate()-owned artifact.
 
     // P1-02A (CTO architecture review): the audit_logs performance indexes
     // (idx_audit_logs_created_at/entity/action/user) are deliberately NOT

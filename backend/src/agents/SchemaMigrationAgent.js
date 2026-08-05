@@ -283,6 +283,48 @@ class SchemaMigrationAgent{
         logs.push(...(await this.mergeMenuKey(conn,'audit-logs','system_audit')));
       }
 
+      // P2-02 (production cleanup) — Inventory Receive Reversal's additive
+      // schema, moved out of bootstrap.js's every-boot ensureSchema() into
+      // this deliberately-triggered path, same reasoning as the P1-02A
+      // audit_logs indexes above.
+      //
+      // 1) inventory_receives.cancelled_at/cancelled_by/cancel_reason — same
+      //    three column names/types already used on orders. Covers both the
+      //    pre-existing PENDING→CANCELLED path and the new
+      //    RECEIVED→CANCELLED_REVERSAL path.
+      if(await this.hasTable(conn,'inventory_receives')){
+        if(!(await this.hasColumn(conn,'inventory_receives','cancelled_at')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE inventory_receives ADD COLUMN cancelled_at DATETIME NULL`));
+        if(!(await this.hasColumn(conn,'inventory_receives','cancelled_by')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE inventory_receives ADD COLUMN cancelled_by BIGINT NULL`));
+        if(!(await this.hasColumn(conn,'inventory_receives','cancel_reason')))
+          logs.push(await this.safeAlter(conn,`ALTER TABLE inventory_receives ADD COLUMN cancel_reason TEXT NULL`));
+      }
+
+      // 2) stock_transactions.reversal_dedup_key — same generated-column +
+      //    UNIQUE-index idempotency idiom this table's own receive_dedup_key
+      //    already uses, just for the reversal's OUT side instead of the
+      //    receive's IN side: NULL for every row except
+      //    reference_type='RECEIVE_VOUCHER' AND type='OUT', so at most one
+      //    compensating OUT can ever exist per (product_id, receive_id) — a
+      //    genuine concurrent double-reversal is rejected atomically by
+      //    MySQL. No ENUM change needed — 'RECEIVE_VOUCHER' and 'OUT' are
+      //    both already valid values on their respective columns.
+      if(await this.hasTable(conn,'stock_transactions')){
+        if(!(await this.hasColumn(conn,'stock_transactions','reversal_dedup_key'))){
+          logs.push(await this.safeAlter(conn,`
+            ALTER TABLE stock_transactions ADD COLUMN reversal_dedup_key VARCHAR(64) GENERATED ALWAYS AS
+              (CASE WHEN reference_type = 'RECEIVE_VOUCHER' AND type = 'OUT'
+                    THEN CONCAT(product_id, ':', reference_id) ELSE NULL END) STORED
+          `));
+        }
+        if(!(await this.hasIndex(conn,'stock_transactions','uq_stock_transactions_reversal_dedup'))){
+          logs.push(await this.safeAlter(conn,
+            `ALTER TABLE stock_transactions ADD UNIQUE KEY uq_stock_transactions_reversal_dedup (reversal_dedup_key)`
+          ));
+        }
+      }
+
       return {message:'Schema migration completed',logs};
     }finally{
       conn.release();
@@ -304,7 +346,12 @@ class SchemaMigrationAgent{
         ['customer_price_books','category_id'],
         ['customer_price_books','customer_price_category_id'],
         ['customer_price_categories','is_default'],
-        ['customer_price_categories','default_slot']
+        ['customer_price_categories','default_slot'],
+        // P2-02 (production cleanup)
+        ['inventory_receives','cancelled_at'],
+        ['inventory_receives','cancelled_by'],
+        ['inventory_receives','cancel_reason'],
+        ['stock_transactions','reversal_dedup_key']
       ];
       for(const [table,column] of required){
         const tableOk=await this.hasTable(conn,table);
@@ -327,6 +374,8 @@ class SchemaMigrationAgent{
         ['audit_logs','idx_audit_logs_entity'],
         ['audit_logs','idx_audit_logs_action'],
         ['audit_logs','idx_audit_logs_user'],
+        // P2-02 (production cleanup)
+        ['stock_transactions','uq_stock_transactions_reversal_dedup'],
       ];
       for(const [table,indexName] of requiredIndexes){
         const tableOk=await this.hasTable(conn,table);

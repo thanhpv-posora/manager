@@ -25,12 +25,19 @@ class ReportAgent {
        WHERE o.status<>'CANCELLED' GROUP BY c.id ORDER BY revenue DESC LIMIT 10`
     );
     const result = {summary:summary[0], daily:daily.reverse(), topProducts, topCustomers};
-    try {
-      const [[rt]] = await pool.query(`SELECT COALESCE(SUM(amount),0) v FROM retail_daily_summary WHERE business_date=?`, [today]);
-      const [[ra]] = await pool.query(`SELECT COALESCE(SUM(amount),0) v FROM retail_daily_summary`);
-      result.summary.today_revenue = Number(result.summary.today_revenue) + Number(rt.v);
-      result.summary.total_revenue = Number(result.summary.total_revenue) + Number(ra.v);
-    } catch(e) { if (e.code !== 'ER_NO_SUCH_TABLE') throw e; }
+    // P0-004: retail_daily_summary is a company-wide aggregate — it has no
+    // customer_id at all, so it can never be scoped to one customer the way
+    // `cw`/`params` scope the orders queries above. CUSTOMER must never see
+    // it merged in; their summary stays exactly their own order-scoped
+    // totals (already correct as computed above).
+    if (user.role !== 'CUSTOMER') {
+      try {
+        const [[rt]] = await pool.query(`SELECT COALESCE(SUM(amount),0) v FROM retail_daily_summary WHERE business_date=?`, [today]);
+        const [[ra]] = await pool.query(`SELECT COALESCE(SUM(amount),0) v FROM retail_daily_summary`);
+        result.summary.today_revenue = Number(result.summary.today_revenue) + Number(rt.v);
+        result.summary.total_revenue = Number(result.summary.total_revenue) + Number(ra.v);
+      } catch(e) { if (e.code !== 'ER_NO_SUCH_TABLE') throw e; }
+    }
     return result;
   }
 
@@ -45,6 +52,13 @@ class ReportAgent {
       `SELECT ${groupExpr} period,SUM(o.total_amount) revenue,SUM(o.paid_amount) paid,SUM(o.debt_amount) debt,COUNT(*) orders
        FROM orders o WHERE ${where.join(' AND ')} GROUP BY ${groupExpr} ORDER BY period`, params
     );
+    // P0-004: retail_daily_summary is a company-wide aggregate with no
+    // customer_id concept — CUSTOMER must never receive it merged into their
+    // own scoped revenue. Their response stays exactly this order-scoped
+    // posRows shape, same as the existing ER_NO_SUCH_TABLE fallback below
+    // already returns when the table doesn't exist at all — no fabricated
+    // pos_revenue/retail_amount fields, no zero standing in for a real figure.
+    if (user.role === 'CUSTOMER') return posRows;
     try {
       const retailWhere = [], retailParams = [];
       if (from) { retailWhere.push('business_date>=?'); retailParams.push(from); }
@@ -204,33 +218,40 @@ class ReportAgent {
       });
     }
 
-    try {
-      const retailDateWhere = [], retailDateParams = [];
-      if (from) { retailDateWhere.push('business_date>=?'); retailDateParams.push(String(from).slice(0,10)); }
-      if (to)   { retailDateWhere.push('business_date<=?'); retailDateParams.push(String(to).slice(0,10)); }
-      const [retailProfitRows] = await pool.query(
-        `SELECT business_date, COALESCE(SUM(amount),0) retail_amount FROM retail_daily_summary
-         ${retailDateWhere.length ? 'WHERE ' + retailDateWhere.join(' AND ') : ''} GROUP BY business_date`,
-        retailDateParams
-      );
-      for (const rr of retailProfitRows) {
-        const d = String(rr.business_date).slice(0,10);
-        const period = groupBy === 'year' ? d.slice(0,4) : (groupBy === 'month' ? d.slice(0,7) : d);
-        if (!summary.has(period)) summary.set(period, {period,revenue:0,cost:0,profit:0,orders:new Set(),items:0,waiting_cost_items:0,retail_revenue:0});
-        const s = summary.get(period);
-        const amt = Number(rr.retail_amount || 0);
-        s.revenue += amt;
-        s.profit  += amt;
-        s.retail_revenue = (s.retail_revenue || 0) + amt;
-      }
-    } catch(e) { if (e.code !== 'ER_NO_SUCH_TABLE') throw e; }
+    // P0-004: retail_daily_summary is a company-wide aggregate with no
+    // customer_id concept — CUSTOMER must never have it merged into their
+    // own scoped revenue/profit. Skip the merge entirely for that role, and
+    // (below) never attach a retail_revenue field to their rows at all —
+    // not even a 0, which would misleadingly look like "this customer's own
+    // retail contribution" when retail isn't a per-customer concept.
+    if (user.role !== 'CUSTOMER') {
+      try {
+        const retailDateWhere = [], retailDateParams = [];
+        if (from) { retailDateWhere.push('business_date>=?'); retailDateParams.push(String(from).slice(0,10)); }
+        if (to)   { retailDateWhere.push('business_date<=?'); retailDateParams.push(String(to).slice(0,10)); }
+        const [retailProfitRows] = await pool.query(
+          `SELECT business_date, COALESCE(SUM(amount),0) retail_amount FROM retail_daily_summary
+           ${retailDateWhere.length ? 'WHERE ' + retailDateWhere.join(' AND ') : ''} GROUP BY business_date`,
+          retailDateParams
+        );
+        for (const rr of retailProfitRows) {
+          const d = String(rr.business_date).slice(0,10);
+          const period = groupBy === 'year' ? d.slice(0,4) : (groupBy === 'month' ? d.slice(0,7) : d);
+          if (!summary.has(period)) summary.set(period, {period,revenue:0,cost:0,profit:0,orders:new Set(),items:0,waiting_cost_items:0,retail_revenue:0});
+          const s = summary.get(period);
+          const amt = Number(rr.retail_amount || 0);
+          s.revenue += amt;
+          s.profit  += amt;
+          s.retail_revenue = (s.retail_revenue || 0) + amt;
+        }
+      } catch(e) { if (e.code !== 'ER_NO_SUCH_TABLE') throw e; }
+    }
 
     const rows = Array.from(summary.values()).sort((a,b)=>String(a.period).localeCompare(String(b.period))).map(r=>{
       const hasWaiting = r.waiting_cost_items > 0;
-      return {
+      const row = {
         period: r.period,
         revenue: Math.round(r.revenue),
-        retail_revenue: Math.round(r.retail_revenue || 0),
         cost: hasWaiting ? null : Math.round(r.cost),
         profit: hasWaiting ? null : Math.round(r.profit),
         gross_margin: hasWaiting ? null : (r.revenue > 0 ? Number(((r.profit / r.revenue) * 100).toFixed(2)) : 0),
@@ -238,6 +259,8 @@ class ReportAgent {
         items: r.items,
         waiting_cost_items: r.waiting_cost_items
       };
+      if (user.role !== 'CUSTOMER') row.retail_revenue = Math.round(r.retail_revenue || 0);
+      return row;
     });
     return { rows, details };
   }

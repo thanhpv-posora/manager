@@ -1,5 +1,5 @@
 import React,{useEffect,useState,useRef}from'react';
-import {Pencil,Trash2,Plus,Eye}from'lucide-react';
+import {Pencil,Trash2,Plus,Eye,ChevronDown,ChevronRight}from'lucide-react';
 import api from'../api/api';
 import SafePage from'../components/SafePage';
 import Dialog from'../components/common/Dialog';
@@ -49,14 +49,25 @@ import {showSuccess,showError,showWarning}from'../utils/toast';
 //
 // male_price/female_price/fragment_price are part of the existing suppliers
 // row schema (used by the separate cattle-lot/Bò Xô flow in Lots.jsx) —
-// exposed here as an optional section so a supplier's full existing record
-// can be edited from one place, without adding any new backend field or
-// business rule.
+// exposed here as an optional, collapsed-by-default section (CTO final
+// review) so an ordinary warehouse supplier's form isn't cluttered with
+// fields it never uses, while a Bò Xô supplier's full existing record can
+// still be edited from one place. No supplier "type" was introduced — no
+// reliable classification exists in the current schema to gate this on, so
+// the section is available (collapsed) for every supplier rather than
+// guessed at. Never required; no backend field or business rule changed.
 //
 // Search and pagination are client-side over the single GET /api/suppliers
 // response (mirrors Customers.jsx's own convention for its "Đối tác" list,
 // the closest existing analog) — the backend list endpoint has no
 // search/limit/offset params to extend, and this task is frontend-only.
+//
+// CTO final review note: SupplierAgent.js's direct CRUD (this page) is one
+// of two code paths that can create a `suppliers` row — CustomerAgent.js's
+// _syncPartnerToSupplier() auto-creates one too, with different rules,
+// whenever a customer is saved with partner_type=1 via Customers.jsx. This
+// is accepted, tracked technical debt (see docs/technical-debt/register.md,
+// TD-0005) — explicitly not addressed by this page.
 
 const CALENDAR_LABELS={SOLAR:'Dương lịch',LUNAR:'Âm lịch'};
 
@@ -73,8 +84,10 @@ export default function Suppliers(){
 
   const[form,setForm]=useState(EMPTY_FORM);
   const[editing,setEditing]=useState(null); // supplier id | null
+  const[originalActive,setOriginalActive]=useState(1); // is_active as loaded, before any edit — used to detect an active->inactive transition on save
   const[dialogOpen,setDialogOpen]=useState(false);
   const[saving,setSaving]=useState(false);
+  const[bxOpen,setBxOpen]=useState(false); // Bò Xô price section — collapsed by default (CTO final review)
 
   const[viewing,setViewing]=useState(null); // supplier row | null
 
@@ -83,11 +96,17 @@ export default function Suppliers(){
   const[deleting,setDeleting]=useState(false);
 
   const fieldRefs=useRef([]);
+  // Last focusable field index depends on which optional pieces are actually
+  // rendered right now (Trạng thái only in Edit mode; the Bò Xô fields only
+  // when bxOpen) — computed instead of a fixed constant so Enter/ArrowDown
+  // on the last VISIBLE field always triggers Save, never a no-op focus()
+  // call on a field that isn't currently mounted.
+  const lastFieldIndex=()=> bxOpen?9:(editing?6:5);
   const handleFormKey=(e,idx)=>{
     const isSelect=e.target.tagName==='SELECT';
     if(e.key==='Enter'||(!isSelect&&e.key==='ArrowDown')){
       e.preventDefault();
-      if(idx<fieldRefs.current.length-1) fieldRefs.current[idx+1]?.focus();
+      if(idx<lastFieldIndex()) fieldRefs.current[idx+1]?.focus();
       else save();
     } else if(!isSelect&&e.key==='ArrowUp'){
       e.preventDefault();
@@ -105,7 +124,7 @@ export default function Suppliers(){
   };
   useEffect(()=>{ load(); },[]);
 
-  const reset=()=>{ setEditing(null); setForm(EMPTY_FORM); };
+  const reset=()=>{ setEditing(null); setForm(EMPTY_FORM); setOriginalActive(1); setBxOpen(false); };
 
   const openAddDialog=()=>{ reset(); setDialogOpen(true); };
   const openEditDialog=(x)=>{
@@ -122,6 +141,8 @@ export default function Suppliers(){
       fragment_price:x.fragment_price||'',
       is_active:x.is_active?1:0,
     });
+    setOriginalActive(x.is_active?1:0);
+    setBxOpen(false);
     setDialogOpen(true);
   };
   const closeDialog=()=>{ if(saving)return; reset(); setDialogOpen(false); };
@@ -130,6 +151,23 @@ export default function Suppliers(){
     if(saving)return;
     const name=String(form.name||'').trim();
     if(!name){ showWarning('Vui lòng nhập tên nhà cung cấp'); return; }
+
+    // Inactive-transition confirmation (CTO final review): is_active is only
+    // ever settable here in Edit mode (addSupplier() hardcodes it to 1 on
+    // create — see file header), so this only fires on an actual edit that
+    // flips an active supplier to inactive. GET /api/suppliers only ever
+    // returns is_active=1 rows, so this change makes the supplier disappear
+    // from this list and every supplier picker (Lots.jsx, PO creation, ...)
+    // immediately — never done silently. Cancelling leaves the dialog open
+    // and does not call the API at all.
+    if(editing && originalActive===1 && Number(form.is_active)===0){
+      const ok=await window.appConfirm(
+        'Nhà cung cấp sẽ bị ẩn khỏi danh sách và không thể chọn cho giao dịch mới. Bạn có chắc muốn tiếp tục?',
+        {title:'Ngừng hoạt động nhà cung cấp',confirmText:'Tiếp tục',cancelText:'Hủy',variant:'danger'}
+      );
+      if(!ok)return;
+    }
+
     const payload={
       name,
       phone:form.phone||'',
@@ -300,24 +338,37 @@ export default function Suppliers(){
         )}
       </div>
 
-      <p className="muted" style={{marginTop:16,marginBottom:8}}>Giá thu mua bò xô (tuỳ chọn — dùng cho nghiệp vụ Nhập xô)</p>
-      <div className="form-grid">
-        <label className="field-label">
-          <span>Giá bò đực</span>
-          <input className="input" type="number" min={0} step="0.01" value={form.male_price} onChange={e=>setForm({...form,male_price:e.target.value})}
-            ref={el=>fieldRefs.current[7]=el} onKeyDown={e=>handleFormKey(e,7)}/>
-        </label>
-        <label className="field-label">
-          <span>Giá bò cái</span>
-          <input className="input" type="number" min={0} step="0.01" value={form.female_price} onChange={e=>setForm({...form,female_price:e.target.value})}
-            ref={el=>fieldRefs.current[8]=el} onKeyDown={e=>handleFormKey(e,8)}/>
-        </label>
-        <label className="field-label">
-          <span>Giá thịt vụn</span>
-          <input className="input" type="number" min={0} step="0.01" value={form.fragment_price} onChange={e=>setForm({...form,fragment_price:e.target.value})}
-            ref={el=>fieldRefs.current[9]=el} onKeyDown={e=>handleFormKey(e,9)}/>
-        </label>
-      </div>
+      {/* Collapsed by default (CTO final review) — an ordinary warehouse
+          supplier never needs these; a Bò Xô supplier's operator expands it
+          explicitly. Never required either way — save() sends whatever value
+          is in `form` (0 when never touched), matching the pre-existing
+          backend default. */}
+      <button type="button" className="btn secondary" onClick={()=>setBxOpen(o=>!o)}
+        style={{marginTop:16,display:'inline-flex',alignItems:'center',gap:6}}
+        aria-expanded={bxOpen}>
+        {bxOpen?<ChevronDown size={14}/>:<ChevronRight size={14}/>}
+        Thông tin giá Bò Xô
+      </button>
+      {bxOpen&&<>
+        <p className="muted" style={{marginTop:8,marginBottom:8}}>Tuỳ chọn — dùng cho nghiệp vụ Nhập xô, không bắt buộc.</p>
+        <div className="form-grid">
+          <label className="field-label">
+            <span>Giá bò đực</span>
+            <input className="input" type="number" min={0} step="0.01" value={form.male_price} onChange={e=>setForm({...form,male_price:e.target.value})}
+              ref={el=>fieldRefs.current[7]=el} onKeyDown={e=>handleFormKey(e,7)}/>
+          </label>
+          <label className="field-label">
+            <span>Giá bò cái</span>
+            <input className="input" type="number" min={0} step="0.01" value={form.female_price} onChange={e=>setForm({...form,female_price:e.target.value})}
+              ref={el=>fieldRefs.current[8]=el} onKeyDown={e=>handleFormKey(e,8)}/>
+          </label>
+          <label className="field-label">
+            <span>Giá thịt vụn</span>
+            <input className="input" type="number" min={0} step="0.01" value={form.fragment_price} onChange={e=>setForm({...form,fragment_price:e.target.value})}
+              ref={el=>fieldRefs.current[9]=el} onKeyDown={e=>handleFormKey(e,9)}/>
+          </label>
+        </div>
+      </>}
     </Dialog>
 
     <Dialog open={!!viewing} title={`Nhà cung cấp ${viewing?.supplier_code||''}`} onClose={closeView} maxWidth={560}>

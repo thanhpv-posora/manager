@@ -584,7 +584,17 @@ async function createOrderDraft(payload) {
   };
 }
 
-async function confirmOrderDraft(payload) {
+// GO-LIVE F-AI-ATTRIBUTION (Flow 5 audit): `user` is the real authenticated
+// caller (order.agent.js now passes req.user — /api/ai is auth(['ADMIN',
+// 'STAFF']) at the router level, so this is always a real staff account, never
+// anonymous). Previously every write below (orders, order_items via
+// applyOrderInventory's user_id, debt_transactions x2, payments) hardcoded
+// created_by/user_id to null regardless of who actually confirmed the AI/OCR
+// draft — BR-CORE-002 "every financial action must be traceable" / BR-SEC-008
+// "sensitive operations require audit logs" were both silently violated for
+// this entire flow. userId is threaded through unchanged everywhere else.
+async function confirmOrderDraft(payload, user = null) {
+  const userId = user?.id || null;
   const {
     customer: inputCustomer,
     items = [],
@@ -693,13 +703,14 @@ async function confirmOrderDraft(payload) {
         installment_amount,
         private_token,
         note,
+        created_by,
         created_at,
         updated_at,
         del_flg,
         calendar_type,
         lunar_date_text
       ) VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 0, ?, ?
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), 0, ?, ?
       )
     `, [
       orderCode,
@@ -714,6 +725,7 @@ async function confirmOrderDraft(payload) {
       0,
       nanoid(24),
       note,
+      userId,
       calendarType,
       lunarDateText
     ]);
@@ -732,7 +744,7 @@ async function confirmOrderDraft(payload) {
       orderId,
       items,
       {
-        user_id: null,
+        user_id: userId,
         order_date: orderDate
       }
     );
@@ -797,7 +809,7 @@ async function confirmOrderDraft(payload) {
         orderDate,
         debtAmount,
         `Công nợ bill ${orderCode}`,
-        null
+        userId
       ]);
     }
 
@@ -818,6 +830,7 @@ async function confirmOrderDraft(payload) {
           amount,
           payment_method,
           note,
+          created_by,
           created_at,
           cash_amount,
           bank_amount,
@@ -827,7 +840,7 @@ async function confirmOrderDraft(payload) {
           payment_calendar_type,
           payment_lunar_date_text
         ) VALUES (
-          ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?
+          ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?
         )
       `, [
         paymentCode,
@@ -837,6 +850,7 @@ async function confirmOrderDraft(payload) {
         paidAmount,
         paymentMethod,
         'Thanh toán từ AI bill',
+        userId,
         cashAmount,
         bankAmount,
         totalAmount,
@@ -864,7 +878,7 @@ async function confirmOrderDraft(payload) {
         orderDate,
         paidAmount,
         `Thanh toán bill ${orderCode}`,
-        null
+        userId
       ]);
     }
 

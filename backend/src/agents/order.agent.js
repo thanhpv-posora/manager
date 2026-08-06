@@ -93,7 +93,7 @@ async function confirmOrderDraft(req, res) {
         item_count: Array.isArray(draft?.items) ? draft.items.length : 0
       }));
 
-      const data = await orderService.confirmOrderDraft(draft);
+      const data = await orderService.confirmOrderDraft(draft, req.user);
       await aiSessionService.markSessionConfirmed(latestSession.id);
 
       return res.json({
@@ -108,7 +108,7 @@ async function confirmOrderDraft(req, res) {
     }
 
     // Backward compatible: caller posts the full draft object.
-    const data = await orderService.confirmOrderDraft(body);
+    const data = await orderService.confirmOrderDraft(body, req.user);
 
     return res.json({
       success: true,

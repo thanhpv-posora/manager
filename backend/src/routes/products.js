@@ -20,7 +20,12 @@ router.delete('/:id', auth(['ADMIN','STAFF']), async (req,res,next)=>{try{res.js
 router.get('/customer/:customerId', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{
   await assertCustomerScope(req.user, req.params.customerId);
   res.json(await ProductAgent.customerProducts(req.params.customerId))}catch(e){next(e)}});
-router.put('/customer-prices/:customerId/:productId', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{
+// ADMIN/STAFF only — this writes the price a customer is charged. It was
+// ADMIN/STAFF/CUSTOMER: assertCustomerScope() below stops cross-customer
+// access but passes a CUSTOMER acting on their own id, which is exactly the
+// hole. Same vulnerability as the Price Matrix write routes; gating those
+// without this one would just leave a second door open.
+router.put('/customer-prices/:customerId/:productId', auth(['ADMIN','STAFF']), async (req,res,next)=>{try{
   await assertCustomerScope(req.user, req.params.customerId);
   res.json(await ProductAgent.updateCustomerPrice(req.params.customerId,req.params.productId,req.body.sale_price,req.body.effective_from,req.user.id))}catch(e){next(e)}});
 router.get('/next-code/:categoryId', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json({product_code:await ProductAgent.nextProductCode(req.params.categoryId)})}catch(e){next(e)}});

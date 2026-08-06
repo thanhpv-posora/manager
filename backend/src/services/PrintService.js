@@ -279,7 +279,7 @@ ${showInstallment ? `<div class="right total">Gop no/ngay: ${formatMoneyValue(mo
       ? `${lot.lunar_date_text} ÂL`
       : (lotMappedSolarDate ? `${lotMappedSolarDate} DL` : '');
     const lotCreatedDate = ymd(lot.created_at) || lotMappedSolarDate;
-    const lotUrl = `${publicAppUrl()}/api/lots/public/${lot.id}/print`;
+    const lotUrl = `${publicAppUrl()}/api/lots/public/${lot.public_token}/print`;
     const lotQr = await QRCode.toDataURL(lotUrl);
 
     return `<!doctype html><html><head><meta charset="utf-8"><title>${lot.lot_code}</title><style>

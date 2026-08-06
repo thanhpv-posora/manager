@@ -390,7 +390,7 @@ export default function Lots(){
     }
   };
 
-  const print=id=>window.open((import.meta.env.VITE_API_URL||(typeof window !== 'undefined' ? `${window.location.origin}/api` : '/api'))+'/lots/public/'+id+'/print','_blank');
+  const print=lot=>window.open((import.meta.env.VITE_API_URL||(typeof window !== 'undefined' ? `${window.location.origin}/api` : '/api'))+'/lots/public/'+lot.public_token+'/print','_blank');
   const payLot=async()=>{
     if(!pay.lot_id||!pay.amount)return alert('Chọn lô và nhập số tiền');
     try{
@@ -657,7 +657,7 @@ export default function Lots(){
                 <td><b>{money(r.remaining_amount)}</b></td>
                 <td>
                   <div style={{display:'flex',gap:6,alignItems:'center'}}>
-                    <button className="btn secondary" style={{padding:0,width:30,height:30,display:'inline-flex',alignItems:'center',justifyContent:'center'}} title="In" onClick={()=>print(r.id)}><Printer size={14}/></button>
+                    <button className="btn secondary" style={{padding:0,width:30,height:30,display:'inline-flex',alignItems:'center',justifyContent:'center'}} title="In" onClick={()=>print(r)}><Printer size={14}/></button>
                     <button className="btn secondary" style={{padding:0,width:30,height:30,display:'inline-flex',alignItems:'center',justifyContent:'center'}} title="Sửa" disabled={r.status!=='OPEN'} onClick={()=>loadLotIntoForm(r)}><Pencil size={14}/></button>
                     {r.status==='OPEN'&&<button className="btn" style={{padding:0,width:30,height:30,display:'inline-flex',alignItems:'center',justifyContent:'center',background:'#16a34a',borderColor:'#16a34a',color:'#fff'}} title="Chốt" onClick={()=>closeLot(r.id,r.lot_code)}><CheckCircle2 size={14}/></button>}
                   </div>

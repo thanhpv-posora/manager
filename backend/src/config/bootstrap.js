@@ -2210,6 +2210,20 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       INDEX idx_ai_error_logs_created (created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
+    // purchase_lots.public_token — the supplier lot voucher is printed with a
+    // QR anyone can scan, so the endpoint behind it must be addressed by an
+    // unguessable token rather than the row id. Same mechanism the public order
+    // bill already uses (orders.private_token, nanoid(24)). Backfilled below so
+    // lots created before this change are reachable by their own token.
+    await safeAddColumn(conn, 'purchase_lots', 'public_token', 'public_token VARCHAR(100) NULL');
+    // UUID() is evaluated per row, so each existing lot gets a distinct token.
+    // Runs BEFORE the unique index so the backfill cannot collide with itself.
+    await runSql(conn, `UPDATE purchase_lots
+                        SET public_token = REPLACE(UUID(),'-','')
+                        WHERE public_token IS NULL OR public_token = ''`);
+    await safeAddIndex(conn, 'purchase_lots', 'uq_purchase_lots_public_token',
+      'UNIQUE KEY uq_purchase_lots_public_token (public_token)');
+
     // P2-02 (production cleanup): Inventory Receive Reversal's additive
     // schema — inventory_receives.cancelled_at/cancelled_by/cancel_reason and
     // stock_transactions.reversal_dedup_key + its UNIQUE index — is

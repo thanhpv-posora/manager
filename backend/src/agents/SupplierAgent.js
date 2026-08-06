@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { nanoid } = require('nanoid');
 const { nextCode } = require('../utils/code');
 const PrintService = require('../services/PrintService');
 const SoftDeleteAgent = require('./SoftDeleteAgent');
@@ -184,9 +185,9 @@ class SupplierAgent {
           damage_weight,fat_weight,fragment_weight,fragment_price,fragment_cost,other_deduct_weight,deduct_note,
           total_animals,male_animals,female_animals,deduct_mode,deduct_kg_per_animal,
           male_price,female_price,male_weight,female_weight,
-          status,note,created_by,del_flg
+          status,note,created_by,del_flg,public_token
         )
-         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN',?,?,0)`,
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN',?,?,0,?)`,
         [
           code,data.lot_name||code,data.supplier_id||null,purchaseBillDate,calendarType,lunarDateText,
           c.rawWeight,c.boneWeight,c.deductedWeight,c.totalWeight,c.purchasePrice,c.totalCost,
@@ -196,7 +197,11 @@ class SupplierAgent {
           c.damageWeight,c.fatWeight,c.fragmentWeight,c.fragmentPrice,c.fragmentCost,c.otherDeductWeight,data.deduct_note||'',
           c.totalAnimals,c.maleAnimals,c.femaleAnimals,c.deductMode,c.deductKgPerAnimal,
           c.malePrice,c.femalePrice,c.maleWeight,c.femaleWeight,
-          data.note||'',user.id
+          data.note||'',user.id,
+          // Unguessable public identifier for the QR-scannable voucher — the
+          // row id must never be the addressable handle. Same nanoid(24) the
+          // public order bill uses.
+          nanoid(24)
         ]
       );
       await conn.commit();
@@ -217,6 +222,25 @@ class SupplierAgent {
 
   async printLot(id) {
     return PrintService.lotHtml(await this.getLot(id));
+  }
+
+  // Public (unauthenticated) lookup for the QR on the printed supplier voucher.
+  // Addressed by the unguessable token only — /api/lots/public/:id/print used
+  // to accept the raw row id, which let anyone enumerate every lot and read
+  // supplier purchase prices, supplier contact details and amounts owed.
+  async getLotByToken(token) {
+    const key = String(token || '').trim();
+    if (!key) throw Object.assign(new Error('Không tìm thấy phiếu nhập'), { status: 404 });
+    const [rows] = await pool.query(
+      `SELECT id FROM purchase_lots WHERE public_token=? AND del_flg=0 LIMIT 1`,
+      [key]
+    );
+    if (!rows.length) throw Object.assign(new Error('Không tìm thấy phiếu nhập'), { status: 404 });
+    return this.getLot(rows[0].id);
+  }
+
+  async printLotByToken(token) {
+    return PrintService.lotHtml(await this.getLotByToken(token));
   }
 
   async updateLot(id, data, user) {

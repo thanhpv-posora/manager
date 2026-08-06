@@ -111,5 +111,8 @@ const port=Number(process.env.PORT||4000);
 validateStartupConfig()
   .then(()=>ensureSchema())
   .then(()=>refreshQuantityDecimalPlaces())
+  // Log retention: prune once at startup, then daily. Without this the
+  // date-stamped log files accumulated forever and eventually filled the disk.
+  .then(()=>{ fileLogger.startLogRotation(); })
   .then(()=>app.listen(port,()=>{ console.log(`API running on http://localhost:${port}`); fileLogger.logSystem('SERVER_STARTED', { port }); }))
   .catch(e=>{ fileLogger.logError('DB_BOOTSTRAP_FAILED', { error: e }); console.error('DB bootstrap failed',e);process.exit(1);});

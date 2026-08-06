@@ -99,12 +99,17 @@ function main() {
   ok(ignored, 'backend/.env is matched by .gitignore');
 
   console.log('\n-- 4. template still defines the full key set --');
-  // 44 keys at the time of the scrub; the template must not silently lose keys.
+  // 44 keys at the time of the CR-2 scrub, +2 for LOG_RETENTION_DAYS and
+  // HEALTH_DB_TIMEOUT_MS added by the go-live sprint. The point of the count is
+  // that the template must never silently LOSE keys — bump it deliberately
+  // when a documented setting is genuinely added.
+  const EXPECTED_KEY_LINES = 46;
   const keyLines = exampleText.split(/\r?\n/)
     .filter(l => !/^\s*#/.test(l))
     .map(l => (l.match(/^\s*([A-Z0-9_]+)\s*=/) || [])[1])
     .filter(Boolean);
-  ok(keyLines.length === 44, `template defines 44 key lines (found ${keyLines.length})`);
+  ok(keyLines.length === EXPECTED_KEY_LINES,
+    `template defines ${EXPECTED_KEY_LINES} key lines (found ${keyLines.length})`);
   for (const required of ['PORT', 'DB_HOST', 'DB_USER', 'DB_NAME', 'JWT_SECRET', 'ALLOWED_ORIGINS']) {
     ok(required in example, `${required} is still defined in the template`);
   }

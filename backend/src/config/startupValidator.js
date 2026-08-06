@@ -1,4 +1,5 @@
 const pool = require('./db');
+const { validateDbEnv } = require('./dbConfig');
 
 // JWT_SECRET values that are public knowledge: either the placeholder shipped in
 // backend/.env.example, or a real secret that was previously committed to that
@@ -50,12 +51,32 @@ async function validateStartupConfig() {
     console.warn('[STARTUP WARNING] ALLOWED_ORIGINS not set — CORS will default to localhost origins for development.');
   }
 
-  try {
-    const conn = await pool.getConnection();
-    await conn.ping();
-    conn.release();
-  } catch (e) {
-    errors.push(`Cannot connect to database: ${e.message}`);
+  // CR-3: verify the DB environment BEFORE touching the pool. In production a
+  // missing DB_* variable must fail the boot naming the variable, rather than
+  // silently connecting to root@127.0.0.1 with an empty password (the old
+  // db.js fallbacks) or surfacing as a confusing connection error later.
+  // validateDbEnv() returns [] outside production, where the local defaults are
+  // deliberately retained. Messages name variables only — never their values.
+  const dbEnvErrors = validateDbEnv();
+  errors.push(...dbEnvErrors);
+
+  // Only attempt a real connection when the configuration is coherent —
+  // connecting with unset credentials would just produce a second, noisier
+  // error on top of the precise one already reported above.
+  if (dbEnvErrors.length === 0) {
+    try {
+      const conn = await pool.getConnection();
+      await conn.ping();
+      conn.release();
+    } catch (e) {
+      // The driver's raw message embeds the DB user and host (e.g. "Access
+      // denied for user 'x'@'10.0.0.1'"). In production report the error code
+      // only — enough to diagnose, and it never carries a credential. Dev keeps
+      // the full message for local debugging.
+      errors.push(isProd
+        ? `Cannot connect to database (${e.code || 'connection failed'}).`
+        : `Cannot connect to database: ${e.message}`);
+    }
   }
 
   if (errors.length) {

@@ -1,17 +1,12 @@
 const mysql = require('mysql2/promise');
 require('dotenv').config();
+const { resolveDbConfig } = require('./dbConfig');
 
-const pool = mysql.createPool({
-  host: process.env.DB_HOST || '127.0.0.1',
-  port: Number(process.env.DB_PORT || 3306),
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'meat_business_db',
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
-  decimalNumbers: true,
-  dateStrings: true,
-});
+// CR-3: the connection settings no longer fall back to root@127.0.0.1 with an
+// empty password in production — see dbConfig.js. createPool() does not open a
+// socket, so nothing connects here; startupValidator.validateStartupConfig()
+// runs before ensureSchema() and app.listen() and fails the boot closed when a
+// required DB_* variable is missing in production.
+const pool = mysql.createPool(resolveDbConfig());
 
 module.exports = pool;

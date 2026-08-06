@@ -71,9 +71,9 @@ async function main() {
 
   try {
     const [custIns] = await pool.query(
-      `INSERT INTO customers(customer_code,name,phone,address,price_mode,debt_limit,payment_term_days,billing_calendar_type)
-       VALUES(?,?,?,?,?,?,?,?)`,
-      [`P101A-CUST-${Date.now()}`, 'P1-01A Return Guard Test Customer', '0', 'test', 'PRIVATE_PRICE', 0, 0, 'SOLAR']
+      `INSERT INTO customers(customer_code,name,phone,address,price_mode,debt_limit,payment_term_days,billing_calendar_type,default_sales_flow)
+       VALUES(?,?,?,?,?,?,?,?,?)`,
+      [`P101A-CUST-${Date.now()}`, 'P1-01A Return Guard Test Customer', '0', 'test', 'PRIVATE_PRICE', 0, 0, 'SOLAR', 'INVENTORY_SALE']
     );
     customerId = custIns.insertId;
 

@@ -72,16 +72,16 @@ async function main() {
 
   try {
     const [custIns] = await pool.query(
-      `INSERT INTO customers(customer_code,name,phone,address,price_mode,debt_limit,payment_term_days,billing_calendar_type)
-       VALUES(?,?,?,?,?,?,?,?)`,
-      [`S92-CUST-${Date.now()}`, 'S9.2 Return Test Customer', '0', 'test', 'PRIVATE_PRICE', 0, 0, 'SOLAR']
+      `INSERT INTO customers(customer_code,name,phone,address,price_mode,debt_limit,payment_term_days,billing_calendar_type,default_sales_flow)
+       VALUES(?,?,?,?,?,?,?,?,?)`,
+      [`S92-CUST-${Date.now()}`, 'S9.2 Return Test Customer', '0', 'test', 'PRIVATE_PRICE', 0, 0, 'SOLAR', 'INVENTORY_SALE']
     );
     customerId = custIns.insertId;
 
     const [otherIns] = await pool.query(
-      `INSERT INTO customers(customer_code,name,phone,address,price_mode,debt_limit,payment_term_days,billing_calendar_type)
-       VALUES(?,?,?,?,?,?,?,?)`,
-      [`S92-CUST-OTHER-${Date.now()}`, 'S9.2 Other Customer', '0', 'test', 'PRIVATE_PRICE', 0, 0, 'SOLAR']
+      `INSERT INTO customers(customer_code,name,phone,address,price_mode,debt_limit,payment_term_days,billing_calendar_type,default_sales_flow)
+       VALUES(?,?,?,?,?,?,?,?,?)`,
+      [`S92-CUST-OTHER-${Date.now()}`, 'S9.2 Other Customer', '0', 'test', 'PRIVATE_PRICE', 0, 0, 'SOLAR', 'INVENTORY_SALE']
     );
     otherCustomerId = otherIns.insertId;
 
@@ -170,7 +170,12 @@ async function main() {
     const ordersBefore = await snapshot('orders', 'id=?', [orderId]);
     const orderItemsBefore = await snapshot('order_items', 'order_id=?', [orderId]);
     const stockTxBefore = await snapshot('stock_transactions', 'product_id IN (?,?)', [p1.id, p2.id]);
-    const debtTxBefore = await snapshot('debt_transactions', 'customer_id=?', [customerId]);
+    // Scoped to THIS order, not the whole customer: Scenarios 3b and 4 below
+    // each create their own order for the same customer between this snapshot
+    // and the S7 comparison, so a customer-wide count legitimately grows and
+    // never measured what S7 asserts. Every other S7 snapshot is already
+    // order-scoped; this one now matches them.
+    const debtTxBefore = await snapshot('debt_transactions', 'order_id=?', [orderId]);
     const [[stockQtyBefore1]] = await pool.query(`SELECT stock_quantity FROM products WHERE id=?`, [p1.id]);
     const [[stockQtyBefore2]] = await pool.query(`SELECT stock_quantity FROM products WHERE id=?`, [p2.id]);
 
@@ -341,7 +346,7 @@ async function main() {
       const ordersAfter = await snapshot('orders', 'id=?', [orderId]);
       const orderItemsAfter = await snapshot('order_items', 'order_id=?', [orderId]);
       const stockTxAfter = await snapshot('stock_transactions', 'product_id IN (?,?)', [p1.id, p2.id]);
-      const debtTxAfter = await snapshot('debt_transactions', 'customer_id=?', [customerId]);
+      const debtTxAfter = await snapshot('debt_transactions', 'order_id=?', [orderId]);
       const [[stockQtyAfter1]] = await pool.query(`SELECT stock_quantity FROM products WHERE id=?`, [p1.id]);
       const [[stockQtyAfter2]] = await pool.query(`SELECT stock_quantity FROM products WHERE id=?`, [p2.id]);
 

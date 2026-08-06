@@ -967,8 +967,8 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
     await safeAddColumn(conn, 'purchase_lots', 'raw_weight', 'raw_weight DECIMAL(15,3) NOT NULL DEFAULT 0 AFTER purchase_date');
     await safeAddColumn(conn, 'purchase_lots', 'bone_weight', 'bone_weight DECIMAL(15,3) NOT NULL DEFAULT 0 AFTER raw_weight');
     await safeAddColumn(conn, 'purchase_lots', 'deducted_weight', 'deducted_weight DECIMAL(15,3) NOT NULL DEFAULT 0 AFTER bone_weight');
-    await safeAddColumn(conn, 'purchase_lots', 'calendar_type', "ENUM('SOLAR','LUNAR') NOT NULL DEFAULT 'SOLAR' AFTER purchase_date");
-    await safeAddColumn(conn, 'purchase_lots', 'lunar_date_text', 'VARCHAR(50) NULL AFTER calendar_type');
+    await safeAddColumn(conn, 'purchase_lots', 'calendar_type', "calendar_type ENUM('SOLAR','LUNAR') NOT NULL DEFAULT 'SOLAR' AFTER purchase_date");
+    await safeAddColumn(conn, 'purchase_lots', 'lunar_date_text', 'lunar_date_text VARCHAR(50) NULL AFTER calendar_type');
 
     await safeAddColumn(conn, 'purchase_lots', 'raw_weight_expr', 'raw_weight_expr TEXT NULL');
     await safeAddColumn(conn, 'purchase_lots', 'bone_weight_expr', 'bone_weight_expr TEXT NULL');
@@ -2044,8 +2044,8 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
     // cash/bank split (CREATE TABLE IF NOT EXISTS cannot add them). Replaces
     // PaymentAgent.ensurePaymentAllocationSplitColumns(), which ran this same
     // ALTER inside a payment transaction.
-    await safeAddColumn(conn, 'payment_allocations', 'cash_amount', `DECIMAL(15,2) NOT NULL DEFAULT 0`);
-    await safeAddColumn(conn, 'payment_allocations', 'bank_amount', `DECIMAL(15,2) NOT NULL DEFAULT 0`);
+    await safeAddColumn(conn, 'payment_allocations', 'cash_amount', `cash_amount DECIMAL(15,2) NOT NULL DEFAULT 0`);
+    await safeAddColumn(conn, 'payment_allocations', 'bank_amount', `bank_amount DECIMAL(15,2) NOT NULL DEFAULT 0`);
 
     // payment_transaction_requests — PaymentAgent's payment idempotency
     // store (getIdempotentResult/beginIdempotentRequest/finishIdempotent-
@@ -2145,7 +2145,9 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       ['phone_otp_sent_at', `DATETIME NULL`], ['verification_status', `VARCHAR(30) NOT NULL DEFAULT 'PENDING'`],
       ['approved_by', `BIGINT NULL`], ['last_verify_error', `TEXT NULL`],
     ]) {
-      await safeAddColumn(conn, 'customer_account_registrations', col, ddl);
+      // safeAddColumn interpolates ddl straight after ADD COLUMN, so ddl must
+      // carry the column name itself — see every other call site in this file.
+      await safeAddColumn(conn, 'customer_account_registrations', col, `${col} ${ddl}`);
     }
 
     await runSql(conn, `CREATE TABLE IF NOT EXISTS auth_event_logs (

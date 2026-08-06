@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-06
 **Branch:** `main`
-**Verdict:** 🔴 **NOT READY FOR RC1 (v1.0.0)** — 3 blockers, none of them code
+**Verdict:** 🔴 **NOT READY FOR RC1 (v1.0.0)** — 4 blockers, none of them code
 **Commits pushed this sprint:** none (see §6)
 
 ---
@@ -11,7 +11,7 @@
 
 All six sprint tasks are implemented and every verification that can be executed
 in this environment is green — **604 automated assertions, 0 failures**. RC1 is
-nonetheless **not** signable today, because three things cannot be verified or
+nonetheless **not** signable today, because four things cannot be verified or
 completed from this machine, and each is a genuine Go-Live risk rather than
 paperwork.
 
@@ -20,10 +20,11 @@ paperwork.
 | **B1** | `JWT_SECRET` is still the value published in the **public** GitHub repo | Ops | ~5 min + forced re-login |
 | **B2** | CR-4 fresh-database rehearsal never executed — no disposable MySQL | Ops/DBA | ~15 min once a DB exists |
 | **B3** | Backup/restore round trip never executed — no `mysqldump`/`mysql` on this host | Ops | ~20 min on the deploy host |
+| **B4** | Application logs containing **customer PII and revenue data** are committed to the public repo | Ops | untracked at HEAD; history purge is a decision |
 
 Per the sprint rule *"Push only after every verification is green"* and
 *"stop before pushing and clearly report the blocker"*, **nothing was pushed**.
-Seven commits are staged locally on `main`.
+Eight commits are staged locally on `main`.
 
 ---
 
@@ -121,6 +122,34 @@ business."
 only if the restored copy returns `/api/health` `ok:true` **and**
 `/api/schema/check` with zero `MISSING`. Note §7: the current DB account cannot
 create the rehearsal schema either.
+
+### B4 — Customer PII in logs committed to the public repository 🔴
+
+Found while verifying task 4: the new log retention pruned 19 log files on
+startup — and `git status` showed them as **deleted tracked files**. They were
+committed before `backend/logs/` was gitignored, so the ignore rule never
+applied to them (a tracked path overrides `.gitignore`).
+
+Those files are in the **public** repo and contain real business data:
+
+```json
+{"event":"AI_ACTION","payload":{"response_json":"{\"today\":{\"total_orders\":2,
+ \"total_amount\":27070000,\"paid_amount\":10000000,\"debt_amount\":17070000}}"}}
+```
+
+and at least one customer phone number (`"phone":"0998666444"`). The logger masks
+`password`/`token`/`secret` keys, but it does **not** mask names, phones,
+addresses, revenue or debt — it was never intended to produce artifacts safe for
+publication.
+
+**Done in this sprint:** the files are untracked (`git rm --cached`), so the
+existing `backend/logs/` ignore rule now applies and rotation no longer churns
+tracked files.
+
+**Still outstanding — same shape as B1:** untracking removes them from `HEAD`,
+**not from history**. The PII remains in the public repo's git history (1 commit
+contains the phone number). Purging requires a history rewrite and force push,
+which is out of scope here and is a decision for you.
 
 ---
 
@@ -231,10 +260,12 @@ silently were not. Expect this to change behavior on the first double-submit.
 Sequence to RC1, roughly 40 minutes of ops work:
 
 1. **Rotate `JWT_SECRET`** on every environment; restart; confirm the startup
-   warning is gone. *(B1 — the only one that is a live security exposure.)*
+   warning is gone. *(B1 — a live security exposure.)*
 2. **Grant a rehearsal schema** and run the CR-4 fresh-DB rehearsal. *(B2)*
 3. **Run the backup/restore rehearsal** on the deployment host. *(B3)*
 4. Set `ALLOWED_ORIGINS` for production.
+4b. Decide whether to purge the leaked secret and the log PII from public git
+   history (B1 + B4). Both need a rewrite and force push.
 5. Re-run the full regression, then **push the 7 commits**.
 6. Perform the CR-7 manual smoke test.
 7. Tag `v1.0.0`.

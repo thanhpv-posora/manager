@@ -5,21 +5,28 @@ const { assertCustomerScope, customerScopeWhere } = require('../middleware/scope
 const InventoryService = require('../services/InventoryService');
 
 // ReturnAgent — S9.2 Sales Return Foundation (refined per S9.2A CTO review),
-// extended by S9.3R (Cancel) and S9.4 (Warehouse Receive & Inspection).
+// extended by S9.3R (Cancel), S9.4 (Warehouse Receive & Inspection), and
+// GO-LIVE F-RETURN-DEBT (Debt Reverse).
 //
-// Scope: Create Return Request, list, Cancel, and now the full warehouse
-// workflow — Receive -> Inspect (repeatable) -> Complete/Reject. Debt/payment
-// business logic still does not exist anywhere in this agent — that remains a
-// later story, out of scope for S9.4 per its own locked rules (no payment, no
-// refund, no debt adjustment in this story).
+// Scope: Create Return Request, list, Cancel, and the full warehouse
+// workflow — Receive -> Inspect (repeatable) -> Complete/Reject.
 //
-// Immutability, revised for S9.4: this agent still NEVER writes to orders,
-// order_items, debt_transactions, or payments. It now DOES write to
-// stock_transactions — but only via InventoryService.in() inside complete(),
-// only for lines dispositioned RESTOCK, only when transitioning
-// INSPECTING -> COMPLETED (locked rule #5). Every read of orders/order_items
-// below is still SELECT-only (including the FOR UPDATE reads — a row lock is
-// not a write).
+// Immutability, revised for GO-LIVE F-RETURN-DEBT: this agent NEVER writes to
+// order_items or payments, and never rewrites an existing orders/
+// debt_transactions row (compensating rows only, same append-only discipline
+// OrderAgent.cancel()/recalcOrderTotals() already use). It writes to
+// stock_transactions via InventoryService.in() inside complete(), only for
+// lines dispositioned RESTOCK, only when transitioning INSPECTING ->
+// COMPLETED (locked rule #5); and, also only inside complete(), to
+// orders.debt_amount/payment_status + one compensating debt_transactions row
+// — capped at the order's own current debt_amount so the customer-ledger
+// reconciliation invariant (SUM(debt_transactions) per customer ==
+// SUM(orders.debt_amount) across non-cancelled orders) never breaks. See
+// complete()'s own comment for the full design and its known residual gap
+// (already-fully-paid bills don't get an automatic refund/credit). No
+// payment/refund logic exists here — still out of scope. Every read of
+// orders/order_items elsewhere in this file is still SELECT-only (including
+// the FOR UPDATE reads — a row lock is not a write).
 //
 // Return state lives exclusively in sales_returns.status — there is no
 // orders.return_status cache column (CTO directive: avoid duplicated truth).
@@ -710,7 +717,7 @@ class ReturnAgent {
   //      opposite-direction guards — FIX1 step 4 / FIX2 step 4.
   async _resolveFinalization(conn, returnId) {
     const [items] = await conn.query(
-      `SELECT id, product_id, quantity_received, disposition_type, return_to_stock_qty, non_sellable_qty
+      `SELECT id, product_id, quantity_received, disposition_type, return_to_stock_qty, non_sellable_qty, frozen_unit_price
        FROM sales_return_items WHERE return_id=? ORDER BY id ASC FOR UPDATE`,
       [returnId]
     );
@@ -785,7 +792,7 @@ class ReturnAgent {
     try {
       await conn.beginTransaction();
       const [[row]] = await conn.query(
-        `SELECT id, status, customer_id, return_code FROM sales_returns WHERE id=? FOR UPDATE`, [returnId]
+        `SELECT id, status, customer_id, return_code, order_id FROM sales_returns WHERE id=? FOR UPDATE`, [returnId]
       );
       if (!row) throw notFound('Không tìm thấy yêu cầu trả hàng');
       await assertCustomerScope(user, row.customer_id);
@@ -817,6 +824,65 @@ class ReturnAgent {
         }
       }
 
+      // GO-LIVE F-RETURN-DEBT: reverse the customer's debt for whatever
+      // quantity the shop actually took back into custody on this return
+      // (RESTOCK + PROCESS + SCRAP dispositions — return_to_stock_qty +
+      // non_sellable_qty on each line; rejected_qty is excluded on purpose,
+      // the customer kept those units and still owes for them). Price basis
+      // is sales_return_items.frozen_unit_price — the ORIGINAL sale price
+      // frozen at return-request time, never re-resolved (BR-BILL-004/
+      // BR-PRICE-002: historical price is immutable).
+      //
+      // Orders row is locked LAST, after the return-items/product locks
+      // already taken above, matching OrderAgent.updateItem()'s existing
+      // lock order (order_items -> products -> orders) so this never becomes
+      // a new deadlock class against that path.
+      //
+      // Capped at the order's CURRENT debt_amount, not the full computed
+      // amount: this codebase's own reconciliation invariant (verified by
+      // verify-order-cancel-reversal.js S13 — SUM(debt_transactions) per
+      // customer must equal SUM(orders.debt_amount) across non-cancelled
+      // orders) would break if a debt_transactions row exceeded what the
+      // order's own debt_amount can absorb. A return completed against an
+      // ALREADY fully-paid bill therefore does not auto-create a refund/
+      // credit — reversal_computed vs reversal_applied in the response
+      // surfaces that shortfall instead of silently dropping it; refund/
+      // credit-note handling is a separate, not-yet-built feature (no
+      // credit-note mechanism exists anywhere in this codebase yet).
+      let reversalComputed = 0;
+      for (const item of items) {
+        const acceptedForDebt = Number(item.return_to_stock_qty || 0) + Number(item.non_sellable_qty || 0);
+        if (acceptedForDebt > 0) reversalComputed += acceptedForDebt * Number(item.frozen_unit_price || 0);
+      }
+      const debtReversal = { reversal_computed: reversalComputed, reversal_applied: 0, order_id: row.order_id || null };
+      if (reversalComputed > QTY_TOLERANCE && row.order_id) {
+        const [[orderRow]] = await conn.query(
+          `SELECT id, customer_id, debt_amount, paid_amount FROM orders WHERE id=? FOR UPDATE`,
+          [row.order_id]
+        );
+        if (orderRow) {
+          const currentDebt = Number(orderRow.debt_amount || 0);
+          const actualReversal = Math.min(reversalComputed, currentDebt);
+          if (actualReversal > 0.001) {
+            const newDebtAmount = Math.max(0, currentDebt - actualReversal);
+            const newPaymentStatus = newDebtAmount <= 0.001
+              ? (Number(orderRow.paid_amount || 0) > 0 ? 'PAID' : 'UNPAID')
+              : 'PARTIAL';
+            await conn.query(
+              `UPDATE orders SET debt_amount=?, payment_status=? WHERE id=?`,
+              [newDebtAmount, newPaymentStatus, row.order_id]
+            );
+            await conn.query(
+              `INSERT INTO debt_transactions(customer_id,order_id,transaction_date,type,amount,note,created_by)
+               VALUES(?,?,?,'ADJUSTMENT_DECREASE',?,?,?)`,
+              [orderRow.customer_id, row.order_id, new Date().toISOString().slice(0, 10), actualReversal,
+               `Đảo công nợ do trả hàng ${row.return_code || returnId} cho bill #${row.order_id}`, user?.id || null]
+            );
+            debtReversal.reversal_applied = actualReversal;
+          }
+        }
+      }
+
       // Mark the inspection row that actually decided each line's outcome as
       // final — the latest (highest id) row per return_item_id at the moment
       // of completion. Read-model convenience only (matches is_final's
@@ -838,10 +904,17 @@ class ReturnAgent {
         `UPDATE sales_returns SET status=?, completed_at=NOW(), completed_by=? WHERE id=?`,
         [STATUS_COMPLETED, user?.id || null, returnId]
       );
-      await writeAuditLog(conn, user?.id, 'SALES_RETURN_COMPLETED', returnId, `Hoàn tất trả hàng ${row.return_code || ''}`.trim());
+      await writeAuditLog(conn, user?.id, 'SALES_RETURN_COMPLETED', returnId,
+        `Hoàn tất trả hàng ${row.return_code || ''}`.trim() +
+        (debtReversal.reversal_computed > QTY_TOLERANCE
+          ? ` | Đảo công nợ: ${debtReversal.reversal_applied}/${debtReversal.reversal_computed}`
+          : ''));
 
       await conn.commit();
-      return { message: 'Đã hoàn tất yêu cầu trả hàng', return_id: returnId, status: STATUS_COMPLETED, stock: stockResults };
+      return {
+        message: 'Đã hoàn tất yêu cầu trả hàng', return_id: returnId, status: STATUS_COMPLETED,
+        stock: stockResults, debt_reversal: debtReversal,
+      };
     } catch (e) {
       await conn.rollback();
       throw e;

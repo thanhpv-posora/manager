@@ -9,3 +9,6 @@ node_modules/
 backend/logs/
 .claude/
 frontend/dist/
+
+# Database backup archives (contain production data)
+backups/

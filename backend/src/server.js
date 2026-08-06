@@ -11,6 +11,8 @@ const { requestFileLogger } = require('./middleware/requestFileLogger');
 const fileLogger = require('./services/fileLogger.service');
 const { validateStartupConfig, parseAllowedOrigins } = require('./config/startupValidator');
 const { refreshQuantityDecimalPlaces } = require('./utils/quantityFormat');
+const pool = require('./config/db');
+const { createHealthHandler } = require('./routes/health');
 
 function buildCorsOptions() {
   const isProd = process.env.NODE_ENV === 'production';
@@ -44,7 +46,9 @@ app.use(express.text({ type: ['text/plain', 'text/*'], limit: '10mb' }));
 app.use(express.static('public'));
 app.use(requestFileLogger);
 
-app.get('/api/health',(req,res)=>res.json({ok:true,name:'meatbiz-api',version:'6.6.0'}));
+// Health probe — see routes/health.js. Answers 503 when the database is
+// unavailable so a supervisor takes the instance out of rotation.
+app.get('/api/health', createHealthHandler(pool));
 
 app.use('/api/auth',require('./routes/auth'));
 app.use('/api/customers',require('./routes/customers'));

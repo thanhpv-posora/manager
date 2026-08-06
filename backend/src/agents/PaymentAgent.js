@@ -242,42 +242,16 @@ class PaymentAgent {
   }
 
 
-  async ensurePaymentAllocationSplitColumns(conn) {
-    try {
-      await conn.query(`ALTER TABLE payment_allocations ADD COLUMN cash_amount DECIMAL(15,2) NOT NULL DEFAULT 0`);
-    } catch (e) {
-      if (!(e && (e.code === 'ER_DUP_FIELDNAME' || e.errno === 1060 || e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146))) throw e;
-    }
-    try {
-      await conn.query(`ALTER TABLE payment_allocations ADD COLUMN bank_amount DECIMAL(15,2) NOT NULL DEFAULT 0`);
-    } catch (e) {
-      if (!(e && (e.code === 'ER_DUP_FIELDNAME' || e.errno === 1060 || e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146))) throw e;
-    }
-  }
-
-
-  async ensurePaymentUnappliedCreditsTable(conn) {
-    await conn.query(`CREATE TABLE IF NOT EXISTS payment_unapplied_credits (
-      id BIGINT AUTO_INCREMENT PRIMARY KEY,
-      payment_id BIGINT NOT NULL,
-      customer_id BIGINT NOT NULL,
-      original_amount DECIMAL(15,2) NOT NULL DEFAULT 0,
-      remaining_amount DECIMAL(15,2) NOT NULL DEFAULT 0,
-      cash_amount DECIMAL(15,2) NOT NULL DEFAULT 0,
-      bank_amount DECIMAL(15,2) NOT NULL DEFAULT 0,
-      note VARCHAR(500) NULL,
-      created_by BIGINT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME NULL,
-      INDEX idx_puc_customer_remaining(customer_id, remaining_amount),
-      INDEX idx_puc_payment(payment_id)
-    )`);
-  }
+  // CR-4: ensurePaymentAllocationSplitColumns() and
+  // ensurePaymentUnappliedCreditsTable() lived here and ran DDL on the
+  // request path. Both objects — payment_allocations (with its cash/bank
+  // split columns) and payment_unapplied_credits — are now created by
+  // config/bootstrap.js ensureSchema() at startup, so no business method
+  // creates or alters a table any more.
 
   async insertUnappliedCredit(conn, paymentId, customerId, amount, cashAmount, bankAmount, note, userId) {
     const total = Number(amount || 0);
     if (!paymentId || !customerId || total <= 0) return;
-    await this.ensurePaymentUnappliedCreditsTable(conn);
     await conn.query(
       `INSERT INTO payment_unapplied_credits(payment_id,customer_id,original_amount,remaining_amount,cash_amount,bank_amount,note,created_by,created_at)
        VALUES(?,?,?,?,?,?,?,?,NOW())`,
@@ -287,7 +261,6 @@ class PaymentAgent {
 
   async allocateExistingCreditsToOpenBills(conn, customerId, userId) {
     if (!customerId) return { allocations: [], applied_total: 0 };
-    await this.ensurePaymentUnappliedCreditsTable(conn);
     const [credits] = await conn.query(
       `SELECT * FROM payment_unapplied_credits
        WHERE customer_id=? AND remaining_amount>0
@@ -501,10 +474,11 @@ class PaymentAgent {
 
     const conn=await pool.getConnection();
     try {
-      // V65.35: make sure allocation table can store tender split before the transaction starts.
-      // MySQL DDL commits implicitly, so never ALTER inside the payment transaction.
-      await this.ensurePaymentAllocationSplitColumns(conn);
-      await this.ensurePaymentUnappliedCreditsTable(conn);
+      // CR-4: payment_allocations (incl. its cash/bank split columns) and
+      // payment_unapplied_credits are created by ensureSchema() at startup —
+      // no runtime DDL here. The previous per-request ALTER/CREATE ran before
+      // beginTransaction() precisely because MySQL DDL commits implicitly;
+      // moving schema ownership to bootstrap removes the hazard entirely.
       await conn.beginTransaction();
       const code=await nextCode(conn,'payments','payment_code','PAY');
       let note=data.note||'';
@@ -870,8 +844,8 @@ class PaymentAgent {
 
     const conn = await pool.getConnection();
     try {
-      await this.ensurePaymentAllocationSplitColumns(conn);
-      await this.ensurePaymentUnappliedCreditsTable(conn);
+      // CR-4: schema for payment_allocations / payment_unapplied_credits is
+      // owned by ensureSchema() — see create() above.
       await conn.beginTransaction();
       const old = await this.revertPaymentEffects(conn, paymentId, user?.id || null);
 

@@ -24,6 +24,18 @@ class SchemaMigrationAgent{
     return Number(rows[0].cnt)>0;
   }
 
+  // CR-4: returns the live COLUMN_TYPE (e.g. "varchar(30)", "enum('A','B')")
+  // or null when the column does not exist. Used to detect columns whose TYPE
+  // drifted, which a plain existence check cannot see.
+  async columnType(conn,table,column){
+    const [rows]=await conn.query(
+      `SELECT COLUMN_TYPE ct FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME=?`,
+      [table,column]
+    );
+    return rows.length?String(rows[0].ct):null;
+  }
+
   async hasIndex(conn,table,indexName){
     const [rows]=await conn.query(
       `SELECT COUNT(*) cnt FROM INFORMATION_SCHEMA.STATISTICS
@@ -422,6 +434,36 @@ class SchemaMigrationAgent{
         }
       }
 
+      // CR-4 — sales-return status/reason/disposition/quality columns.
+      // bootstrap.js deliberately declares all four as VARCHAR (S9.2A: "status
+      // is VARCHAR, not ENUM" — the app owns the value set, so adding a new
+      // disposition must not require a schema change). Installs created before
+      // that decision still have them as ENUM, and the live ENUM does not
+      // contain the values current code writes: ReturnAgent.inspect() writes
+      // disposition_type='RESTOCK', which is absent from
+      // enum('RETURN_TO_STOCK','SCRAP','DESTROY','RETURN_SUPPLIER','OTHER') and
+      // fails with WARN_DATA_TRUNCATED. So a fresh install works and an
+      // upgraded install is broken — the exact divergence CR-4 exists to close.
+      //
+      // ENUM -> VARCHAR is a widening: every existing ENUM value is a valid
+      // VARCHAR of the same width, so no row can lose data. Guarded on the
+      // live type so it is a no-op once converted (idempotent), matching the
+      // customers.price_mode MODIFY COLUMN precedent at the top of migrate().
+      // Column names, nullability and defaults are copied verbatim from
+      // bootstrap.js so a fresh and an upgraded install converge exactly.
+      for(const [table,column,ddl] of [
+        ['sales_returns','status',`VARCHAR(20) NOT NULL DEFAULT 'REQUESTED'`],
+        ['sales_returns','return_reason_code',`VARCHAR(30) NOT NULL DEFAULT 'OTHER'`],
+        ['sales_return_items','disposition_type',`VARCHAR(30) NULL`],
+        ['sales_return_inspections','quality_result',`VARCHAR(20) NULL`],
+      ]){
+        if(!(await this.hasTable(conn,table))) continue;
+        const current=await this.columnType(conn,table,column);
+        if(current && /^enum\(/i.test(current)){
+          logs.push(await this.safeAlter(conn,`ALTER TABLE ${table} MODIFY COLUMN ${column} ${ddl}`));
+        }
+      }
+
       // fix(partner): remove duplicate supplier management menu — the
       // standalone 'suppliers' app_menus row (P2-01, ea5ac47/5c655c4)
       // duplicated the Partner ('customers', "Đối tác") workflow and was
@@ -523,11 +565,67 @@ class SchemaMigrationAgent{
         ['orders','idx_orders_lock'],
         ['payments','idx_payments_lock'],
         ['supplier_payable_transactions','uq_supplier_payable_payment_reversal'],
+        // CR-4: every index migrate() creates must have a matching check()
+        // entry. These five (S4.2/S4.3 price-book and price-category work
+        // above) were created by migrate() but never verified here, so a
+        // partially-migrated install reported a clean bill of health.
+        ['customer_price_books','uq_cpb_customer_category_date_type'],
+        ['customer_price_books','idx_cpb_customer_price_category'],
+        ['customer_price_books','uq_cpb_category_date_type'],
+        ['customer_price_categories','uq_cpc_one_default_per_customer'],
+        ['customer_price_categories','uq_cpc_customer_display_order'],
+        // CR-4: load-bearing UNIQUE key — PaymentAgent.beginIdempotentRequest()
+        // detects a concurrent in-flight payment via ER_DUP_ENTRY on it.
+        ['payment_transaction_requests','uq_ptr_idempotency_key'],
       ];
+      // CR-4: tables that current code reads/writes but that no code path
+      // created before this fix — they existed only because a standalone .sql
+      // file was run by hand, or because a business method created them
+      // lazily on first use. config/bootstrap.js ensureSchema() now owns them;
+      // this is the verify surface that a fresh install actually got them.
+      // Every access to these is ER_NO_SUCH_TABLE-guarded in the app, so a
+      // missing one degrades silently rather than erroring — which is exactly
+      // why it needs an explicit check here.
+      const requiredTables=[
+        'payment_allocations',
+        'payment_transaction_requests',
+        'payment_unapplied_credits',
+        'customer_account_registrations',
+        'auth_event_logs',
+        'ai_action_logs',
+        'ai_error_logs',
+      ];
+      for(const table of requiredTables){
+        const tableOk=await this.hasTable(conn,table);
+        checks.push({table,column:'TABLE present',type:'TABLE',status:tableOk?'OK':'MISSING'});
+      }
+
       for(const [table,indexName] of requiredIndexes){
         const tableOk=await this.hasTable(conn,table);
         const idxOk=tableOk?await this.hasIndex(conn,table,indexName):false;
         checks.push({table,column:`INDEX ${indexName}`,type:'INDEX',index_name:indexName,status:tableOk&&idxOk?'OK':'MISSING'});
+      }
+
+      // CR-4 — type-level check for the four sales-return columns migrate()
+      // converts from ENUM to VARCHAR. Existence alone would report OK on a
+      // drifted ENUM column, which is precisely the failure this closes, so
+      // this asserts the actual COLUMN_TYPE.
+      for(const [table,column] of [
+        ['sales_returns','status'],
+        ['sales_returns','return_reason_code'],
+        ['sales_return_items','disposition_type'],
+        ['sales_return_inspections','quality_result'],
+      ]){
+        const tableOk=await this.hasTable(conn,table);
+        const ct=tableOk?await this.columnType(conn,table,column):null;
+        const isVarchar=!!ct && /^varchar\(/i.test(ct);
+        checks.push({
+          table,
+          column:`${column} is VARCHAR (not ENUM)`,
+          type:'COLUMN_TYPE',
+          actual_type:ct,
+          status:isVarchar?'OK':'MISSING',
+        });
       }
 
       // P1-02A follow-up — reports the live menu-key merge state (see the

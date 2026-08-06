@@ -2005,6 +2005,209 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       }
     }
 
+    // ── CR-4: schema reproducibility ──────────────────────────────────────
+    // Every table below is read/written by current application code but was
+    // created by NO code path — it existed only because someone ran a
+    // standalone .sql file by hand, or because a business method created it
+    // lazily on first use. A fresh install therefore did not reproduce the
+    // schema the code expects. They are created here, not in
+    // SchemaMigrationAgent.migrate(), because this file's own stated rule is
+    // that ensureSchema() owns "tables/columns the app cannot run without"
+    // (see the P1-02A note below) — and every one of these is on a live code
+    // path today. Definitions match the current live schema exactly so a
+    // fresh install and an upgraded install converge on the same shape.
+
+    // payment_allocations — PaymentAgent.insertPaymentAllocationSafe() writes
+    // it; OrderAgent.cancel() reads it to block cancelling an already-paid
+    // bill, and loadPaymentHistory() reads it for the payment history panel.
+    // Every access is ER_NO_SUCH_TABLE-guarded, so a missing table never
+    // crashed — it silently skipped recording allocations AND silently
+    // reduced the cancel guard to "no payments found", allowing a paid bill
+    // to be cancelled. Silent wrong behavior, not a visible failure.
+    await runSql(conn, `CREATE TABLE IF NOT EXISTS payment_allocations (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      payment_id BIGINT NOT NULL,
+      order_id BIGINT NOT NULL,
+      customer_id BIGINT NOT NULL,
+      amount DECIMAL(15,2) NOT NULL DEFAULT 0,
+      cash_amount DECIMAL(15,2) NOT NULL DEFAULT 0,
+      bank_amount DECIMAL(15,2) NOT NULL DEFAULT 0,
+      allocation_type VARCHAR(50) NULL DEFAULT 'CURRENT_BILL',
+      note VARCHAR(255) NULL,
+      created_by BIGINT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_payment_allocations_payment_id (payment_id),
+      INDEX idx_payment_allocations_order_id (order_id),
+      INDEX idx_payment_allocations_customer_id (customer_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+    // Upgrade path for installs whose payment_allocations predates the
+    // cash/bank split (CREATE TABLE IF NOT EXISTS cannot add them). Replaces
+    // PaymentAgent.ensurePaymentAllocationSplitColumns(), which ran this same
+    // ALTER inside a payment transaction.
+    await safeAddColumn(conn, 'payment_allocations', 'cash_amount', `DECIMAL(15,2) NOT NULL DEFAULT 0`);
+    await safeAddColumn(conn, 'payment_allocations', 'bank_amount', `DECIMAL(15,2) NOT NULL DEFAULT 0`);
+
+    // payment_transaction_requests — PaymentAgent's payment idempotency
+    // store (getIdempotentResult/beginIdempotentRequest/finishIdempotent-
+    // Request). This table did not exist in ANY environment, live included:
+    // no code path created it and no .sql file was ever run for it, so every
+    // access hit the ER_NO_SUCH_TABLE guard and payment idempotency has been
+    // a silent no-op everywhere — a duplicate "thu tiền" submit was never
+    // actually deduplicated. The UNIQUE key is load-bearing: begin() relies
+    // on ER_DUP_ENTRY to detect a concurrent in-flight request.
+    await runSql(conn, `CREATE TABLE IF NOT EXISTS payment_transaction_requests (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      idempotency_key VARCHAR(255) NOT NULL,
+      status VARCHAR(30) NOT NULL DEFAULT 'PROCESSING',
+      request_json LONGTEXT NULL,
+      response_json LONGTEXT NULL,
+      error_message TEXT NULL,
+      created_by BIGINT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NULL,
+      UNIQUE KEY uq_ptr_idempotency_key (idempotency_key)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+    // payment_unapplied_credits — customer overpayment held as credit.
+    // Previously created by PaymentAgent.ensurePaymentUnappliedCreditsTable()
+    // on the transaction connection inside insertUnappliedCredit()/cancel().
+    // DDL forces an implicit COMMIT in MySQL, so that lazy CREATE silently
+    // committed the enclosing payment transaction mid-flight on the first
+    // call in a fresh install. Owned here instead.
+    await runSql(conn, `CREATE TABLE IF NOT EXISTS payment_unapplied_credits (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      payment_id BIGINT NOT NULL,
+      customer_id BIGINT NOT NULL,
+      original_amount DECIMAL(15,2) NOT NULL DEFAULT 0,
+      remaining_amount DECIMAL(15,2) NOT NULL DEFAULT 0,
+      cash_amount DECIMAL(15,2) NOT NULL DEFAULT 0,
+      bank_amount DECIMAL(15,2) NOT NULL DEFAULT 0,
+      note VARCHAR(500) NULL,
+      created_by BIGINT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NULL,
+      INDEX idx_puc_customer_remaining (customer_id, remaining_amount),
+      INDEX idx_puc_payment (payment_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+    // customer_account_registrations + auth_event_logs — previously created
+    // by RegistrationAgent.ensureSchema(), which every registration/login
+    // method called on every request (2 CREATE TABLEs + 17
+    // INFORMATION_SCHEMA column probes per call). Definition below matches
+    // the live table, which is authoritative here: it already carries columns
+    // (password_plain, password) and index names (uk_username, idx_phone)
+    // that RegistrationAgent's own CREATE never had, so a fresh install
+    // built from that CREATE would have diverged from every existing install.
+    await runSql(conn, `CREATE TABLE IF NOT EXISTS customer_account_registrations (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      full_name VARCHAR(255) NOT NULL,
+      username VARCHAR(100) NOT NULL,
+      password_plain VARCHAR(255) NULL,
+      phone VARCHAR(30) NOT NULL,
+      email VARCHAR(255) NULL,
+      password VARCHAR(255) NULL,
+      description TEXT NULL,
+      business_name VARCHAR(255) NULL,
+      owner_name VARCHAR(255) NULL,
+      service_plan VARCHAR(50) NULL DEFAULT 'TRIAL',
+      payment_method VARCHAR(50) NULL DEFAULT 'NONE',
+      address TEXT NULL,
+      transfer_note TEXT NULL,
+      status ENUM('PENDING','APPROVED','REJECTED') NULL DEFAULT 'PENDING',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      password_hash VARCHAR(255) NULL,
+      customer_id BIGINT NULL,
+      user_id BIGINT NULL,
+      approved_at DATETIME NULL,
+      rejected_at DATETIME NULL,
+      updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
+      email_verified_at DATETIME NULL,
+      phone_verified_at DATETIME NULL,
+      email_verify_token_hash VARCHAR(128) NULL,
+      email_verify_expires_at DATETIME NULL,
+      phone_otp_hash VARCHAR(255) NULL,
+      phone_otp_expires_at DATETIME NULL,
+      phone_otp_sent_at DATETIME NULL,
+      verification_status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+      approved_by BIGINT NULL,
+      last_verify_error TEXT NULL,
+      UNIQUE KEY uk_username (username),
+      INDEX idx_phone (phone)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+    // Upgrade path for installs created before each column existed — the
+    // exact list RegistrationAgent.ensureSchema() used to add per request.
+    for (const [col, ddl] of [
+      ['full_name', `VARCHAR(255) NULL`], ['password_hash', `VARCHAR(255) NULL`], ['description', `TEXT NULL`],
+      ['customer_id', `BIGINT NULL`], ['user_id', `BIGINT NULL`], ['approved_at', `DATETIME NULL`],
+      ['rejected_at', `DATETIME NULL`], ['email_verified_at', `DATETIME NULL`], ['phone_verified_at', `DATETIME NULL`],
+      ['email_verify_token_hash', `VARCHAR(128) NULL`], ['email_verify_expires_at', `DATETIME NULL`],
+      ['phone_otp_hash', `VARCHAR(255) NULL`], ['phone_otp_expires_at', `DATETIME NULL`],
+      ['phone_otp_sent_at', `DATETIME NULL`], ['verification_status', `VARCHAR(30) NOT NULL DEFAULT 'PENDING'`],
+      ['approved_by', `BIGINT NULL`], ['last_verify_error', `TEXT NULL`],
+    ]) {
+      await safeAddColumn(conn, 'customer_account_registrations', col, ddl);
+    }
+
+    await runSql(conn, `CREATE TABLE IF NOT EXISTS auth_event_logs (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      event_type VARCHAR(80) NOT NULL,
+      actor_user_id BIGINT NULL,
+      registration_id BIGINT NULL,
+      identifier VARCHAR(255) NULL,
+      ip VARCHAR(80) NULL,
+      user_agent TEXT NULL,
+      success_flg TINYINT(1) NOT NULL DEFAULT 1,
+      message TEXT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_event_type_created (event_type, created_at),
+      INDEX idx_identifier_created (identifier, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+
+    // ai_action_logs / ai_error_logs — written by aiErrorLog.service.js and
+    // read by aiBugInvestigator.service.js. Both were created only by the
+    // standalone backend/sql/V19_AI_BUG_INVESTIGATOR_LOGGING.sql, run by
+    // hand. Their call sites are tableExists()-guarded, so on a fresh install
+    // AI action/error logging silently recorded nothing — exactly the
+    // diagnostic trail an operator would reach for first.
+    await runSql(conn, `CREATE TABLE IF NOT EXISTS ai_action_logs (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      session_id VARCHAR(255) NULL,
+      user_id BIGINT NULL,
+      action_type VARCHAR(120) NOT NULL,
+      intent VARCHAR(120) NULL,
+      request_text TEXT NULL,
+      request_json LONGTEXT NULL,
+      response_json LONGTEXT NULL,
+      success_flg TINYINT(1) NOT NULL DEFAULT 1,
+      error_message TEXT NULL,
+      error_stack LONGTEXT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_ai_action_logs_session (session_id),
+      INDEX idx_ai_action_logs_action (action_type),
+      INDEX idx_ai_action_logs_created (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+    await runSql(conn, `CREATE TABLE IF NOT EXISTS ai_error_logs (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      session_id VARCHAR(255) NULL,
+      user_id BIGINT NULL,
+      action_type VARCHAR(120) NOT NULL,
+      intent VARCHAR(120) NULL,
+      request_text TEXT NULL,
+      request_json LONGTEXT NULL,
+      error_message TEXT NULL,
+      error_stack LONGTEXT NULL,
+      extra_json LONGTEXT NULL,
+      status VARCHAR(50) NOT NULL DEFAULT 'NEW',
+      resolved_note TEXT NULL,
+      resolved_at DATETIME NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_ai_error_logs_session (session_id),
+      INDEX idx_ai_error_logs_action (action_type),
+      INDEX idx_ai_error_logs_status (status),
+      INDEX idx_ai_error_logs_created (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
     // P2-02 (production cleanup): Inventory Receive Reversal's additive
     // schema — inventory_receives.cancelled_at/cancelled_by/cancel_reason and
     // stock_transactions.reversal_dedup_key + its UNIQUE index — is

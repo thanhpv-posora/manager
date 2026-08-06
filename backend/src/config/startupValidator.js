@@ -1,5 +1,16 @@
 const pool = require('./db');
 
+// JWT_SECRET values that are public knowledge: either the placeholder shipped in
+// backend/.env.example, or a real secret that was previously committed to that
+// file and therefore still lives in this repository's git history. Booting with
+// one of these means the token signing key is not secret — anyone who can read
+// the repo can mint a valid token for any role. Kept as an explicit list (not a
+// strength heuristic) so this only ever fires on values we know are published.
+const PUBLISHED_JWT_SECRETS = new Set([
+  'CHANGE_ME',
+  'meatbiz_v66_secret',
+]);
+
 function parseAllowedOrigins() {
   return (process.env.ALLOWED_ORIGINS || '')
     .split(',')
@@ -17,6 +28,19 @@ async function validateStartupConfig() {
     } else {
       console.warn('[STARTUP WARNING] JWT_SECRET is not set — authentication will fail until it is configured in .env.');
     }
+  } else if (PUBLISHED_JWT_SECRETS.has(process.env.JWT_SECRET)) {
+    // Deliberately a warning in every environment, not a fatal error: making it
+    // fatal would refuse to boot an already-running deployment that is still on
+    // the leaked value, turning a disclosure into an outage. Promote to
+    // errors.push() once the secret has been rotated everywhere.
+    console.warn(
+      '[STARTUP WARNING] JWT_SECRET is set to a value that is published in this ' +
+      'repository (backend/.env.example and its git history). The token signing key ' +
+      'is therefore NOT secret — anyone who can read the repo can forge a token for ' +
+      'any user or role. Rotate it now: put a new random value in backend/.env ' +
+      '(node -e "console.log(require(\'crypto\').randomBytes(48).toString(\'hex\'))"). ' +
+      'Rotating invalidates all existing sessions — users will need to log in again.'
+    );
   }
 
   const origins = parseAllowedOrigins();

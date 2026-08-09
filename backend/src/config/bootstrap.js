@@ -564,7 +564,7 @@ CREATE TABLE IF NOT EXISTS purchase_orders (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   order_code VARCHAR(50) NOT NULL UNIQUE,
   supplier_id BIGINT NOT NULL,
-  order_date DATE NOT NULL,
+  purchase_date DATE NOT NULL,
   expected_date DATE NULL,
   status VARCHAR(30) NOT NULL DEFAULT 'DRAFT',
   source VARCHAR(50) NOT NULL DEFAULT 'MANUAL',
@@ -573,8 +573,7 @@ CREATE TABLE IF NOT EXISTS purchase_orders (
   created_by BIGINT NULL,
   del_flg TINYINT(1) NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
-  INDEX idx_purchase_orders_supplier_date(supplier_id,order_date,status)
+  updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS purchase_order_items (
@@ -931,21 +930,36 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       }
     }
     {
-      const hasOrderDate    = await hasColumn(conn, 'purchase_orders', 'order_date');
-      const hasPurchaseDate = await hasColumn(conn, 'purchase_orders', 'purchase_date');
+      // GO-LIVE BLOCKER 3 fix (CTO-authorized, RC4 fresh-install rehearsal
+      // defect): this block used to add purchase_date alongside order_date
+      // and stop there — order_date stayed forever, still DATE NOT NULL with
+      // no default. That was invisible on every existing install (order_date
+      // already had a value from before the migration ran), but the base
+      // CREATE TABLE above was reproducing that same NOT NULL order_date on
+      // every FRESH install too, and InventoryPurchaseAgent.create() only
+      // ever writes purchase_date — so a from-scratch database could not
+      // create a single purchase order (ER_NO_DEFAULT_FOR_FIELD). Confirmed
+      // via a read-only comparison against the live app DB, which already has
+      // no order_date column at all (dropped by hand at some point, never
+      // captured here) — purchase_date is the sole canonical column there,
+      // and the base CREATE TABLE above now matches that directly. This
+      // finishes the migration instead of leaving it half-done: an install
+      // still carrying order_date gets backfilled once more (belt and
+      // suspenders) and then has order_date actually dropped; an install that
+      // already matches the live DB's shape does nothing.
+      const hasOrderDate = await hasColumn(conn, 'purchase_orders', 'order_date');
       if (hasOrderDate) {
-        // Case A or C: src exists — ensure dst and backfill.
-        await safeAddColumn(conn, 'purchase_orders', 'purchase_date',
-          'purchase_date DATE NULL');
+        await safeAddColumn(conn, 'purchase_orders', 'purchase_date', 'purchase_date DATE NULL');
         await conn.query(
           `UPDATE purchase_orders SET purchase_date = order_date WHERE purchase_date IS NULL AND order_date IS NOT NULL`
         );
-      } else if (!hasPurchaseDate) {
-        // Case D: neither column exists.
-        console.warn('[STAB-001A] purchase_orders: neither order_date nor purchase_date found — skipping purchase_date migration');
+        // The old composite index embedded order_date directly — drop it
+        // before the column itself. Only ever seen on a fresh install that
+        // hit this exact bug; the live app DB never had this index either.
+        await safeDropIndex(conn, 'purchase_orders', 'idx_purchase_orders_supplier_date');
+        await conn.query(`ALTER TABLE purchase_orders DROP COLUMN order_date`);
       }
-      // Case B: purchase_date exists, order_date missing — already correct.
-      if (hasOrderDate || hasPurchaseDate) {
+      if (await hasColumn(conn, 'purchase_orders', 'purchase_date')) {
         await safeAddIndex(conn, 'purchase_orders', 'idx_purchase_orders_purchase_date',
           'INDEX idx_purchase_orders_purchase_date (purchase_date)');
       }

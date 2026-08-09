@@ -37,9 +37,13 @@ function check(name, cond, detail) {
 }
 
 async function makeProduct(qty) {
+  // GO-LIVE BLOCKER 3 (RC gate): sales_flow became a required field on
+  // ProductAgent.addProduct() after this script was written (PRODUCT_SALES_
+  // FLOW_REQUIRED) — stale fixture, not a product-code issue. See
+  // [[project_golive_audit_state]] insight #5.
   await ProductAgent.addProduct({
     name: `S8.1A LEDGER ${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    unit: 'kg', inventory_mode: 'TRACK_STOCK', stock_quantity: qty, allow_negative_stock: 0,
+    unit: 'kg', inventory_mode: 'TRACK_STOCK', sales_flow: 'INVENTORY_SALE', stock_quantity: qty, allow_negative_stock: 0,
   });
   const [[created]] = await pool.query(`SELECT * FROM products WHERE name LIKE 'S8.1A LEDGER %' ORDER BY id DESC LIMIT 1`);
   return created;
@@ -111,9 +115,9 @@ async function main() {
 
   try {
     const [custIns] = await pool.query(
-      `INSERT INTO customers(customer_code,name,phone,address,price_mode,debt_limit,payment_term_days,billing_calendar_type)
-       VALUES(?,?,?,?,?,?,?,?)`,
-      [`S81A-CUST-${Date.now()}`, 'S8.1A Ledger Test Customer', '0', 'test', 'PRIVATE_PRICE', 0, 0, 'SOLAR']
+      `INSERT INTO customers(customer_code,name,phone,address,price_mode,debt_limit,payment_term_days,billing_calendar_type,default_sales_flow)
+       VALUES(?,?,?,?,?,?,?,?,?)`,
+      [`S81A-CUST-${Date.now()}`, 'S8.1A Ledger Test Customer', '0', 'test', 'PRIVATE_PRICE', 0, 0, 'SOLAR', 'INVENTORY_SALE']
     );
     customerId = custIns.insertId;
 
@@ -174,6 +178,7 @@ async function main() {
     const payResult = await PaymentAgent.create({
       customer_id: customerId, order_id: r.order_id, payment_date: today,
       cash_amount: 400000, bank_amount: 0, note: 'S8.1A test payment',
+      idempotency_key: `s81a-ledger-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     }, user);
     const paymentId = payResult.payment_id;
     paymentIds.push(paymentId);

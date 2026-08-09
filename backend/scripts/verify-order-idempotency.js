@@ -26,7 +26,11 @@ async function getProduct(id) {
 }
 
 async function makeTrackedProduct(qty) {
-  await ProductAgent.addProduct({ name: `S6.5 IDEMP ${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, unit: 'kg', inventory_mode: 'TRACK_STOCK', stock_quantity: qty, allow_negative_stock: 0 });
+  // GO-LIVE BLOCKER 3 (RC gate): sales_flow became a required field on
+  // ProductAgent.addProduct() after this script was written (PRODUCT_SALES_
+  // FLOW_REQUIRED) — stale fixture, not a product-code issue. See
+  // [[project_golive_audit_state]] insight #5.
+  await ProductAgent.addProduct({ name: `S6.5 IDEMP ${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, unit: 'kg', inventory_mode: 'TRACK_STOCK', sales_flow: 'INVENTORY_SALE', stock_quantity: qty, allow_negative_stock: 0 });
   const [[created]] = await pool.query(`SELECT id, stock_quantity FROM products WHERE name LIKE 'S6.5 IDEMP %' ORDER BY id DESC LIMIT 1`);
   return created;
 }
@@ -40,9 +44,9 @@ async function main() {
 
   try {
     const [custIns] = await pool.query(
-      `INSERT INTO customers(customer_code,name,phone,address,price_mode,debt_limit,payment_term_days,billing_calendar_type)
-       VALUES(?,?,?,?,?,?,?,?)`,
-      [`S65-CUST-${Date.now()}`, 'S6.5 Idempotency Test Customer', '0', 'test', 'PRIVATE_PRICE', 0, 0, 'SOLAR']
+      `INSERT INTO customers(customer_code,name,phone,address,price_mode,debt_limit,payment_term_days,billing_calendar_type,default_sales_flow)
+       VALUES(?,?,?,?,?,?,?,?,?)`,
+      [`S65-CUST-${Date.now()}`, 'S6.5 Idempotency Test Customer', '0', 'test', 'PRIVATE_PRICE', 0, 0, 'SOLAR', 'INVENTORY_SALE']
     );
     customerId = custIns.insertId;
 

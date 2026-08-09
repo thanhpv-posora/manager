@@ -13,6 +13,17 @@ async function hasColumn(conn, table, column) {
   return Number(rows[0].cnt) > 0;
 }
 
+// GO-LIVE BLOCKER 2: used to gate the payment_unapplied_credits.payment_id
+// NOT NULL -> NULL relaxation below so it only ever ALTERs once per install
+// instead of on every boot.
+async function isColumnNullable(conn, table, column) {
+  const [rows] = await conn.query(
+    `SELECT IS_NULLABLE ni FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME=?`,
+    [table, column]
+  );
+  return rows.length ? rows[0].ni === 'YES' : false;
+}
+
 async function hasTable(conn, table) {
   const [rows] = await conn.query(
     `SELECT COUNT(*) cnt FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?`,
@@ -2089,6 +2100,25 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       INDEX idx_puc_customer_remaining (customer_id, remaining_amount),
       INDEX idx_puc_payment (payment_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+    // GO-LIVE BLOCKER 2: a customer credit can now also originate from a
+    // completed Sales Return whose reversal exceeds the order's remaining
+    // debt (ReturnAgent.complete() -> PaymentAgent.insertReturnUnappliedCredit())
+    // — there is no real payments row to reference in that case, only a
+    // sales_returns one. source_type/source_id record which kind of event
+    // created the row (existing overpayment credits get the DEFAULT
+    // 'PAYMENT_OVERPAY' retroactively, since their own INSERT never sets this
+    // column); payment_id itself is relaxed to NULL-able so a return-sourced
+    // row does not need a fabricated payments reference. Purely additive to
+    // every existing read (PaymentAgent.allocateExistingCreditsToOpenBills()/
+    // revertPaymentEffects()) — none of them filter on payment_id being
+    // non-null, they already handle a falsy payment_id gracefully.
+    await safeAddColumn(conn, 'payment_unapplied_credits', 'source_type', `source_type VARCHAR(30) NULL DEFAULT 'PAYMENT_OVERPAY'`);
+    await safeAddColumn(conn, 'payment_unapplied_credits', 'source_id', `source_id BIGINT NULL`);
+    await safeAddIndex(conn, 'payment_unapplied_credits', 'idx_puc_source', 'INDEX idx_puc_source (source_type, source_id)');
+    if (!(await isColumnNullable(conn, 'payment_unapplied_credits', 'payment_id'))) {
+      await conn.query(`ALTER TABLE payment_unapplied_credits MODIFY COLUMN payment_id BIGINT NULL`);
+    }
 
     // customer_account_registrations + auth_event_logs — previously created
     // by RegistrationAgent.ensureSchema(), which every registration/login

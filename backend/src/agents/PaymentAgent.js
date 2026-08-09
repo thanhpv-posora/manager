@@ -259,6 +259,28 @@ class PaymentAgent {
     );
   }
 
+  // GO-LIVE BLOCKER 2 (Sales Return settlement): a completed return can
+  // compute a debt reversal larger than what the order's own current
+  // debt_amount can absorb (bill already paid down, or fully paid). The
+  // excess is not a payment overpayment — there is no payments row behind
+  // it, only a sales_returns one — so it goes through this sibling of
+  // insertUnappliedCredit() instead, with payment_id left NULL and
+  // source_type/source_id pointing at the return. Same shape/semantics as an
+  // overpayment credit otherwise: it sits in payment_unapplied_credits until
+  // allocateExistingCreditsToOpenBills() (called from OrderAgent.create())
+  // applies it to a future bill. Called by ReturnAgent.complete() inside its
+  // own transaction — atomicity/idempotency come from that caller's existing
+  // single-use status-gate + transaction boundary, not from anything here.
+  async insertReturnUnappliedCredit(conn, returnId, customerId, amount, note, userId) {
+    const total = Number(amount || 0);
+    if (!returnId || !customerId || total <= 0) return;
+    await conn.query(
+      `INSERT INTO payment_unapplied_credits(payment_id,customer_id,original_amount,remaining_amount,cash_amount,bank_amount,note,source_type,source_id,created_by,created_at)
+       VALUES(NULL,?,?,?,0,0,?,'SALES_RETURN',?,?,NOW())`,
+      [customerId, total, total, note || 'Tiền dư từ trả hàng chưa phân bổ vào bill', returnId, userId || null]
+    );
+  }
+
   async allocateExistingCreditsToOpenBills(conn, customerId, userId) {
     if (!customerId) return { allocations: [], applied_total: 0 };
     const [credits] = await conn.query(

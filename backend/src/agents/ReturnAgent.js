@@ -5,26 +5,30 @@ const { assertCustomerScope, customerScopeWhere } = require('../middleware/scope
 const InventoryService = require('../services/InventoryService');
 
 // ReturnAgent — S9.2 Sales Return Foundation (refined per S9.2A CTO review),
-// extended by S9.3R (Cancel), S9.4 (Warehouse Receive & Inspection), and
-// GO-LIVE F-RETURN-DEBT (Debt Reverse).
+// extended by S9.3R (Cancel), S9.4 (Warehouse Receive & Inspection),
+// GO-LIVE F-RETURN-DEBT (Debt Reverse), and GO-LIVE BLOCKER 2 (settlement for
+// fully-paid returns).
 //
 // Scope: Create Return Request, list, Cancel, and the full warehouse
 // workflow — Receive -> Inspect (repeatable) -> Complete/Reject.
 //
-// Immutability, revised for GO-LIVE F-RETURN-DEBT: this agent NEVER writes to
-// order_items or payments, and never rewrites an existing orders/
-// debt_transactions row (compensating rows only, same append-only discipline
-// OrderAgent.cancel()/recalcOrderTotals() already use). It writes to
-// stock_transactions via InventoryService.in() inside complete(), only for
-// lines dispositioned RESTOCK, only when transitioning INSPECTING ->
-// COMPLETED (locked rule #5); and, also only inside complete(), to
-// orders.debt_amount/payment_status + one compensating debt_transactions row
-// — capped at the order's own current debt_amount so the customer-ledger
-// reconciliation invariant (SUM(debt_transactions) per customer ==
-// SUM(orders.debt_amount) across non-cancelled orders) never breaks. See
-// complete()'s own comment for the full design and its known residual gap
-// (already-fully-paid bills don't get an automatic refund/credit). No
-// payment/refund logic exists here — still out of scope. Every read of
+// Immutability, revised for GO-LIVE F-RETURN-DEBT / BLOCKER 2: this agent
+// NEVER writes to order_items or payments, and never rewrites an existing
+// orders/debt_transactions/payment_unapplied_credits row (compensating/
+// append-only rows only, same discipline OrderAgent.cancel()/
+// recalcOrderTotals() already use). It writes to stock_transactions via
+// InventoryService.in() inside complete(), only for lines dispositioned
+// RESTOCK, only when transitioning INSPECTING -> COMPLETED (locked rule #5);
+// and, also only inside complete(), to orders.debt_amount/payment_status +
+// one compensating debt_transactions row — capped at the order's own current
+// debt_amount so the customer-ledger reconciliation invariant
+// (SUM(debt_transactions) per customer == SUM(orders.debt_amount) across
+// non-cancelled orders) never breaks — plus, when the reversal exceeds what
+// that cap can absorb, one payment_unapplied_credits row for the shortfall
+// (PaymentAgent.insertReturnUnappliedCredit(), consumed later against a
+// future bill the same way a cash overpayment credit already is). See
+// complete()'s own comment for the full design. No cash refund exists (or is
+// asked for) — only the two settlement paths above. Every read of
 // orders/order_items elsewhere in this file is still SELECT-only (including
 // the FOR UPDATE reads — a row lock is not a write).
 //
@@ -843,18 +847,32 @@ class ReturnAgent {
       // verify-order-cancel-reversal.js S13 — SUM(debt_transactions) per
       // customer must equal SUM(orders.debt_amount) across non-cancelled
       // orders) would break if a debt_transactions row exceeded what the
-      // order's own debt_amount can absorb. A return completed against an
-      // ALREADY fully-paid bill therefore does not auto-create a refund/
-      // credit — reversal_computed vs reversal_applied in the response
-      // surfaces that shortfall instead of silently dropping it; refund/
-      // credit-note handling is a separate, not-yet-built feature (no
-      // credit-note mechanism exists anywhere in this codebase yet).
+      // order's own debt_amount can absorb.
+      //
+      // GO-LIVE BLOCKER 2 (settlement for fully-paid returns): the shortfall
+      // between reversal_computed and what the order's debt could absorb —
+      // previously silently dropped (see the now-closed residual gap this
+      // comment used to describe) — is now settled as a customer unapplied
+      // credit (PaymentAgent.insertReturnUnappliedCredit()), the SAME
+      // mechanism PaymentAgent.create() already uses for a cash overpayment
+      // (payment_unapplied_credits, consumed later by
+      // allocateExistingCreditsToOpenBills() against a future bill). This
+      // branch never touches debt_transactions/orders — a credit is not a
+      // debt-side ledger event, so the reconciliation invariant above is
+      // untouched by construction, not because it was re-checked here.
+      // Append-only either way: the ADJUSTMENT_DECREASE row (if any) and the
+      // credit row (if any) are each inserted at most once, inside this same
+      // transaction, guarded by the same INSPECTING-only status check at the
+      // top of this method — a retry after COMPLETED never re-enters this
+      // block (see the Idempotency comment on this method), so neither write
+      // can ever double-fire. Nothing here deletes or rewrites an existing
+      // payments/debt_transactions/payment_unapplied_credits row.
       let reversalComputed = 0;
       for (const item of items) {
         const acceptedForDebt = Number(item.return_to_stock_qty || 0) + Number(item.non_sellable_qty || 0);
         if (acceptedForDebt > 0) reversalComputed += acceptedForDebt * Number(item.frozen_unit_price || 0);
       }
-      const debtReversal = { reversal_computed: reversalComputed, reversal_applied: 0, order_id: row.order_id || null };
+      const debtReversal = { reversal_computed: reversalComputed, reversal_applied: 0, credit_created: 0, order_id: row.order_id || null };
       if (reversalComputed > QTY_TOLERANCE && row.order_id) {
         const [[orderRow]] = await conn.query(
           `SELECT id, customer_id, debt_amount, paid_amount FROM orders WHERE id=? FOR UPDATE`,
@@ -879,6 +897,30 @@ class ReturnAgent {
                `Đảo công nợ do trả hàng ${row.return_code || returnId} cho bill #${row.order_id}`, user?.id || null]
             );
             debtReversal.reversal_applied = actualReversal;
+          }
+
+          // reversal_computed > remaining debt (including the already-fully-
+          // paid case, currentDebt=0, where actualReversal never even fired
+          // above): settle the rest as an unapplied credit instead of
+          // dropping it.
+          const excess = reversalComputed - actualReversal;
+          if (excess > 0.001) {
+            const PaymentAgent = require('./PaymentAgent');
+            try {
+              await PaymentAgent.insertReturnUnappliedCredit(
+                conn, returnId, orderRow.customer_id, excess,
+                `Tiền dư do trả hàng ${row.return_code || returnId} vượt quá công nợ còn lại của bill #${row.order_id}`,
+                user?.id || null
+              );
+              debtReversal.credit_created = excess;
+              await writeAuditLog(conn, user?.id, 'SALES_RETURN_CREDIT_CREATED', returnId,
+                `Tạo tiền dư khách hàng ${excess} do trả hàng ${row.return_code || ''} vượt công nợ còn lại của bill #${row.order_id}`.trim());
+            } catch (e) {
+              // Backward compatible only for an environment whose bootstrap
+              // migration truly hasn't run yet — never silently swallow a
+              // real error, that would drop the customer's money.
+              if (!(e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146))) throw e;
+            }
           }
         }
       }
@@ -908,6 +950,9 @@ class ReturnAgent {
         `Hoàn tất trả hàng ${row.return_code || ''}`.trim() +
         (debtReversal.reversal_computed > QTY_TOLERANCE
           ? ` | Đảo công nợ: ${debtReversal.reversal_applied}/${debtReversal.reversal_computed}`
+          : '') +
+        (debtReversal.credit_created > QTY_TOLERANCE
+          ? ` | Tiền dư tạo mới: ${debtReversal.credit_created}`
           : ''));
 
       await conn.commit();

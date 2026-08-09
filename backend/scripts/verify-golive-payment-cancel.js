@@ -110,7 +110,7 @@ async function main() {
         items: [{ product_id: p.id, product_name: 'x', unit: 'kg', quantity: 5, sale_price: 30000, manual_price: true }],
       }, user);
       orderIds.push(r.order_id);
-      const pay = await PaymentAgent.create({ customer_id: customerId, order_id: r.order_id, cash_amount: 150000, bank_amount: 0, payment_date: today }, user);
+      const pay = await PaymentAgent.create({ customer_id: customerId, order_id: r.order_id, cash_amount: 150000, bank_amount: 0, payment_date: today, idempotency_key: `golive-pay-cancel-f5-${Date.now()}-${Math.random().toString(36).slice(2)}` }, user);
       paymentIds.push(pay.payment_id);
 
       let threw1 = null;
@@ -143,6 +143,7 @@ async function main() {
       // payment_allocations rows for one payment, not just one.
       const pay = await PaymentAgent.create({
         customer_id: customerId, cash_amount: 350000, bank_amount: 0, payment_date: today,
+        idempotency_key: `golive-pay-cancel-f234-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       }, user);
       paymentIds.push(pay.payment_id);
 
@@ -230,7 +231,7 @@ async function main() {
         items: [{ product_id: p.id, product_name: 'x', unit: 'kg', quantity: 4, sale_price: 25000, manual_price: true }],
       }, user);
       orderIds.push(r.order_id);
-      const pay = await PaymentAgent.create({ customer_id: customerId, order_id: r.order_id, cash_amount: 100000, bank_amount: 0, payment_date: today }, user);
+      const pay = await PaymentAgent.create({ customer_id: customerId, order_id: r.order_id, cash_amount: 100000, bank_amount: 0, payment_date: today, idempotency_key: `golive-pay-cancel-update-${Date.now()}-${Math.random().toString(36).slice(2)}` }, user);
       paymentIds.push(pay.payment_id);
       const [allocBefore] = await pool.query(`SELECT * FROM payment_allocations WHERE payment_id=?`, [pay.payment_id]);
       check('update() setup: allocation exists before edit', allocBefore.length === 1, allocBefore);

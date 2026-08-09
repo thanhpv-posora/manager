@@ -1,4 +1,4 @@
-import React,{useEffect,useMemo,useState}from'react';
+import React,{useEffect,useMemo,useState,useRef}from'react';
 import {Pencil,XCircle,CheckCircle2}from'lucide-react';
 import api from'../api/api';
 import SafePage from'../components/SafePage';
@@ -22,6 +22,12 @@ export default function Payments(){
  const[loading,setLoading]=useState(true);
  const[error,setError]=useState('');
  const[overpayDialog,setOverpayDialog]=useState({open:false,availableAmount:0,surplus:0,oldBills:[]});
+ // GO-LIVE BLOCKER 1: mint once per new "Thu tiền" attempt, reused verbatim on
+ // retry (double-click before the button re-renders, or resubmitting after a
+ // failed request) so PaymentAgent.create()'s idempotency check can dedupe it;
+ // rotated to null only after a successful create (mirrors CreateOrder.jsx's
+ // billIdempotencyKeyRef). Not used for editingPayment (PUT /payments/:id).
+ const paymentIdemKeyRef=useRef(null);
  const billTotal=Number(form.current_bill_amount||0);
  const paidTotal=useMemo(()=>Number(form.cash_amount||0)+Number(form.bank_amount||0),[form.cash_amount,form.bank_amount]);
  const remainDebt=Math.max(0,billTotal-paidTotal);
@@ -53,7 +59,19 @@ export default function Payments(){
  const oldDebtBills=()=>((summary?.unpaid_orders)||[]).filter(o=>String(o.id)!==String(form.order_id||''));
  const doSave=async(allocateIds=[])=>{
   const payload=buildPayload(allocateIds);
-  const res=editingPayment?await api.put('/payments/'+editingPayment.id,payload):await api.post('/payments',payload);
+  let res;
+  if(editingPayment){
+   res=await api.put('/payments/'+editingPayment.id,payload);
+  }else{
+   if(!paymentIdemKeyRef.current){
+    paymentIdemKeyRef.current=(crypto.randomUUID?crypto.randomUUID():`${Date.now()}-${Math.random().toString(36).slice(2)}`);
+   }
+   res=await api.post('/payments',{...payload,idempotency_key:paymentIdemKeyRef.current});
+   // Succeeded — rotate so the NEXT payment gets a fresh key instead of ever
+   // being mistaken for a replay of this one. Left intact on throw so a retry
+   // of this same attempt reuses it (see ref comment above).
+   paymentIdemKeyRef.current=null;
+  }
   const allocs=res.data?.old_debt_allocations||[];
   const unused=Number(res.data?.unused_amount||0);
   setForm({...form,cash_amount:'',bank_amount:'',current_bill_amount:'',order_id:''});

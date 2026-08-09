@@ -388,11 +388,13 @@ class PaymentAgent {
       if (row.status === 'PROCESSING') {
         const err = new Error('Giao dịch đang xử lý. Vui lòng bấm kiểm tra lại, không bấm thu tiền thêm lần nữa.');
         err.code = 'PAYMENT_PROCESSING';
+        err.status = 409;
         throw err;
       }
       if (row.status === 'FAILED') {
         const err = new Error(row.error_message || 'Giao dịch trước đó bị lỗi. Vui lòng kiểm tra log trước khi thực hiện lại.');
         err.code = 'PAYMENT_PREVIOUS_FAILED';
+        err.status = 409;
         throw err;
       }
     } catch (e) {
@@ -457,8 +459,20 @@ class PaymentAgent {
     }
   }
 
+  // GO-LIVE BLOCKER 1: idempotency_key is now mandatory for every payment
+  // create request, not opt-in. The dedup infra below (payment_transaction_
+  // requests + getIdempotentResult/beginIdempotentRequest/finishIdempotent-
+  // Request) already existed and was correct, but every caller was free to
+  // omit the key entirely — beginIdempotentRequest()'s own `if(!key) return
+  // false` guard silently turned dedup into a no-op whenever that happened,
+  // so a double-click/network-retry submit from the "Thu tiền" screen could
+  // still create two payments. Rejecting a missing key up front, before any
+  // read/write, closes that gap for every caller (route + AI chat).
   async create(data, user) {
     const idempotencyKey = String(data.idempotency_key || data.idempotencyKey || '').trim();
+    if (!idempotencyKey) {
+      throw Object.assign(new Error('Thiếu idempotency_key cho phiếu thu'), { status: 400, code: 'IDEMPOTENCY_KEY_REQUIRED' });
+    }
     const existingIdempotentResult = await this.getIdempotentResult(idempotencyKey);
     if (existingIdempotentResult) return existingIdempotentResult;
     const idempotencyStarted = await this.beginIdempotentRequest(idempotencyKey, data, user);

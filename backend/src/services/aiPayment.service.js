@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const db = require('../config/db');
 const PaymentAgent = require('../agents/PaymentAgent');
 
@@ -174,6 +175,12 @@ async function confirmPaymentFromPreview(preview, user = null) {
   const cashAmount = parsed.payment_method === 'BANK_TRANSFER' ? 0 : Number(parsed.amount || 0);
   const bankAmount = parsed.payment_method === 'BANK_TRANSFER' ? Number(parsed.amount || 0) : 0;
 
+  // GO-LIVE BLOCKER 1: PaymentAgent.create() now requires idempotency_key on
+  // every call. This chat flow has no client-generated key of its own (the
+  // AI panel doesn't retry requests the way the POS/Thu tiền screens do), so
+  // mint one per confirm — satisfies the mandatory-key contract without
+  // trying to dedupe repeated "confirm" taps in the chat UI itself, which is
+  // a separate, unscoped problem.
   const result = await PaymentAgent.create({
     customer_id: customer.id,
     payment_date: new Date().toISOString().slice(0, 10),
@@ -182,7 +189,8 @@ async function confirmPaymentFromPreview(preview, user = null) {
     cash_amount: cashAmount,
     bank_amount: bankAmount,
     payment_calendar_type: customer.billing_calendar_type === 'LUNAR' ? 'LUNAR' : 'SOLAR',
-    note: 'Thu tiền từ AI chat'
+    note: 'Thu tiền từ AI chat',
+    idempotency_key: crypto.randomUUID()
   }, user || { id: null, role: 'ADMIN' });
 
   return {

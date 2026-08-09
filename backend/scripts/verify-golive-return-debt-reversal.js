@@ -201,6 +201,7 @@ async function main() {
       const payResult = await PaymentAgent.create({
         customer_id: customerId2, order_id: orderId, payment_date: today,
         cash_amount: 150000, bank_amount: 0,
+        idempotency_key: `golive-return-debt-reversal-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       }, admin);
       paymentIds.push(payResult.payment_id);
 

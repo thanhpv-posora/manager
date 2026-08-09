@@ -93,20 +93,49 @@ class PaymentAgent {
     return {customer:customers[0], current_debt:debtRows[0].current_debt, unpaid_orders:unpaid, payment_split:split, cash_bank_summary:cashBank[0], recent_payments:recent};
   }
 
+  // GO-LIVE BLOCKER 3 fix: single source of truth for "what does this order
+  // actually owe right now" — the order's own debt_transactions rows, same
+  // sign convention every reconciliation check in this codebase already uses
+  // (SALE/ADJUSTMENT_INCREASE add, PAYMENT/ADJUSTMENT_DECREASE subtract).
+  // Not a second ledger — just a read of the existing one. Introduced because
+  // total_amount-paid_amount arithmetic (used in three places below) has no
+  // way to know about a Sales Return's compensating ADJUSTMENT_DECREASE —
+  // total_amount is immutable (BR-BILL-004/BR-PRICE-002, never rewritten by a
+  // return) and paid_amount only tracks cash payments, never a return's debt
+  // forgiveness — so that arithmetic silently resurrects debt a return had
+  // already reversed.
+  async _ledgerDebtForOrder(conn, orderId) {
+    const [[row]] = await conn.query(
+      `SELECT COALESCE(SUM(CASE
+          WHEN type IN ('SALE','ADJUSTMENT_INCREASE') THEN amount
+          WHEN type IN ('PAYMENT','ADJUSTMENT_DECREASE') THEN -amount
+          ELSE 0 END),0) net
+       FROM debt_transactions WHERE order_id=?`,
+      [orderId]
+    );
+    return Number(row.net || 0);
+  }
+
   async applyPaymentToOrder(conn, orderId, amount) {
     const [orders]=await conn.query(`SELECT total_amount,paid_amount,debt_amount FROM orders WHERE id=? FOR UPDATE`, [orderId]);
     if (!orders.length) return 0;
     const order=orders[0];
     const total=Number(order.total_amount||0);
     const paidBefore=Number(order.paid_amount||0);
-    // V65.37: use computed bill debt as the source of truth when debt_amount is stale.
-    // Some old bills were created before debt recalculation, so debt_amount can be 0
-    // even though total_amount - paid_amount is still positive. If we only look at
-    // debt_amount, money dư after clearing an older bill will not flow to the next bill.
-    const debtBefore=Math.max(0, Number(order.debt_amount||0), total-paidBefore);
+    // V65.37's original fallback used total-paidBefore as a floor for stale
+    // debt_amount rows (old bills created before debt recalculation). GO-LIVE
+    // BLOCKER 3: that floor is now the ledger-derived debt instead of
+    // total-paidBefore — it still catches the same stale-data case (the
+    // ledger sum is >0 even when debt_amount is wrongly 0), without
+    // overstating debt after a Sales Return (see _ledgerDebtForOrder above).
+    const debtBefore=Math.max(0, Number(order.debt_amount||0), await this._ledgerDebtForOrder(conn, orderId));
     const pay=Math.min(Number(amount||0), debtBefore);
     const newPaid=Math.min(total, paidBefore+pay);
-    const debt=Math.max(0,total-newPaid);
+    // GO-LIVE BLOCKER 3: derive the new debt from debtBefore-pay (both
+    // already ledger-aware), not total-newPaid — identical result in the
+    // normal case (no return has ever touched this order), but no longer
+    // wrong once one has.
+    const debt=Math.max(0, debtBefore-pay);
     const status=debt<=0?'PAID':newPaid>0?'PARTIAL':'UNPAID';
     await conn.query(`UPDATE orders SET paid_amount=?,debt_amount=?,payment_status=? WHERE id=?`, [newPaid,debt,status,orderId]);
     return pay;
@@ -367,7 +396,27 @@ class PaymentAgent {
     const targetTotal = baseBill + installment;
     const oldTotal = Number(order.total_amount || 0);
     const paid = Number(order.paid_amount || 0);
-    const newDebt = Math.max(0, targetTotal - paid);
+
+    // GO-LIVE BLOCKER 3 fix: this used to set debt_amount = targetTotal-paid
+    // unconditionally — correct only when total_amount/paid_amount are the
+    // WHOLE story, which stops being true the moment a Sales Return posts its
+    // own compensating ADJUSTMENT_DECREASE (returns intentionally never touch
+    // total_amount, only debt_amount+the ledger — see ReturnAgent.complete()).
+    // That blind recompute silently resurrected debt a return had already
+    // reversed. Fix: post the installment/bill-growth charge (if any) as its
+    // own ledger row FIRST — exactly as before — then derive the new
+    // debt_amount from the order's own ledger, which by construction already
+    // includes that new row plus every SALE/PAYMENT/return adjustment ever
+    // posted for this order.
+    const diff = targetTotal - oldTotal;
+    if (diff > 0) {
+      await conn.query(
+        `INSERT INTO debt_transactions(customer_id,order_id,transaction_date,type,amount,note,created_by)
+         VALUES(?,?,?,'ADJUSTMENT_INCREASE',?,?,?)`,
+        [customerId, orderId, paymentDate, diff, `Bổ sung góp nợ/ngày vào bill`, userId]
+      );
+    }
+    const newDebt = Math.max(0, await this._ledgerDebtForOrder(conn, orderId));
     const status = newDebt <= 0 ? 'PAID' : paid > 0 ? 'PARTIAL' : 'UNPAID';
 
     try {
@@ -381,15 +430,6 @@ class PaymentAgent {
       await conn.query(
         `UPDATE orders SET total_amount=?, debt_amount=?, payment_status=? WHERE id=?`,
         [targetTotal, newDebt, status, orderId]
-      );
-    }
-
-    const diff = targetTotal - oldTotal;
-    if (diff > 0) {
-      await conn.query(
-        `INSERT INTO debt_transactions(customer_id,order_id,transaction_date,type,amount,note,created_by)
-         VALUES(?,?,?,'ADJUSTMENT_INCREASE',?,?,?)`,
-        [customerId, orderId, paymentDate, diff, `Bổ sung góp nợ/ngày vào bill`, userId]
       );
     }
   }
@@ -740,14 +780,23 @@ class PaymentAgent {
     } finally { conn.release(); }
   }
 
-  async recalcOrderAfterPaymentChange(conn, orderId) {
+  // GO-LIVE BLOCKER 3 fix: debtDelta is the exact amount this reverted
+  // payment had previously applied to this order (its paid_amount share,
+  // already subtracted from paid_amount by the caller before this runs) —
+  // restore debt_amount by that same amount instead of recomputing it from
+  // total_amount-paid_amount, which has no way to know a Sales Return may
+  // have reversed debt on this order in the meantime and would resurrect it.
+  // debtDelta=0 (the old, parameterless call shape) preserves the exact
+  // previous no-return behavior: paid_amount recalculated, debt_amount left
+  // untouched relative to itself.
+  async recalcOrderAfterPaymentChange(conn, orderId, debtDelta = 0) {
     if (!orderId) return;
-    const [rows] = await conn.query(`SELECT id,total_amount,paid_amount FROM orders WHERE id=? FOR UPDATE`, [orderId]);
+    const [rows] = await conn.query(`SELECT id,total_amount,paid_amount,debt_amount FROM orders WHERE id=? FOR UPDATE`, [orderId]);
     if (!rows.length) return;
     const o = rows[0];
     const total = Number(o.total_amount || 0);
     const paid = Math.max(0, Math.min(total, Number(o.paid_amount || 0)));
-    const debt = Math.max(0, total - paid);
+    const debt = Math.max(0, Number(o.debt_amount || 0) + Number(debtDelta || 0));
     const status = debt <= 0 ? 'PAID' : paid > 0 ? 'PARTIAL' : 'UNPAID';
     await conn.query(`UPDATE orders SET paid_amount=?, debt_amount=?, payment_status=? WHERE id=?`, [paid, debt, status, orderId]);
   }
@@ -792,7 +841,10 @@ class PaymentAgent {
       if (!(e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146))) throw e;
     }
 
-    const affected = new Set();
+    // GO-LIVE BLOCKER 3 fix: a Map of orderId -> total amount reverted for
+    // that order (was a Set of just the orderId) so recalcOrderAfterPaymentChange
+    // can restore debt by the exact delta instead of recomputing it blind.
+    const affected = new Map();
     for (const a of allocRows) {
       const amount = Number(a.amount || 0);
       if (a.order_id && amount > 0) {
@@ -800,7 +852,8 @@ class PaymentAgent {
         if (orders.length) {
           const paid = Math.max(0, Number(orders[0].paid_amount || 0) - amount);
           await conn.query(`UPDATE orders SET paid_amount=? WHERE id=?`, [paid, a.order_id]);
-          affected.add(Number(a.order_id));
+          const oid = Number(a.order_id);
+          affected.set(oid, (affected.get(oid) || 0) + amount);
         }
       }
     }
@@ -811,11 +864,12 @@ class PaymentAgent {
       if (orders.length) {
         const paid = Math.max(0, Number(orders[0].paid_amount || 0) - Number(p.amount || 0));
         await conn.query(`UPDATE orders SET paid_amount=? WHERE id=?`, [paid, p.order_id]);
-        affected.add(Number(p.order_id));
+        const oid = Number(p.order_id);
+        affected.set(oid, (affected.get(oid) || 0) + Number(p.amount || 0));
       }
     }
 
-    for (const oid of affected) await this.recalcOrderAfterPaymentChange(conn, oid);
+    for (const [oid, delta] of affected) await this.recalcOrderAfterPaymentChange(conn, oid, delta);
 
     // GO-LIVE F3: debt_installment_payments was never touched by revert —
     // a cancelled/edited payment that included an installment contribution

@@ -43,13 +43,80 @@ make_good() {
   } | gzip -9 > "$out"
 }
 
+# GO-LIVE BLOCKER 3: make_good() above produces a ~15-line archive — far
+# short of the 200-line window backup.sh/restore.sh's content checks used to
+# read via `head -n 200`/`grep -q`. A stream that short lets `gzip -dc`
+# finish writing before the downstream check is satisfied, so it never
+# triggers the SIGPIPE-under-pipefail bug those checks had (gzip closing
+# normally, not via SIGPIPE, once head/grep no longer need more input). A
+# REAL backup (thousands of lines, 60+ tables) hits it reliably — these two
+# generators exist specifically to reproduce that at safety-logic-test scale
+# without needing a live database.
+make_good_large_tables_late() {
+  local out="$1"
+  {
+    echo "-- MySQL dump 10.13  Distrib 8.0.35"
+    echo "-- Host: db    Database: meat_business_db"
+    echo "SET NAMES utf8mb4;"
+    # Padding BEFORE the tables — pushes every CREATE TABLE statement well
+    # past line 200, the exact window the old `head -n 200` check read.
+    for i in $(seq 1 300); do
+      echo "-- filler line ${i}, simulating a real dump's many other tables/comments before these ones"
+    done
+    for t in $CORE_TABLES; do
+      echo "DROP TABLE IF EXISTS \`${t}\`;"
+      echo "CREATE TABLE \`${t}\` ("
+      echo "  \`id\` bigint NOT NULL AUTO_INCREMENT,"
+      echo "  PRIMARY KEY (\`id\`)"
+      echo ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+    done
+    echo "-- Dump completed on $(date '+%Y-%m-%d %H:%M:%S')"
+  } | gzip -9 > "$out"
+}
+make_good_large_tables_early() {
+  local out="$1"
+  {
+    echo "-- MySQL dump 10.13  Distrib 8.0.35"
+    echo "-- Host: db    Database: meat_business_db"
+    echo "SET NAMES utf8mb4;"
+    # Tables FIRST (well within any old 200-line window), THEN a long tail —
+    # this is the exact shape that exposed the bug live: content the OLD
+    # check should have found easily, still rejected by the SIGPIPE race.
+    for t in $CORE_TABLES; do
+      echo "DROP TABLE IF EXISTS \`${t}\`;"
+      echo "CREATE TABLE \`${t}\` ("
+      echo "  \`id\` bigint NOT NULL AUTO_INCREMENT,"
+      echo "  PRIMARY KEY (\`id\`)"
+      echo ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+    done
+    for i in $(seq 1 500); do
+      echo "-- filler line ${i}, simulating a real dump's many other tables/comments after these ones"
+    done
+    echo "-- Dump completed on $(date '+%Y-%m-%d %H:%M:%S')"
+  } | gzip -9 > "$out"
+}
+
 echo "=== backup/restore safety logic ==="
 echo
 echo "-- 1. a sound archive is accepted --"
 GOOD="${WORK}/good.sql.gz"
 make_good "$GOOD"
 "$RESTORE" --verify "$GOOD" >/dev/null 2>&1
-check "$?" "sound archive passes --verify" "$?"
+check "$?" "tiny sound archive passes --verify" "$?"
+
+echo
+echo "-- 1b. a LARGE sound archive is accepted (SIGPIPE/pipefail regression) --"
+LARGE_LATE="${WORK}/good-large-tables-late.sql.gz"
+make_good_large_tables_late "$LARGE_LATE"
+LINES_LATE="$(gzip -dc "$LARGE_LATE" | wc -l)"
+"$RESTORE" --verify "$LARGE_LATE" >/dev/null 2>&1
+check "$?" "large archive (${LINES_LATE} lines, tables past line 200) passes --verify" "$?"
+
+LARGE_EARLY="${WORK}/good-large-tables-early.sql.gz"
+make_good_large_tables_early "$LARGE_EARLY"
+LINES_EARLY="$(gzip -dc "$LARGE_EARLY" | wc -l)"
+"$RESTORE" --verify "$LARGE_EARLY" >/dev/null 2>&1
+check "$?" "large archive (${LINES_EARLY} lines, tables well before line 200, long tail) passes --verify" "$?"
 
 echo
 echo "-- 2. corrupted archives are rejected --"

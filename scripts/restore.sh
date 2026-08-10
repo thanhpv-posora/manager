@@ -41,6 +41,17 @@ ARCHIVE=""
 MODE="restore"
 CONFIRMED=0
 
+# GO-LIVE BLOCKER 3 fix: registered once, here, before either temp file can
+# possibly exist — verify_archive() (below) can run twice in one invocation
+# (once for --verify, again from the --into path before it restores), and
+# DEFAULTS_FILE is created later still in the --into path. A single trap
+# covering both by name (rm -f on an empty/unset var is a safe no-op) means
+# neither call site needs its own `trap ... EXIT` that would otherwise
+# silently replace this one, since bash traps don't stack.
+DEFAULTS_FILE=""
+DECOMP_TMP=""
+trap 'rm -f "$DEFAULTS_FILE" "$DECOMP_TMP"' EXIT INT TERM
+
 usage() {
   cat <<'USAGE'
 Usage:
@@ -86,24 +97,42 @@ verify_archive() {
   gzip -t "$ARCHIVE" 2>/dev/null || fail "gzip integrity test FAILED" 2
   log "  gzip integrity: OK"
 
+  # GO-LIVE BLOCKER 3 fix: every check below used to pipe fresh from
+  # `gzip -dc "$ARCHIVE"` per check, including into `grep -q` (which exits
+  # the instant it finds a match). Under this script's own `set -o pipefail`
+  # (line 16), that early exit sends SIGPIPE to the still-writing `gzip -dc`
+  # process, which then exits 141 — pipefail reports the whole pipeline as
+  # failed even though the check itself (grep finding the table) succeeded.
+  # A real archive (thousands of lines) hits this reliably; the tiny
+  # synthetic archives verify-backup-restore.sh's safety-logic tests use
+  # never did, which is why this went unnoticed. Decompressing once into a
+  # plain file and grepping THAT for every check sidesteps the whole
+  # early-close-vs-still-writing race — nothing downstream of a file already
+  # on disk can ever SIGPIPE anything. DECOMP_TMP is a script-scope var
+  # (declared near the top, not `local`) cleaned up by the single trap
+  # registered there, so this stays safe across both calls to this function.
+  DECOMP_TMP="$(mktemp "${TMPDIR:-/tmp}/meatbiz-restore-verify.XXXXXX")"
+  gzip -dc "$ARCHIVE" > "$DECOMP_TMP"
+
   local tables
-  tables="$(gzip -dc "$ARCHIVE" | grep -c '^CREATE TABLE' || true)"
+  tables="$(grep -c '^CREATE TABLE' "$DECOMP_TMP" || true)"
   [ "$tables" -gt 0 ] || fail "archive contains no CREATE TABLE statements" 2
   log "  CREATE TABLE statements: ${tables}"
 
   # mysqldump writes this marker as its final line only on a clean run; its
   # absence means the dump was truncated (disk full, killed process).
-  if gzip -dc "$ARCHIVE" | tail -n 5 | grep -q 'Dump completed'; then
+  if tail -n 5 "$DECOMP_TMP" | grep -q 'Dump completed'; then
     log "  completion marker: OK"
   else
     fail "archive has no 'Dump completed' marker — dump was truncated" 2
   fi
 
   for t in orders order_items payments customers products stock_transactions; do
-    gzip -dc "$ARCHIVE" | grep -q "^CREATE TABLE \`${t}\`" \
+    grep -q "^CREATE TABLE \`${t}\`" "$DECOMP_TMP" \
       || fail "core table missing from archive: ${t}" 2
   done
   log "  core tables present: OK"
+  rm -f "$DECOMP_TMP"
   log "VERIFY OK — ${ARCHIVE}"
 }
 
@@ -135,7 +164,6 @@ verify_archive
 
 DEFAULTS_FILE="$(mktemp "${TMPDIR:-/tmp}/meatbiz-restore.XXXXXX")"
 chmod 600 "$DEFAULTS_FILE"
-trap 'rm -f "$DEFAULTS_FILE"' EXIT INT TERM
 cat > "$DEFAULTS_FILE" <<EOF
 [client]
 host=${DB_HOST}

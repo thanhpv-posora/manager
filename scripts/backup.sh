@@ -57,7 +57,8 @@ command -v gzip      >/dev/null 2>&1 || fail "gzip not found in PATH"
 # user on the host. Use a private defaults-file instead, removed on exit.
 DEFAULTS_FILE="$(mktemp "${TMPDIR:-/tmp}/meatbiz-backup.XXXXXX")"
 chmod 600 "$DEFAULTS_FILE"
-cleanup() { rm -f "$DEFAULTS_FILE"; }
+DECOMP_TMP=""
+cleanup() { rm -f "$DEFAULTS_FILE" "$DECOMP_TMP"; }
 trap cleanup EXIT INT TERM
 
 cat > "$DEFAULTS_FILE" <<EOF
@@ -110,17 +111,42 @@ if ! gzip -t "$TMP_OUT" 2>/dev/null; then
   fail "backup archive failed gzip integrity test — discarded" 2
 fi
 
+# GO-LIVE BLOCKER 3 fix: the content checks below used to pipe straight from
+# `gzip -dc "$TMP_OUT" | head -n 200 | grep -qi ...`. Under this script's own
+# `set -o pipefail` (line 14), the instant `head`/`grep -q` is satisfied and
+# closes its end of the pipe, the still-writing `gzip -dc` process gets
+# SIGPIPE and exits 141 — pipefail then reports the WHOLE pipeline as failed
+# even though the check itself succeeded. A real, multi-thousand-line dump
+# hits this every time; a tiny hand-crafted test archive never does (gzip
+# finishes writing before head/grep are satisfied), which is why this went
+# unnoticed until an actual backup was taken. Decompressing once into a plain
+# file and checking THAT sidesteps the whole early-close-vs-still-writing
+# race — nothing downstream of a file already on disk can ever SIGPIPE
+# anything.
+DECOMP_TMP="$(mktemp "${TMPDIR:-/tmp}/meatbiz-backup-check.XXXXXX")"
+gzip -dc "$TMP_OUT" > "$DECOMP_TMP"
+
 # The dump must actually contain the schema, not just a header.
-if ! gzip -dc "$TMP_OUT" | head -n 200 | grep -qi 'CREATE TABLE'; then
+if ! grep -qi 'CREATE TABLE' "$DECOMP_TMP"; then
   rm -f "$TMP_OUT"
   fail "backup contains no CREATE TABLE statement — discarded" 2
 fi
+
+# mysqldump writes this marker as its final line only on a clean run; its
+# absence means the dump was truncated (disk full, killed process) — same
+# check restore.sh --verify already made on the read side; made here too now
+# so a truncated backup is never even written to disk in the first place.
+if ! tail -n 5 "$DECOMP_TMP" | grep -q 'Dump completed'; then
+  rm -f "$TMP_OUT"
+  fail "backup has no 'Dump completed' marker — dump was truncated, discarded" 2
+fi
+
+TABLES="$(grep -c '^CREATE TABLE' "$DECOMP_TMP" || true)"
 
 mv "$TMP_OUT" "$OUT"
 chmod 600 "$OUT"
 
 SIZE="$(du -h "$OUT" | cut -f1)"
-TABLES="$(gzip -dc "$OUT" | grep -c '^CREATE TABLE' || true)"
 log "OK — ${SIZE}, ${TABLES} tables"
 
 # ── Retention ────────────────────────────────────────────────────────────────

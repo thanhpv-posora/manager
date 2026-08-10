@@ -1463,6 +1463,28 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
     // it (legacy clients, AI order path) — purely additive, no behavior change.
     await safeAddColumn(conn, 'orders', 'sales_flow', 'sales_flow VARCHAR(30) NULL');
 
+    // GATE 4 FIX (schema parity): order_items.price_book_id — live in
+    // production (`bigint DEFAULT NULL`, no FK, confirmed via SHOW CREATE
+    // TABLE on meat_business_db) since before this migration file started
+    // tracking it (the Mixed Sales Phase 1B comment two blocks down already
+    // assumed its existence: "alongside the existing sales_flow/
+    // price_book_id/..."), but never captured here — a genuine CR-4-class
+    // bootstrap-vs-live drift, same shape as the purchase_orders.order_date
+    // gap fixed under GO-LIVE BLOCKER 3. OrderAgent.create()/addItem() always
+    // INSERT it (order_items INSERT column list), with a silent legacy
+    // fallback INSERT (catch block, "Backward compatibility if production DB
+    // has not run V65.44.1 migration yet") that drops price_book_id (and
+    // sales_flow/customer_price_category_id) entirely on any DB missing this
+    // column — exactly what a fresh install hit, discovered while exercising
+    // CTO GO-LIVE Gate 4 (Customer Price Book) against a disposable
+    // fresh-install rehearsal DB. PriceMatrixAgent.js's book-management paths
+    // (deleteBook's paid-bill guard, recalcUnpaidOrdersForBook, listBooks
+    // usage counts) all filter order_items by price_book_id too — silently
+    // no-op without it. Nullable, no index, no backfill — same idempotent
+    // additive pattern as every other column in this migration; matches the
+    // live type exactly (BIGINT NULL).
+    await safeAddColumn(conn, 'order_items', 'price_book_id', 'price_book_id BIGINT NULL');
+
     // Mixed Sales Phase 1A: order_items.sales_flow — per-line branch, since one
     // mixed bill (orders.sales_flow='MIXED') can contain both CARCASS_POS and
     // INVENTORY_SALE items. Deliberately nullable (schema-only step; write-time

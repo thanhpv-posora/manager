@@ -732,11 +732,40 @@ class PaymentAgent {
         );
       }
 
-      await conn.query(
-        `INSERT INTO debt_transactions(customer_id,order_id,payment_id,transaction_date,type,amount,note,created_by)
-         VALUES(?,?,?,?, 'PAYMENT', ?, ?, ?)`,
-        [data.customer_id,data.order_id||null,insertId,data.payment_date,amount,note||`Thu tiền ${code}`,user.id]
-      );
+      // GATE 3 FIX (multi-bill payment ledger misattribution): a single lump
+      // PAYMENT row tied entirely to data.order_id (for the FULL amount) used
+      // to be posted here, regardless of how allocateCustomerOpenBillsByDate()
+      // above actually split the money across orders. payment_allocations
+      // already records the true per-order split (loop just above); this row
+      // didn't match it. Concretely: order_id's own per-order ledger
+      // (_ledgerDebtForOrder, the source of truth applyPaymentToOrder() and
+      // ensureOrderPayableTotal() both read) absorbed the WHOLE payment even
+      // when only part of it applied there, while every OTHER bill this same
+      // payment actually paid down got no PAYMENT row at all — so a later
+      // góp nợ payment made specifically against that other, genuinely fully-
+      // paid bill re-derived its debt from the ledger and resurrected it.
+      // Fix: post one PAYMENT row per real allocation (same order_id/amount
+      // as its payment_allocations row), plus one order_id=NULL row for any
+      // leftover parked as unapplied credit — sums to the same customer-level
+      // total as before (amount); only the per-order split is now correct.
+      const paymentLedgerRows = (orderAllocations || [])
+        .filter(a => Number(a.applied_amount || 0) > 0)
+        .map(a => ({ order_id: a.order_id, amount: Number(a.applied_amount || 0) }));
+      if (Number(unusedAmount || 0) > 0) {
+        paymentLedgerRows.push({ order_id: null, amount: Number(unusedAmount) });
+      }
+      if (!paymentLedgerRows.length) {
+        // No allocation happened at all (shouldn't normally occur — unusedAmount
+        // absorbs any remainder) — preserve the previous lump-sum behavior.
+        paymentLedgerRows.push({ order_id: data.order_id || null, amount });
+      }
+      for (const row of paymentLedgerRows) {
+        await conn.query(
+          `INSERT INTO debt_transactions(customer_id,order_id,payment_id,transaction_date,type,amount,note,created_by)
+           VALUES(?,?,?,?, 'PAYMENT', ?, ?, ?)`,
+          [data.customer_id,row.order_id,insertId,data.payment_date,row.amount,note||`Thu tiền ${code}`,user.id]
+        );
+      }
 
       if(Number(data.installment_plan_id||0)>0 && installmentPaid>0){
         await conn.query(
@@ -808,22 +837,34 @@ class PaymentAgent {
   // keeps this correct even if the same payment_id is reverted more than once
   // across repeated edits.
   async reverseDebtLedgerForPayment(conn, paymentId, customerId, userId) {
-    const [[row]] = await conn.query(
-      `SELECT COALESCE(SUM(CASE
+    // GATE 3 FIX: since create() now posts one PAYMENT row per order this
+    // payment actually applied to (instead of one lump row), the reversal
+    // must net each order_id to zero individually too — a single
+    // order_id=NULL compensating row only balanced the CUSTOMER-level total,
+    // leaving every per-order ledger (_ledgerDebtForOrder) still showing the
+    // original, un-reverted PAYMENT contribution after a cancel/edit.
+    // GROUP BY order_id keeps this idempotent across repeated reverts of the
+    // same payment_id, same reasoning as the original single-sum query.
+    const [rows] = await conn.query(
+      `SELECT order_id, COALESCE(SUM(CASE
           WHEN type IN ('SALE','ADJUSTMENT_INCREASE') THEN amount
           WHEN type IN ('PAYMENT','ADJUSTMENT_DECREASE') THEN -amount
           ELSE 0 END),0) net_effect
-       FROM debt_transactions WHERE payment_id=?`,
+       FROM debt_transactions WHERE payment_id=?
+       GROUP BY order_id`,
       [paymentId]
     );
-    const net = Number(row.net_effect || 0);
-    if (Math.abs(net) < 0.01) return;
-    const reverseType = net < 0 ? 'ADJUSTMENT_INCREASE' : 'ADJUSTMENT_DECREASE';
-    await conn.query(
-      `INSERT INTO debt_transactions(customer_id,order_id,payment_id,transaction_date,type,amount,note,created_by)
-       VALUES(?,NULL,?,?,?,?,?,?)`,
-      [customerId, paymentId, new Date().toISOString().slice(0,10), reverseType, Math.abs(net), `Đảo bút toán công nợ do sửa/hủy phiếu thu #${paymentId}`, userId || null]
-    );
+    const today = new Date().toISOString().slice(0,10);
+    for (const row of rows) {
+      const net = Number(row.net_effect || 0);
+      if (Math.abs(net) < 0.01) continue;
+      const reverseType = net < 0 ? 'ADJUSTMENT_INCREASE' : 'ADJUSTMENT_DECREASE';
+      await conn.query(
+        `INSERT INTO debt_transactions(customer_id,order_id,payment_id,transaction_date,type,amount,note,created_by)
+         VALUES(?,?,?,?,?,?,?,?)`,
+        [customerId, row.order_id, paymentId, today, reverseType, Math.abs(net), `Đảo bút toán công nợ do sửa/hủy phiếu thu #${paymentId}`, userId || null]
+      );
+    }
   }
 
   async revertPaymentEffects(conn, paymentId, userId = null) {

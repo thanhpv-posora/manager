@@ -1333,19 +1333,33 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       await conn.query(`INSERT INTO product_categories(name,sort_order) VALUES ('Thịt bò',1),('Thịt heo',2),('Thịt gà',3),('Chả các loại',4),('Bò xô / pha lóc',5)`);
     }
 
-    const [prodCount] = await conn.query(`SELECT COUNT(*) cnt FROM products`);
-    if (Number(prodCount[0].cnt) === 0) {
-      await conn.query(`INSERT INTO products(category_id,product_code,name,unit,default_sale_price,stock_quantity,low_stock_threshold,inventory_mode,allow_negative_stock) VALUES
-      (1,'BO_PHO','Bò phở','kg',220000,10,5,'TRACK_STOCK',0),
-      (1,'BO_SUON','Sườn bò','kg',190000,10,5,'TRACK_STOCK',0),
-      (1,'BO_BAP','Bắp bò','kg',260000,10,5,'TRACK_STOCK',0),
-      (1,'BO_NAM','Nạm bò','kg',180000,10,5,'TRACK_STOCK',0),
-      (2,'HEO_BA_CHI','Heo ba chỉ','kg',120000,20,5,'TRACK_STOCK',0),
-      (3,'GA_TA','Gà ta','kg',95000,20,5,'TRACK_STOCK',0),
-      (4,'CHA_LUA','Chả lụa','kg',140000,10,5,'TRACK_STOCK',0),
-      (5,'BO_XO','Bò xô nguyên con','kg',200000,0,0,'NON_STOCK',1),
-      (5,'BO_DUI','Đùi bò pha lóc','kg',260000,0,0,'NON_STOCK',1),
-      (5,'BO_BUP','Búp bò pha lóc','kg',250000,0,0,'NON_STOCK',1)`);
+    // PRODUCTION RELEASE GATE: demo/sample business records (products,
+    // customers, suppliers, and the catalog links between them below) must
+    // never be seeded into a real production database — a fresh
+    // meatbiz_production install discovered this the hard way: every
+    // ensureSchema() run (i.e. every single server boot, not just the
+    // first) re-fires these "if the table is empty" blocks, so deleting the
+    // demo rows by hand didn't stick — the next restart brought them right
+    // back. product_categories/business_settings/the initial 'admin' user
+    // just below are real required system/master data and stay
+    // unconditional in every environment; only the sample business records
+    // are now gated. Dev/rehearsal behavior (NODE_ENV!=='production')
+    // is unchanged.
+    if (process.env.NODE_ENV !== 'production') {
+      const [prodCount] = await conn.query(`SELECT COUNT(*) cnt FROM products`);
+      if (Number(prodCount[0].cnt) === 0) {
+        await conn.query(`INSERT INTO products(category_id,product_code,name,unit,default_sale_price,stock_quantity,low_stock_threshold,inventory_mode,allow_negative_stock) VALUES
+        (1,'BO_PHO','Bò phở','kg',220000,10,5,'TRACK_STOCK',0),
+        (1,'BO_SUON','Sườn bò','kg',190000,10,5,'TRACK_STOCK',0),
+        (1,'BO_BAP','Bắp bò','kg',260000,10,5,'TRACK_STOCK',0),
+        (1,'BO_NAM','Nạm bò','kg',180000,10,5,'TRACK_STOCK',0),
+        (2,'HEO_BA_CHI','Heo ba chỉ','kg',120000,20,5,'TRACK_STOCK',0),
+        (3,'GA_TA','Gà ta','kg',95000,20,5,'TRACK_STOCK',0),
+        (4,'CHA_LUA','Chả lụa','kg',140000,10,5,'TRACK_STOCK',0),
+        (5,'BO_XO','Bò xô nguyên con','kg',200000,0,0,'NON_STOCK',1),
+        (5,'BO_DUI','Đùi bò pha lóc','kg',260000,0,0,'NON_STOCK',1),
+        (5,'BO_BUP','Búp bò pha lóc','kg',250000,0,0,'NON_STOCK',1)`);
+      }
     }
 
     // S1J: the old "V681 beef carcass safety" auto-migration (converted BO_*
@@ -1373,29 +1387,30 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       );
     }
 
-    const [customerCount] = await conn.query(`SELECT COUNT(*) cnt FROM customers`);
-    if (Number(customerCount[0].cnt) === 0) {
-      await conn.query(`INSERT INTO customers(customer_code,name,phone,address,price_mode,debt_limit,payment_term_days,note) VALUES
-      ('KH001','Quán A','0900000001','Đà Nẵng','PRIVATE_PRICE',30000000,7,'Khách sỉ giá riêng'),
-      ('KH002','Quán B','0900000002','Đà Nẵng','COMMON_PRICE',10000000,0,'Khách dùng giá chung')`);
-    }
+    if (process.env.NODE_ENV !== 'production') {
+      const [customerCount] = await conn.query(`SELECT COUNT(*) cnt FROM customers`);
+      if (Number(customerCount[0].cnt) === 0) {
+        await conn.query(`INSERT INTO customers(customer_code,name,phone,address,price_mode,debt_limit,payment_term_days,note) VALUES
+        ('KH001','Quán A','0900000001','Đà Nẵng','PRIVATE_PRICE',30000000,7,'Khách sỉ giá riêng'),
+        ('KH002','Quán B','0900000002','Đà Nẵng','COMMON_PRICE',10000000,0,'Khách dùng giá chung')`);
+      }
 
-    const [supplierCount] = await conn.query(`SELECT COUNT(*) cnt FROM suppliers`);
-    if (Number(supplierCount[0].cnt) === 0) {
-      await conn.query(`INSERT INTO suppliers(supplier_code,name,phone,address) VALUES
-      ('NCC001','Lò bò Minh Tâm','0911111111','Đà Nẵng'),
-      ('NCC002','Trại gà Hòa Vang','0922222222','Đà Nẵng')`);
-    }
+      const [supplierCount] = await conn.query(`SELECT COUNT(*) cnt FROM suppliers`);
+      if (Number(supplierCount[0].cnt) === 0) {
+        await conn.query(`INSERT INTO suppliers(supplier_code,name,phone,address) VALUES
+        ('NCC001','Lò bò Minh Tâm','0911111111','Đà Nẵng'),
+        ('NCC002','Trại gà Hòa Vang','0922222222','Đà Nẵng')`);
+      }
 
-    
-    // V6.9 customer catalog default: if empty, seed KH001/KH002 with active products.
-    const [catalogCount] = await conn.query(`SELECT COUNT(*) cnt FROM customer_product_catalogs`);
-    if (Number(catalogCount[0].cnt) === 0) {
-      await conn.query(`INSERT IGNORE INTO customer_product_catalogs(customer_id,product_id,sort_order,is_default,is_active,del_flg)
-        SELECT c.id, p.id, p.id, 1, 1, 0
-        FROM customers c
-        JOIN products p ON p.del_flg=0 AND p.is_active=1
-        WHERE c.del_flg=0 AND c.is_active=1`);
+      // V6.9 customer catalog default: if empty, seed KH001/KH002 with active products.
+      const [catalogCount] = await conn.query(`SELECT COUNT(*) cnt FROM customer_product_catalogs`);
+      if (Number(catalogCount[0].cnt) === 0) {
+        await conn.query(`INSERT IGNORE INTO customer_product_catalogs(customer_id,product_id,sort_order,is_default,is_active,del_flg)
+          SELECT c.id, p.id, p.id, 1, 1, 0
+          FROM customers c
+          JOIN products p ON p.del_flg=0 AND p.is_active=1
+          WHERE c.del_flg=0 AND c.is_active=1`);
+      }
     }
 
     
@@ -1426,11 +1441,24 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       `INSERT IGNORE INTO business_settings(setting_key,setting_value) VALUES ('quantity_decimal_places','2')`
     );
 
+    // The initial 'admin' account is required system data — it's the only
+    // way to reach a fresh install at all — and stays unconditional in
+    // every environment. Its seeded password ('admin123', not even bcrypt)
+    // is a known, publicly-committed value; a real deploy must rotate it
+    // immediately after first boot (already done for meatbiz_production).
+    // 'kh001' is a demo CUSTOMER-role login tied to the demo 'Quán A'
+    // customer above — production-gated the same way, and split into its
+    // own INSERT (was one statement with 'admin') so the customer_id=1
+    // foreign key it depends on is never referenced when that demo customer
+    // was never created.
     const [userCount] = await conn.query(`SELECT COUNT(*) cnt FROM users`);
     if (Number(userCount[0].cnt) === 0) {
       await conn.query(`INSERT INTO users(username,full_name,phone,password_hash,role,customer_id) VALUES
-      ('admin','Chủ cửa hàng','0900000000','admin123','ADMIN',NULL),
-      ('kh001','Quán A','0900000001','kh001123','CUSTOMER',1)`);
+      ('admin','Chủ cửa hàng','0900000000','admin123','ADMIN',NULL)`);
+      if (process.env.NODE_ENV !== 'production') {
+        await conn.query(`INSERT INTO users(username,full_name,phone,password_hash,role,customer_id) VALUES
+        ('kh001','Quán A','0900000001','kh001123','CUSTOMER',1)`);
+      }
     }
 
     // MENU-SYSTEM-001-FINAL-FIX: new app_menus columns for existing installs

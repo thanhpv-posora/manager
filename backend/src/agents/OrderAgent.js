@@ -785,7 +785,7 @@ const orderId = r.insertId;
       // becoming unmanaged when the next bill is created after the receipt was recorded.
       try {
         const PaymentAgent = require('./PaymentAgent');
-        await PaymentAgent.allocateExistingCreditsToOpenBills(conn, data.customer_id, user.id);
+        await PaymentAgent.allocateExistingCreditsToOpenBills(conn, data.customer_id, user.id, billSolarDate);
       } catch (e) {
         // Do not block bill creation if the optional credit table has not been migrated yet.
         if (!(e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146))) throw e;

@@ -310,8 +310,21 @@ class PaymentAgent {
     );
   }
 
-  async allocateExistingCreditsToOpenBills(conn, customerId, userId) {
+  // PRODUCTION RELEASE GATE Phase 3 fix: applying an existing unapplied
+  // credit (payment overpayment OR sales-return excess) to a new bill wrote
+  // orders.debt_amount/paid_amount (via applyPaymentToOrder) and
+  // payment_allocations, but posted NO debt_transactions row — breaking the
+  // SUM(debt_transactions WHERE order_id=X)==orders.debt_amount invariant
+  // every other write path in this file maintains (_ledgerDebtForOrder(),
+  // the same read ensureOrderPayableTotal()/applyPaymentToOrder() both
+  // trust, would silently overstate this order's debt the moment anything
+  // re-derives it from the ledger — same defect class the Gate 3 multi-bill
+  // fix closed for the payment-application path). Reproduced live on
+  // meatbiz_cr4_rehearsal (verify-p1-credit-allocation-ledger-gap.js) before
+  // this fix, confirmed present.
+  async allocateExistingCreditsToOpenBills(conn, customerId, userId, transactionDate = null) {
     if (!customerId) return { allocations: [], applied_total: 0 };
+    const safeTransactionDate = transactionDate || new Date().toISOString().slice(0, 10);
     const [credits] = await conn.query(
       `SELECT * FROM payment_unapplied_credits
        WHERE customer_id=? AND remaining_amount>0
@@ -349,6 +362,18 @@ class PaymentAgent {
           await this.insertPaymentAllocationSafe(
             conn, credit.payment_id, o.id, customerId, applied, 'CUSTOMER_CREDIT',
             `Phân bổ tiền dư vào bill ${o.order_code}`, userId, cash, bank
+          );
+          // Phase 3 fix: mirror the orders.debt_amount reduction just applied
+          // above into the append-only ledger — same PAYMENT type/sign
+          // convention _ledgerDebtForOrder() already uses for a real cash
+          // payment; a credit application reduces debt identically from the
+          // ledger's point of view. payment_id is nullable here (a
+          // return-sourced credit has none), same as every other nullable
+          // payment_id debt_transactions row already written elsewhere.
+          await conn.query(
+            `INSERT INTO debt_transactions(customer_id,order_id,payment_id,transaction_date,type,amount,note,created_by)
+             VALUES(?,?,?,?, 'PAYMENT', ?, ?, ?)`,
+            [customerId, o.id, credit.payment_id || null, safeTransactionDate, applied, `Phân bổ tiền dư (credit #${credit.id}) vào bill ${o.order_code}`, userId || null]
           );
           creditLeft -= applied;
           appliedTotal += applied;

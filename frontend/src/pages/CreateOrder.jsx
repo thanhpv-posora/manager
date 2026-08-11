@@ -1307,6 +1307,17 @@ export default function CreateOrder(){
       let arr=[...items];
       let applied=0;
       let missing=0;
+      // PRODUCTION HOTFIX (Bug 2): a row can be a confirmed exact match
+      // (g.product set, resolved from importCandidates — every active
+      // product in this category+sales_flow) while still being absent from
+      // `items` (the customer-catalog-scoped POS grid) — that's precisely
+      // the "matched but never cataloged/priced for this customer yet" case
+      // the previous fix made matchable. Previously such a row was silently
+      // counted as "missing" here and never reached the bill at all, even
+      // though preview showed a real match (confirmed live: Tủy). Track
+      // these separately so their price can be resolved once, in a single
+      // batch, right after the loop — never trusted from Excel either way.
+      const newlyAddedRows=[];
       for(const [key,g] of grouped.entries()){
         const idx=arr.findIndex(x=>getProductKey(x)===key);
         if(idx>=0){
@@ -1321,13 +1332,54 @@ export default function CreateOrder(){
             : '';
           arr[idx]={...arr[idx],quantity:newQty,quantity_expr:String(newQty),quantity_note:existingNote?`${existingNote} + ${newNote}`:newNote,selected:newQty>0};
           applied+=g.count;
+        }else if(g.product&&g.product.product_id){
+          // Matched (product_id resolved) but not yet a bill line — add it as
+          // a NEW row instead of dropping it. This does NOT add the product
+          // to the customer's own catalog; "Thêm vào DM khách" stays a
+          // separate, explicit action for that.
+          const qty=roundQty(Number(g.qty||0));
+          const newRow={
+            product_id:g.product.product_id,
+            product_code:g.product.product_code,
+            product_name:g.product.product_name,
+            unit:g.product.unit||'kg',
+            stock_quantity:g.product.stock_quantity,
+            inventory_mode:g.product.inventory_mode,
+            allow_negative_stock:g.product.allow_negative_stock,
+            sale_price:0,
+            price_type:'MANUAL_PRICE',
+            price_book_id:null,
+            quantity:qty,
+            quantity_expr:String(qty),
+            quantity_note:g.qtyExprs.join(' + '),
+            selected:qty>0,
+            sort_order:arr.length+1
+          };
+          arr.push(newRow);
+          newlyAddedRows.push(newRow);
+          applied+=g.count;
         }else{
           missing+=g.count;
         }
       }
+      if(newlyAddedRows.length){
+        // Same price-resolution call loadCategoryCatalog()/refreshCurrentItemPrices()
+        // already use for every other catalog row — server-side authority,
+        // never the Excel value. A product with no resolvable price yet
+        // (e.g. no price book entry at all) simply keeps sale_price:0 here,
+        // same as the existing manual-price/no-private-price flow already
+        // handles elsewhere; final save() re-resolves it again regardless.
+        const pickedCustomer=customers.find(c=>String(c.id)===String(cid));
+        const pickedCalendarType=String(pickedCustomer?.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
+        const priced=await applyEffectivePrices(newlyAddedRows,{customer_id:cid,calendar_type:pickedCalendarType,order_date:orderDate,lunar_date_text:pickedCalendarType==='LUNAR'?billLunarDateText:''});
+        arr=arr.map(x=>{
+          const hit=priced.find(p=>String(p.product_id)===String(x.product_id));
+          return hit?{...x,sale_price:hit.sale_price,price_type:hit.price_type,price_book_id:hit.price_book_id,effective_from:hit.effective_from}:x;
+        });
+      }
       setItems(arr);
       const duplicateCount=rowsToApply.length-grouped.size;
-      const successMsg=`Đã đưa ${applied} dòng đã chọn vào bill (${grouped.size} mặt hàng${duplicateCount>0?', đã gộp '+duplicateCount+' dòng trùng':''}, ${importApplyMode==='ADD'?'cộng thêm':'ghi đè'}).${missing?` Có ${missing} dòng không tìm thấy trong danh mục khách.`:''}`;
+      const successMsg=`Đã đưa ${applied} dòng đã chọn vào bill (${grouped.size} mặt hàng${duplicateCount>0?', đã gộp '+duplicateCount+' dòng trùng':''}, ${importApplyMode==='ADD'?'cộng thêm':'ghi đè'}).${missing?` Có ${missing} dòng không tìm thấy trong database.`:''}`;
 
       if(excelBillQueue.length>0){
         // A multi-sheet Excel import is in progress (one bill per sheet).

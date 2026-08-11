@@ -135,6 +135,16 @@ router.get('/:customerId/catalog/order', auth(['ADMIN','STAFF','CUSTOMER']), asy
   res.json(await PriceMatrixAgent.customerCatalogForOrder(req.params.customerId, req.query.category_id, req.query.inventory_mode || null, req.query.bill_date || req.query.order_date || null, req.query.sales_flow || null, req.query.lunar_date_text || null))
 }catch(e){next(e)}});
 
+// PRODUCTION HOTFIX — POS Excel Import candidate pool: every active product in
+// the category matching the customer's resolved sales_flow, independent of
+// customer_product_catalogs/price-book membership. Sibling of the /catalog/order
+// route above, not a replacement — that route (and `items` in CreateOrder.jsx)
+// stays exactly as-is for the manual POS grid.
+router.get('/:customerId/catalog/import-candidates', auth(['ADMIN','STAFF','CUSTOMER']), async(req,res,next)=>{try{
+  await assertCustomerScope(req.user, req.params.customerId);
+  res.json(await PriceMatrixAgent.importCandidateProducts(req.params.customerId, req.query.category_id, req.query.sales_flow || null))
+}catch(e){next(e)}});
+
 router.post('/copy', auth(['ADMIN','STAFF']), async(req,res,next)=>{try{
   await assertCustomerScope(req.user, req.body.from_customer_id);
   await assertCustomerScope(req.user, req.body.to_customer_id);

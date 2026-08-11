@@ -118,6 +118,9 @@ export default function CreateOrder(){
   const[importSheetFilter,setImportSheetFilter]=useState('');
   const[excelBillQueue,setExcelBillQueue]=useState([]);
   const[excelBillIndex,setExcelBillIndex]=useState(-1);
+  // PRODUCTION HOTFIX — POS Excel Import candidate pool, independent of the
+  // customer-catalog-scoped `items` (POS grid). See loadImportCandidates().
+  const[importCandidates,setImportCandidates]=useState([]);
 
   const qtyRefs=useRef({});
   const priceRefs=useRef({});
@@ -467,8 +470,32 @@ export default function CreateOrder(){
     await loadCustomerCategorySelection(id);
   };
 
+  // PRODUCTION HOTFIX — POS Excel Import candidate pool. `items` (the POS
+  // grid, loaded below) is intentionally scoped to what this customer
+  // already has cataloged/priced — correct for manual entry, but it silently
+  // hid real, active, correctly-classified products from Excel-import name
+  // matching whenever a customer simply hadn't been individually cataloged/
+  // priced for that product yet (confirmed live: BO0026 "Tủy"). This loads a
+  // SEPARATE, independent candidate list — every active product in the same
+  // category matching the customer's resolved sales_flow — from the new
+  // /catalog/import-candidates endpoint (server-side reuses the exact same
+  // cross-flow isolation guard customerCatalogForOrder() already enforces,
+  // not a re-implementation of it). Does not touch `items`/the POS grid at
+  // all. Best-effort: a failure here degrades matchImportedRows() back to
+  // whatever `items` already has (see previewImport/updateImportRow below),
+  // it must never block the POS grid itself from loading.
+  const loadImportCandidates=async(id,categoryId)=>{
+    if(!id||!categoryId){setImportCandidates([]);return;}
+    try{
+      const rows=(await api.get('/price-matrix/'+id+'/catalog/import-candidates',{params:{category_id:categoryId,sales_flow:flowForCustomerId(id)}})).data;
+      setImportCandidates(rows||[]);
+    }catch(e){
+      setImportCandidates([]);
+    }
+  };
+
   const loadCategoryCatalog=async(id,categoryId)=>{
-    if(!id||!categoryId){setItems([]);return;}
+    if(!id||!categoryId){setItems([]);setImportCandidates([]);return;}
     setCatalogLoading(true);
     try{
       const pickedCustomer=customers.find(c=>String(c.id)===String(id));
@@ -487,6 +514,7 @@ export default function CreateOrder(){
       setItems(catalog);
       setNoPrivatePrice(!!r.no_private_prices);
       setPendingFocusQty(true);
+      loadImportCandidates(id,categoryId);
     }finally{
       setCatalogLoading(false);
     }
@@ -1221,21 +1249,31 @@ export default function CreateOrder(){
     setPendingFocusCustomer(true);
   };
 
+  // PRODUCTION HOTFIX: matching now targets importCandidates (every active
+  // product in the category/sales_flow, independent of this customer's own
+  // catalog membership) instead of `items` (the customer-catalog-scoped POS
+  // grid) — see loadImportCandidates(). Falls back to `items` only if
+  // importCandidates hasn't loaded/failed to load, so a transient load
+  // failure degrades to the old (pre-fix) behavior rather than matching
+  // nothing at all. The matching algorithm itself (findExactProductCandidates
+  // / scoreProduct in orderImportParser.js) is completely unchanged.
   const previewImport=(sourceType='text')=>{
     if(!cid)return showWarning('Chọn khách trước');
     if(!selectedCategoryId)return showWarning('Chọn danh mục hàng hóa trước');
+    const candidates=importCandidates.length?importCandidates:items;
     const rows=parseOrderText(importText,sourceType);
-    const matched=matchImportedRows(rows,items);
+    const matched=matchImportedRows(rows,candidates);
     setImportPreview(matched);
     setImportMsg(`Đọc được ${rows.length} dòng, khớp chắc chắn ${matched.filter(x=>x.ok).length} dòng, lỗi ${matched.filter(x=>x.errors?.length).length} dòng`);
   };
 
   const updateImportRow=(idx,patch)=>{
+    const candidates=importCandidates.length?importCandidates:items;
     setImportPreview(prev=>prev.map((r,i)=>{
       if(i!==idx)return r;
       const updated={...r,...patch};
       const qty=calcQtyExpression(updated.qtyExpr);
-      return rematchOne({...updated,qty,sourceType:'manual',errors:[],warnings:[]},items);
+      return rematchOne({...updated,qty,sourceType:'manual',errors:[],warnings:[]},candidates);
     }));
   };
 
@@ -1515,6 +1553,11 @@ export default function CreateOrder(){
         return {sheetName,rows,date:findSheetBillDate(data),error:''};
       };
 
+      // PRODUCTION HOTFIX: match against importCandidates (every active
+      // product in the category/sales_flow, independent of this customer's
+      // own catalog membership), same as previewImport()/updateImportRow()
+      // above — see loadImportCandidates(). Same fallback-to-items safety.
+      const matchCandidates=importCandidates.length?importCandidates:items;
       const sheetResults=sheetPick.names.map(parseSheetRows);
       const noDateSheets=sheetResults.filter(x=>x.rows&&x.rows.length&&!x.date);
       const billQueue=sheetResults
@@ -1524,7 +1567,7 @@ export default function CreateOrder(){
           rows:x.rows,
           date:x.date,
           error:x.error||'',
-          matched:matchImportedRows(x.rows,items)
+          matched:matchImportedRows(x.rows,matchCandidates)
         }));
       const rejectedMsg=noDateSheets.map(x=>`Sheet "${x.sheetName}" chưa có ngày xuất hàng. Vui lòng bổ sung ngày trong Excel rồi import lại.`).join(' ');
       if(!billQueue.length){

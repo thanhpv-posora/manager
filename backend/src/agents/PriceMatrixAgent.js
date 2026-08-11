@@ -697,11 +697,12 @@ class PriceMatrixAgent {
   // this fix, a legacy category with sales_flow=NULL was rejected outright for
   // an INVENTORY_SALE request even when the customer's own default_sales_flow
   // was INVENTORY_SALE — the exact CATALOG_CATEGORY_NOT_INVENTORY_SALE defect.
-  async customerCatalogForOrder(customerId, categoryId, inventoryMode = null, billDate = null, salesFlow = null, lunarDateText = null) {
-    // S4.2: 1 POS bill = 1 customer + 1 category. The catalog and its prices must
-    // never span multiple categories, or a bill could mix Bò and Gà products.
-    if (!categoryId) throw Object.assign(new Error('Thiếu danh mục hàng hóa'), { status: 400 });
-
+  // PRODUCTION HOTFIX: extracted verbatim from customerCatalogForOrder()'s own
+  // top (no behavior change there — see the call site below) so
+  // importCandidateProducts() can share the exact same cross-flow isolation
+  // guard instead of re-implementing it. Throws the same errors/codes as
+  // before; returns the loaded customer row since callers need it too.
+  async _loadCustomerAndAssertSalesFlow(customerId, categoryId, salesFlow) {
     const [customers] = await pool.query(`SELECT * FROM customers WHERE id=? AND del_flg=0`, [customerId]);
     if(!customers.length) throw new Error('Không tìm thấy khách hàng');
 
@@ -736,6 +737,60 @@ class PriceMatrixAgent {
         );
       }
     }
+    return customers[0];
+  }
+
+  // PRODUCTION HOTFIX — POS Excel Import candidate pool. customerCatalogForOrder()
+  // (below) is intentionally scoped to what a customer already has a
+  // customer_product_catalogs row or an effective price for — correct for the
+  // POS grid, but wrong for Excel import: a real, active, correctly-classified
+  // product this specific customer simply hasn't been individually cataloged/
+  // priced for yet was invisible to matchImportedRows(), reported "Chưa khớp
+  // danh mục" even on an exact name match (confirmed live: BO0026 "Tủy",
+  // active/CARCASS_POS/NON_STOCK, has zero customer_product_catalogs and zero
+  // customer_price_book_items rows for the affected customer — it never
+  // reached the candidate array at all). Fix: a separate candidate pool, every
+  // active product in the category matching the customer's resolved
+  // sales_flow, independent of catalog/price membership — reuses
+  // _loadCustomerAndAssertSalesFlow() above (same cross-flow isolation guard
+  // customerCatalogForOrder() already trusts, not a second implementation of
+  // that rule) and the identical sales_flow/inventory_mode filter shape as
+  // customerCatalogForOrder()'s own ALL_PRODUCTS_FALLBACK branch. No price
+  // resolution here at all — the import preview never displays a price
+  // (matching only needs product_id/code/name), and the final bill save
+  // still re-resolves price through the normal server-side authority exactly
+  // as every other item does, so Excel's own numbers are never trusted
+  // either way. The manual POS grid (customerCatalogForOrder / `items` in
+  // CreateOrder.jsx) is completely untouched by this addition.
+  async importCandidateProducts(customerId, categoryId, salesFlow = null) {
+    if (!categoryId) throw Object.assign(new Error('Thiếu danh mục hàng hóa'), { status: 400 });
+    await this._loadCustomerAndAssertSalesFlow(customerId, categoryId, salesFlow);
+
+    let salesFlowFilterSql = '';
+    if (salesFlow === 'CARCASS_POS') {
+      salesFlowFilterSql = " AND (p.sales_flow='CARCASS_POS' OR p.sales_flow IS NULL) AND p.inventory_mode='NON_STOCK'";
+    } else if (salesFlow === 'INVENTORY_SALE') {
+      salesFlowFilterSql = " AND p.sales_flow='INVENTORY_SALE' AND p.inventory_mode='TRACK_STOCK'";
+    }
+
+    const [rows] = await pool.query(
+      `SELECT p.id product_id, p.product_code, p.name product_name, p.unit,
+              p.stock_quantity, p.inventory_mode, p.allow_negative_stock
+       FROM products p
+       WHERE p.del_flg=0 AND p.is_active=1 AND p.category_id=?${salesFlowFilterSql}
+       ORDER BY p.name`,
+      [categoryId]
+    );
+    return rows;
+  }
+
+  async customerCatalogForOrder(customerId, categoryId, inventoryMode = null, billDate = null, salesFlow = null, lunarDateText = null) {
+    // S4.2: 1 POS bill = 1 customer + 1 category. The catalog and its prices must
+    // never span multiple categories, or a bill could mix Bò and Gà products.
+    if (!categoryId) throw Object.assign(new Error('Thiếu danh mục hàng hóa'), { status: 400 });
+
+    const customer = await this._loadCustomerAndAssertSalesFlow(customerId, categoryId, salesFlow);
+    const customers = [customer]; // preserves every `customers[0]`/`customers.length` reference below verbatim.
 
     let modeFilterSql = '';
     const modeFilterParams = [];

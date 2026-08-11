@@ -1906,6 +1906,26 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       console.log('[MENU-PREFERENCES-MIGRATION-FIX-001] Migrated user_menu_preferences to menu_id schema.');
     }
 
+    // PRODUCTION HOTFIX: user_menu_preferences.menu_key — live on the
+    // original meat_business_db (varchar(100) NOT NULL, always populated,
+    // confirmed via SHOW CREATE TABLE + a 0-row null/empty check) but the
+    // base CREATE TABLE above never included it — only installs that
+    // started life on the OLD menu_key-only schema get it, via the
+    // MENU-PREFERENCES-MIGRATION-FIX-001 block just above (whose own guard,
+    // "table exists but has no menu_id yet", is false immediately after a
+    // fresh CREATE TABLE). A genuinely fresh install (meatbiz_production,
+    // meatbiz_cr4_rehearsal) therefore never got menu_key at all —
+    // UserPermissionAgent.js's saveUserMenuPreferences() INSERT names it
+    // unconditionally (`INSERT INTO user_menu_preferences
+    // (user_id,menu_id,menu_key,...)`), so every save failed with
+    // ER_BAD_FIELD_ERROR. Confirmed live on meatbiz_production. Matches the
+    // known-good definition exactly (NOT NULL, no default) — safe because
+    // every fresh-install target this runs against currently has 0 rows in
+    // this table; the MIGRATION-FIX-001 block above already establishes the
+    // same "NOT NULL is fine, orphans already handled" precedent for
+    // pre-existing installs.
+    await safeAddColumn(conn, 'user_menu_preferences', 'menu_key', 'menu_key VARCHAR(100) NOT NULL');
+
     // Validate parent_menu_key references — warn on orphans, do not crash
     const [orphanMenus]=await conn.query(
       `SELECT menu_key,parent_menu_key FROM app_menus

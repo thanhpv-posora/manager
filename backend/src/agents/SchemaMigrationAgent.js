@@ -503,6 +503,9 @@ class SchemaMigrationAgent{
         ['sponsor_ad_campaigns','del_flg'],
         ['debt_installment_plans','target_debt_amount'],
         ['user_menu_permissions','menu_key'],
+        // PRODUCTION HOTFIX — distinct table from user_menu_permissions above
+        // (per-user menu preference sort/pin/hide, not the permission grant).
+        ['user_menu_preferences','menu_key'],
         ['ai_learning_logs','agent_name'],
         ['customer_price_books','category_id'],
         ['customer_price_books','customer_price_category_id'],

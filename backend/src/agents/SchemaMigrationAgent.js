@@ -36,6 +36,19 @@ class SchemaMigrationAgent{
     return rows.length?String(rows[0].ct):null;
   }
 
+  // PRODUCTION HOTFIX: sibling of columnType() above — existence-only checks
+  // (the `required` list) would report OK on a products.name column that
+  // exists but has the wrong (accent-insensitive) collation, which is
+  // exactly the failure this closes.
+  async columnCollation(conn,table,column){
+    const [rows]=await conn.query(
+      `SELECT COLLATION_NAME cn FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME=?`,
+      [table,column]
+    );
+    return rows.length?rows[0].cn:null;
+  }
+
   async hasIndex(conn,table,indexName){
     const [rows]=await conn.query(
       `SELECT COUNT(*) cnt FROM INFORMATION_SCHEMA.STATISTICS
@@ -628,6 +641,22 @@ class SchemaMigrationAgent{
           type:'COLUMN_TYPE',
           actual_type:ct,
           status:isVarchar?'OK':'MISSING',
+        });
+      }
+
+      // PRODUCTION HOTFIX — products.name must be utf8mb4_0900_as_ci
+      // (accent-sensitive); the table's own DEFAULT CHARSET falls back to
+      // accent-insensitive utf8mb4_0900_ai_ci otherwise, which silently
+      // merges differently-accented Vietnamese product names as duplicates.
+      {
+        const tableOk=await this.hasTable(conn,'products');
+        const coll=tableOk?await this.columnCollation(conn,'products','name'):null;
+        checks.push({
+          table:'products',
+          column:'name collation is utf8mb4_0900_as_ci (accent-sensitive)',
+          type:'COLUMN_COLLATION',
+          actual_collation:coll,
+          status:coll==='utf8mb4_0900_as_ci'?'OK':'MISSING',
         });
       }
 

@@ -145,7 +145,13 @@ CREATE TABLE IF NOT EXISTS products (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   category_id BIGINT NULL,
   product_code VARCHAR(50) NOT NULL UNIQUE,
-  name VARCHAR(255) NOT NULL,
+  -- PRODUCTION HOTFIX: utf8mb4_0900_as_ci (accent-SENSITIVE, case-insensitive)
+  -- — the table's own DEFAULT CHARSET=utf8mb4 falls back to utf8mb4_0900_ai_ci
+  -- (accent-INsensitive) otherwise, which silently treats "Nạm"/"Nầm"/"Nam"
+  -- as the same string in ProductAgent.assertUniqueProductName()'s
+  -- LOWER(TRIM(name))=? uniqueness check. See the idempotent migration
+  -- below for existing installs.
+  name VARCHAR(255) COLLATE utf8mb4_0900_as_ci NOT NULL,
   unit VARCHAR(50) NOT NULL DEFAULT 'kg',
   default_sale_price DECIMAL(15,2) NOT NULL DEFAULT 0,
   default_purchase_price DECIMAL(15,2) NOT NULL DEFAULT 0,
@@ -857,6 +863,31 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
     await safeAddColumn(conn, 'products', 'carcass_group', 'carcass_group VARCHAR(100) NULL');
     await safeAddColumn(conn, 'products', 'allow_negative_stock', 'allow_negative_stock TINYINT(1) NOT NULL DEFAULT 0');
     await safeAddColumn(conn, 'products', 'default_supplier_id', 'default_supplier_id BIGINT NULL');
+
+    // PRODUCTION HOTFIX: products.name must be accent-SENSITIVE (utf8mb4_0900_as_ci),
+    // not the table-default accent-insensitive utf8mb4_0900_ai_ci — confirmed live
+    // on meat_business_db (already as_ci, applied by hand at some point, never
+    // captured here; same class of drift as the other production hotfixes this
+    // release). Under ai_ci, ProductAgent.assertUniqueProductName()'s
+    // LOWER(TRIM(name))=? check treats "Nạm"/"Nầm"/"Nam" as one string —
+    // confirmed by direct query: (_utf8mb4'Nạm' COLLATE utf8mb4_0900_ai_ci) =
+    // (_utf8mb4'Nầm' COLLATE utf8mb4_0900_ai_ci) is TRUE under ai_ci, FALSE
+    // under as_ci — while case-only pairs ("NẠM"/"nạm") stay equal under
+    // BOTH, so no application code change is needed once the column is
+    // correct. Idempotent: only fires when the live collation actually
+    // differs, so a table already on as_ci (or already migrated) is a no-op.
+    {
+      const [[nameCol]] = await conn.query(
+        `SELECT COLLATION_NAME FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='products' AND COLUMN_NAME='name'`
+      );
+      if (nameCol && nameCol.COLLATION_NAME !== 'utf8mb4_0900_as_ci') {
+        await conn.query(
+          `ALTER TABLE products MODIFY COLUMN name VARCHAR(255) COLLATE utf8mb4_0900_as_ci NOT NULL`
+        );
+        console.log('[PRODUCT-NAME-COLLATION-001] products.name collation changed to utf8mb4_0900_as_ci (was ' + nameCol.COLLATION_NAME + ').');
+      }
+    }
 
     // S1G: products.sales_flow — the Product Sales Domain, independent of
     // inventory_mode. Controls which sales catalog/form a product belongs to

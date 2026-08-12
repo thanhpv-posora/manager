@@ -154,19 +154,24 @@ class PrintService {
       <tr><td>${d.order_date}</td><td>${d.order_code}</td><td class="right">${formatMoneyValue(d.total_amount)}</td><td class="right">${formatMoneyValue(d.paid_amount)}</td><td class="right"><b>${formatMoneyValue(d.debt_amount)}</b></td></tr>
     `).join('');
     const rows = order.items.map((i,idx)=>`
-      <tr><td>${idx+1}</td><td>${i.product_name}</td><td class="center">${i.unit}</td><td class="right">${qty(i.quantity,settings.quantity_decimal_places)}</td><td class="right">${formatMoneyValue(i.sale_price)}</td><td class="right">${formatMoneyValue(i.total_price)}</td></tr>
+      <tr><td class="center">${idx+1}</td><td>${i.product_name}</td><td class="center">${i.unit}</td><td class="right">${qty(i.quantity,settings.quantity_decimal_places)}</td><td class="right">${formatMoneyValue(i.sale_price)}</td><td class="right">${formatMoneyValue(i.total_price)}</td></tr>
     `).join('');
     return `<!doctype html><html><head><meta charset="utf-8"><title>${order.order_code}</title><style>
-body{font-family:Arial,sans-serif;margin:28px;color:#111}.header{display:flex;justify-content:space-between;border-bottom:3px solid #7f1d1d;padding-bottom:14px}
-.logo{font-size:30px;font-weight:900;color:#7f1d1d}.sub{color:#666;font-size:13px}.qr{width:120px;height:120px}.info{margin:18px 0;display:grid;grid-template-columns:1fr 1fr;gap:10px}
-table{width:100%;border-collapse:collapse;margin-top:10px}th{background:#7f1d1d;color:#fff}td,th{border:1px solid #ddd;padding:9px}.right{text-align:right;white-space:nowrap}.center{text-align:center}
-.payment-box{margin-top:16px}.payment-line{font-size:17px;font-weight:700;margin-top:6px}.total{margin-top:15px;text-align:right;font-size:20px;font-weight:900}.section-title{margin-top:20px;font-size:16px;font-weight:900;color:#7f1d1d;border-bottom:2px solid #7f1d1d;padding-bottom:4px}.debt-summary{margin-top:10px;margin-left:auto;max-width:460px}.debt-summary div{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px dashed #ddd}.debt-summary b{font-size:17px}.status-paid{color:#15803d;font-weight:900}.status-unpaid{color:#b91c1c;font-weight:900}.print-btn{position:fixed;right:20px;top:20px;padding:12px 18px;background:#7f1d1d;color:#fff;border:0;border-radius:10px;font-weight:700}
-.sign{display:flex;justify-content:space-between;margin-top:45px;text-align:center}@media print{.print-btn{display:none}body{margin:10px}}</style></head><body>
+@page{margin:14mm 16mm 14mm 16mm}
+body{font-family:Arial,sans-serif;margin:20px;color:#111}.header{display:flex;justify-content:space-between;border-bottom:3px solid #7f1d1d;padding-bottom:10px}
+.logo{font-size:30px;font-weight:900;color:#7f1d1d}.sub{color:#666;font-size:13px}.qr{width:120px;height:120px}.info{margin:13px 0;display:grid;grid-template-columns:1fr 1fr;gap:10px}
+table{width:100%;border-collapse:collapse;margin-top:7px}th{background:#7f1d1d;color:#fff}td,th{border:1px solid #ddd;padding:9px}.right{text-align:right;white-space:nowrap}.center{text-align:center}
+.bill-items-frame{width:100%;box-sizing:border-box;border:1px solid #ddd;margin-top:7px}
+table.bill-items{width:100%;table-layout:fixed;border-collapse:collapse;margin:0;border:0}
+table.bill-items th,table.bill-items td{border:1px solid #ddd;box-sizing:border-box}
+table.bill-items thead th{text-align:center;vertical-align:middle;white-space:normal;line-height:1.2;padding:8px 4px}
+.payment-box{margin-top:12px}.payment-line{font-size:17px;font-weight:700;margin-top:6px}.total{margin-top:11px;text-align:right;font-size:20px;font-weight:900}.section-title{margin-top:14px;font-size:16px;font-weight:900;color:#7f1d1d;border-bottom:2px solid #7f1d1d;padding-bottom:4px}.debt-summary{margin-top:7px;margin-left:auto;max-width:460px}.debt-summary div{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px dashed #ddd}.debt-summary b{font-size:17px}.status-paid{color:#15803d;font-weight:900}.status-unpaid{color:#b91c1c;font-weight:900}.print-btn{position:fixed;right:20px;top:20px;padding:12px 18px;background:#7f1d1d;color:#fff;border:0;border-radius:10px;font-weight:700}
+.sign{display:flex;justify-content:space-between;margin-top:32px;text-align:center}@media print{.print-btn{display:none}body{margin:0}}</style></head><body>
 <button class="print-btn" onclick="window.print()">IN BILL</button>
 <div class="header"><div><div class="logo">${settings.shop_name||"MEATBIZ FOOD"}</div><div class="sub">${settings.shop_address||""} ${settings.shop_phone? " - " + settings.shop_phone : ""}</div><div class="sub">Phiếu giao hàng / Bill bán hàng</div><div>Mã bill: <b>${order.order_code}</b></div><div>Ngày lập phiếu: ${createdDate}</div><div>Ngày xuất hàng: ${billDate}</div></div><div><img class="qr" src="${qr}"><div class="sub">Quét QR xem bill</div></div></div>
 ${cancelledBannerHtml(order)}
 <div class="info"><div><b>Khách hàng:</b> ${order.customer_name}<br><b>SĐT:</b> ${order.phone || ''}<br><b>Địa chỉ:</b> ${order.address || ''}</div><div><b>Trạng thái:</b> ${order.payment_status}<br><b>Ghi chú:</b> ${order.note || ''}</div></div>
-<table><thead><tr><th>STT</th><th>Mặt hàng</th><th>ĐVT</th><th>Số lượng</th><th>Đơn giá (VND)</th><th>Thành tiền (VND)</th></tr></thead><tbody>${rows}</tbody></table>
+<div class="bill-items-frame"><table class="bill-items"><colgroup><col style="width:5%"><col style="width:37%"><col style="width:7%"><col style="width:10%"><col style="width:17%"><col style="width:24%"></colgroup><thead><tr><th>STT</th><th>Mặt hàng</th><th>ĐVT</th><th>Số lượng</th><th>Đơn giá (VND)</th><th>Thành tiền (VND)</th></tr></thead><tbody>${rows}</tbody></table></div>
 <div class="section-title">THÔNG TIN THANH TOÁN</div>
 <table><thead><tr><th>Nội dung</th><th>Ngày thu</th><th>Mã phiếu thu</th><th>Tiền mặt (VND)</th><th>Chuyển khoản (VND)</th><th>Giá trị thanh toán (VND)</th></tr></thead><tbody>${paymentRows || '<tr><td colspan="6" class="right">Chưa phát sinh thanh toán cho bill này</td></tr>'}</tbody></table>
 <div class="section-title">TỔNG HỢP CÔNG NỢ</div>
@@ -222,12 +227,13 @@ ${oldDebtRows ? `<h3>Những bill chưa thanh toán</h3><table><thead><tr><th>Ng
     `).join('');
 
     return `<!doctype html><html><head><meta charset="utf-8"><title>${order.order_code}</title><style>
-body{font-family:Arial,sans-serif;margin:0;padding:6px;color:#111;width:78mm;font-size:12px}
+@page{margin:2mm 3mm 3mm 3mm}
+body{font-family:Arial,sans-serif;margin:0;padding:0;color:#111;width:78mm;font-size:12px}
 .center{text-align:center}.shop{font-size:16px;font-weight:900}.muted{font-size:11px;color:#555}
-hr{border:0;border-top:1px dashed #333;margin:6px 0}
+hr{border:0;border-top:1px dashed #333;margin:4px 0}
 table{width:100%;border-collapse:collapse}td{padding:3px 0;vertical-align:top}.right{text-align:right;white-space:nowrap}
 .total{font-size:13px;font-weight:900;margin-top:4px}.print-btn{position:fixed;right:10px;top:10px;padding:8px;background:#111;color:#fff;border:0;border-radius:6px}
-@media print{.print-btn{display:none}body{width:78mm;margin:0}}
+@media print{.print-btn{display:none}body{width:78mm;margin:0;padding:0}}
 </style></head><body>
 <button class="print-btn" onclick="window.print()">IN K80</button>
 <div class="center">

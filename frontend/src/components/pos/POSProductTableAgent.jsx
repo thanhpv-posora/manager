@@ -17,8 +17,10 @@ export default function POSProductTableAgent({
   filter,
   setFilter,
   qtyRefs,
+  searchInputRef,
   focusNext,
   focusFirstFilteredItem,
+  onQtyCommitEnter,
   updateQtyExpr,
   dragId,
   setDragId,
@@ -42,6 +44,7 @@ export default function POSProductTableAgent({
         <span className="pos-search-wrap">
           <span className="pos-search-icon">🔍</span>
           <input
+            ref={searchInputRef}
             className="input pos-agent-search-input"
             placeholder="Tìm mã, tên mặt hàng..."
             value={filter}
@@ -50,6 +53,8 @@ export default function POSProductTableAgent({
               if(e.key==='Enter'){
                 e.preventDefault();
                 focusFirstFilteredItem?.();
+              } else if(e.key==='Escape'){
+                setFilter('');
               }
             }}
           />
@@ -129,7 +134,18 @@ export default function POSProductTableAgent({
                       data-pos-col="qty"
                       data-pos-row={rowKey}
                       value={i.quantity_expr || ''}
-                      onKeyDown={e => movePosGridFocus(e)}
+                      onKeyDown={e => {
+                        if(e.key==='Enter' && !e.shiftKey){
+                          e.preventDefault();
+                          // Fast-entry: a valid, in-stock quantity sends focus back to
+                          // search for the next product. An overstock or empty/zero
+                          // quantity keeps focus here — the inline warning above already
+                          // covers the overstock case, nothing more to show.
+                          if(!overStock && qty > 0) onQtyCommitEnter?.();
+                          return;
+                        }
+                        movePosGridFocus(e);
+                      }}
                       onChange={e => updateQtyExpr(rowIndex, e.target.value)}
                       placeholder="10+12"
                     />

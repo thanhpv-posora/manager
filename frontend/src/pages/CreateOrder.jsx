@@ -125,6 +125,7 @@ export default function CreateOrder(){
   const qtyRefs=useRef({});
   const priceRefs=useRef({});
   const otherFlowQtyRefs=useRef({});
+  const searchInputRef=useRef(null);
   // S6.5: stable per-bill-attempt key sent to /orders so a double-click or a
   // network retry of the SAME save() attempt resolves to the same order instead
   // of creating a second one. Generated lazily on first use, rotated only after
@@ -377,16 +378,40 @@ export default function CreateOrder(){
     }
   };
 
+  // Keyboard fast-entry: resolve which visible product Enter in the search box
+  // should jump to — exact code match, then exact name match (case-insensitive,
+  // accent-sensitive), then the first visible filtered row. Scoped to `shown` so
+  // it only ever lands on a product the cashier can currently see.
+  const resolveSearchTargetProduct=()=>{
+    const q=filter.trim().toLowerCase();
+    if(!q)return shown.find(x=>qtyRefs.current[x.product_id])||null;
+    const byCode=shown.find(x=>String(x.product_code||'').trim().toLowerCase()===q&&qtyRefs.current[x.product_id]);
+    if(byCode)return byCode;
+    const byName=shown.find(x=>String(x.product_name||'').trim().toLowerCase()===q&&qtyRefs.current[x.product_id]);
+    if(byName)return byName;
+    return shown.find(x=>qtyRefs.current[x.product_id])||null;
+  };
+
   const focusFirstQtyInput=()=>{
     setTimeout(()=>{
-      const first=shown.find(x=>qtyRefs.current[x.product_id]);
-      if(first&&qtyRefs.current[first.product_id]){
-        qtyRefs.current[first.product_id].focus();
-        qtyRefs.current[first.product_id].select?.();
+      const target=resolveSearchTargetProduct();
+      if(target&&qtyRefs.current[target.product_id]){
+        qtyRefs.current[target.product_id].focus();
+        qtyRefs.current[target.product_id].select?.();
       }
     },80);
   };
 
+  // Fast-entry loop: after a valid (non-overstock, >0) quantity is committed with
+  // Enter, hand focus straight back to search with the old keyword cleared so the
+  // next product code/name can be typed immediately — no mouse needed.
+  const returnToSearchAfterQty=()=>{
+    setFilter('');
+    requestAnimationFrame(()=>{
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select?.();
+    });
+  };
 
   const openShipDateModalForCustomer=(customer)=>{
     if(!customer)return;
@@ -1768,8 +1793,10 @@ export default function CreateOrder(){
                 filter={filter}
                 setFilter={setFilter}
                 qtyRefs={qtyRefs}
+                searchInputRef={searchInputRef}
                 focusNext={focusNext}
                 focusFirstFilteredItem={focusFirstQtyInput}
+                onQtyCommitEnter={returnToSearchAfterQty}
                 updateQtyExpr={updateQtyExpr}
                 dragId={dragId}
                 setDragId={setDragId}

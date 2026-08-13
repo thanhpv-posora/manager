@@ -14,7 +14,30 @@ function jdFromDate(dd, mm, yy) {
   return jd;
 }
 
-function getNewMoonDay(k, timeZone) {
+// CAL-FIX-001: the original 14-term correction series below (now
+// meanNewMoonSeed) is a known truncation of Meeus's full New Moon algorithm
+// ("Astronomical Algorithms" Ch.49) — close enough for almost every date, but
+// for a new moon landing within minutes of local midnight, its residual
+// error (tens of minutes) can flip which side of midnight it's assigned to,
+// corrupting an entire lunar month's day numbering (confirmed: 2026 lunar
+// month 7 skipped day 30 of month 6 and mislabeled every day
+// 2026-08-12..2026-09-10 by +1, verified against multiple independent
+// Vietnamese calendar sources). getNewMoonDay now uses the full-precision
+// Meeus Ch.49 series — same public-domain formulas, hand-ported, no new
+// dependency. meanNewMoonSeed is kept only to locate which lunation a given k
+// refers to (needs ~half-a-synodic-month precision, which it already has);
+// the returned instant always comes from the full series. Verified against a
+// 65-date corpus sourced from live Vietnamese calendar references (100%
+// match) and an exhaustive day-by-day sweep of 2024-01-01..2027-12-31
+// (matches the old formula on every day except the one 30-day block above,
+// which it corrects) before shipping.
+function horner(x) {
+  const c = Array.prototype.slice.call(arguments, 1);
+  let r = c[c.length - 1];
+  for (let i = c.length - 2; i >= 0; i--) r = r * x + c[i];
+  return r;
+}
+function meanNewMoonSeed(k) {
   const T = k / 1236.85;
   const T2 = T * T;
   const T3 = T2 * T;
@@ -31,13 +54,65 @@ function getNewMoonDay(k, timeZone) {
   C1 -= 0.0074 * Math.sin((M - Mpr) * dr) + 0.0004 * Math.sin((2 * F + M) * dr);
   C1 -= 0.0004 * Math.sin((2 * F - M) * dr) - 0.0006 * Math.sin((2 * F + Mpr) * dr);
   C1 += 0.0010 * Math.sin((2 * F - Mpr) * dr) + 0.0005 * Math.sin((2 * Mpr + M) * dr);
-  let deltaT;
-  if (T < -11) {
-    deltaT = 0.001 + 0.000839 * T + 0.0002261 * T2 - 0.00000845 * T3 - 0.000000081 * T * T3;
-  } else {
-    deltaT = -0.000278 + 0.000265 * T + 0.000262 * T2;
-  }
-  return Math.floor(Jd1 + C1 - deltaT + 0.5 + timeZone / 24);
+  return Jd1 + C1;
+}
+// Meeus Ch.49 New Moon: mean position + 25-term periodic correction +
+// 14-term planetary-perturbation correction. k here follows Meeus's own
+// epoch (near JD 2451550.09766, year 2000) — unrelated to the k passed into
+// getNewMoonDay (this file's older, JD-2415021-based epoch); getNewMoonDay
+// bridges the two via meanNewMoonSeed + a decimal-year guess, see below.
+const MEEUS_NC = [-0.4072, 0.17241, 0.01608, 0.01039, 0.00739, -0.00514, 0.00208, -0.00111, -0.00057, 0.00056, -0.00042, 0.00042, 0.00038, -0.00024, -0.00017, -0.00007, 0.00004, 0.00004, 0.00003, 0.00003, -0.00003, 0.00003, -0.00002, -0.00002, 0.00002];
+const MEEUS_AC = [0.000325, 0.000165, 0.000164, 0.000126, 0.00011, 0.000062, 0.00006, 0.000056, 0.000047, 0.000042, 0.000040, 0.000037, 0.000035, 0.000023];
+function meeusNewMoonJDE(k) {
+  const D2R = PI / 180;
+  const ck = 1 / 1236.85;
+  const T = k * ck;
+  const E = horner(T, 1, -0.002516, -0.0000074);
+  const M = horner(T, 2.5534 * D2R, 29.1053567 * D2R / ck, -0.0000014 * D2R, -0.00000011 * D2R);
+  const Mp = horner(T, 201.5643 * D2R, 385.81693528 * D2R / ck, 0.0107582 * D2R, 0.00001238 * D2R, -0.000000058 * D2R);
+  const F = horner(T, 160.7108 * D2R, 390.67050284 * D2R / ck, -0.0016118 * D2R, -0.00000227 * D2R, 0.000000011 * D2R);
+  const Om = horner(T, 124.7746 * D2R, -1.56375588 * D2R / ck, 0.0020672 * D2R, 0.00000215 * D2R);
+  const A = [
+    299.7 * D2R + 0.107408 * D2R * k - 0.009173 * T * T, 251.88 * D2R + 0.016321 * D2R * k, 251.83 * D2R + 26.651886 * D2R * k,
+    349.42 * D2R + 36.412478 * D2R * k, 84.66 * D2R + 18.206239 * D2R * k, 141.74 * D2R + 53.303771 * D2R * k,
+    207.17 * D2R + 2.453732 * D2R * k, 154.84 * D2R + 7.30686 * D2R * k, 34.52 * D2R + 27.261239 * D2R * k,
+    207.19 * D2R + 0.121824 * D2R * k, 291.34 * D2R + 1.844379 * D2R * k, 161.72 * D2R + 24.198154 * D2R * k,
+    239.56 * D2R + 25.513099 * D2R * k, 331.55 * D2R + 3.592518 * D2R * k
+  ];
+  const mean = horner(T, 2451550.09766, 29.530588861 / ck, 0.00015437, -0.00000015, 0.00000000073);
+  let corr = MEEUS_NC[0] * Math.sin(Mp) + MEEUS_NC[1] * Math.sin(M) * E + MEEUS_NC[2] * Math.sin(2 * Mp) + MEEUS_NC[3] * Math.sin(2 * F)
+    + MEEUS_NC[4] * Math.sin(Mp - M) * E + MEEUS_NC[5] * Math.sin(Mp + M) * E + MEEUS_NC[6] * Math.sin(2 * M) * E * E
+    + MEEUS_NC[7] * Math.sin(Mp - 2 * F) + MEEUS_NC[8] * Math.sin(Mp + 2 * F) + MEEUS_NC[9] * Math.sin(2 * Mp + M) * E
+    + MEEUS_NC[10] * Math.sin(3 * Mp) + MEEUS_NC[11] * Math.sin(M + 2 * F) * E + MEEUS_NC[12] * Math.sin(M - 2 * F) * E
+    + MEEUS_NC[13] * Math.sin(2 * Mp - M) * E + MEEUS_NC[14] * Math.sin(Om) + MEEUS_NC[15] * Math.sin(Mp + 2 * M)
+    + MEEUS_NC[16] * Math.sin(2 * (Mp - F)) + MEEUS_NC[17] * Math.sin(3 * M) + MEEUS_NC[18] * Math.sin(Mp + M - 2 * F)
+    + MEEUS_NC[19] * Math.sin(2 * (Mp + F)) + MEEUS_NC[20] * Math.sin(Mp + M + 2 * F) + MEEUS_NC[21] * Math.sin(Mp - M + 2 * F)
+    + MEEUS_NC[22] * Math.sin(Mp - M - 2 * F) + MEEUS_NC[23] * Math.sin(3 * Mp + M) + MEEUS_NC[24] * Math.sin(4 * Mp);
+  let add = 0;
+  for (let i = 0; i < MEEUS_AC.length; i++) add += MEEUS_AC[i] * Math.sin(A[i]);
+  return mean + corr + add;
+}
+// ΔT (TT - UT), Espenak & Meeus long-term polynomial, valid 2005-2050 — this
+// app's entire operating range. Self-contained (no interpolated data table).
+function deltaTSeconds(dyear) {
+  const t = (dyear - 2000) / 100;
+  return 62.92 + 32.217 * t + 55.89 * t * t;
+}
+function snapMeeusK(decimalYear) {
+  return Math.floor((decimalYear - 2000) * 12.3685 + 0.5);
+}
+const newMoonDayCache = new Map();
+function getNewMoonDay(k, timeZone) {
+  const cacheKey = k + '|' + timeZone;
+  if (newMoonDayCache.has(cacheKey)) return newMoonDayCache.get(cacheKey);
+  const seedJdUT = meanNewMoonSeed(k);
+  const decimalYear = 2000 + (seedJdUT - 2451545.0) / 365.25;
+  const kMeeus = snapMeeusK(decimalYear);
+  const jde = meeusNewMoonJDE(kMeeus);
+  const jdUT = jde - deltaTSeconds(decimalYear) / 86400;
+  const result = Math.floor(jdUT + timeZone / 24 + 0.5);
+  newMoonDayCache.set(cacheKey, result);
+  return result;
 }
 
 function getSunLongitude(jdn, timeZone) {

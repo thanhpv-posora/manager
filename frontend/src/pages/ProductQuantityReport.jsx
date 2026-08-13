@@ -2,7 +2,9 @@ import React,{useEffect,useMemo,useState}from'react';
 import api from'../api/api';
 import SafePage from'../components/SafePage';
 import Dialog from'../components/common/Dialog';
+import EnterpriseAutocomplete from'../components/common/EnterpriseAutocomplete';
 import {formatQty}from'../utils/quantity';
+import {formatLunarDate}from'../utils/lunarDate';
 
 const money=n=>Number(n||0).toLocaleString('en-US')+'đ';
 const qty=(n,unit)=>`${formatQty(n)} ${unit||''}`.trim();
@@ -11,6 +13,10 @@ const today=()=>new Date().toISOString().slice(0,10);
 const addDays=(d,n)=>{const t=new Date(d+'T00:00:00');t.setDate(t.getDate()+n);return t.toISOString().slice(0,10)};
 const monthStart=()=>{const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`};
 const PAYMENT_LABEL={UNPAID:'Chưa thanh toán',PARTIAL:'Trả một phần',PAID:'Đã thanh toán'};
+// Display-only — informational lunar equivalent next to the solar date filter.
+// Never feeds the report query: from_date/to_date sent to the backend always
+// stay the solar orders.order_date values the user picked.
+const lunarOf=solarIso=>{try{return formatLunarDate(solarIso)}catch(e){return ''}};
 
 export default function ProductQuantityReport(){
  const[from,setFrom]=useState(today());
@@ -27,6 +33,7 @@ export default function ProductQuantityReport(){
  const[drillLoading,setDrillLoading]=useState(false);
 
  useEffect(()=>{api.get('/customers').then(r=>setCustomers(r.data||[])).catch(()=>{})},[]);
+ const selectedCustomer=customers.find(c=>String(c.id)===String(customerId))||null;
 
  const load=async(f=from,t=to,flow=salesFlow,cust=customerId)=>{
   setLoading(true);setError('');
@@ -80,19 +87,42 @@ export default function ProductQuantityReport(){
   <div className="card">
    <h3>Báo cáo sản lượng</h3>
    <p className="muted">Theo dõi số lượng bán theo từng mặt hàng</p>
-   <div className="actions">
-    <input className="input" style={{width:160}} type="date" value={from} onChange={e=>setFrom(e.target.value)}/>
-    <input className="input" style={{width:160}} type="date" value={to} onChange={e=>setTo(e.target.value)}/>
-    <select className="select" style={{width:160}} value={salesFlow} onChange={e=>setSalesFlow(e.target.value)}>
-     <option value="ALL">Tất cả</option>
-     <option value="CARCASS_POS">Bò Xô</option>
-     <option value="INVENTORY_SALE">Kho</option>
-    </select>
-    <select className="select" style={{width:200}} value={customerId} onChange={e=>setCustomerId(e.target.value)}>
-     <option value="">Tất cả khách hàng</option>
-     {customers.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
-    </select>
-    <button className="btn" onClick={()=>load()}>Xem báo cáo</button>
+   <div className="actions" style={{alignItems:'flex-start'}}>
+    <div style={{display:'flex',flexDirection:'column',gap:2}}>
+     <span className="muted" style={{fontSize:12}}>Từ ngày</span>
+     <input className="input" style={{width:160}} type="date" value={from} onChange={e=>setFrom(e.target.value)}/>
+     <span className="muted" style={{fontSize:11}}>Âm lịch: {lunarOf(from)}</span>
+    </div>
+    <div style={{display:'flex',flexDirection:'column',gap:2}}>
+     <span className="muted" style={{fontSize:12}}>Đến ngày</span>
+     <input className="input" style={{width:160}} type="date" value={to} onChange={e=>setTo(e.target.value)}/>
+     <span className="muted" style={{fontSize:11}}>Âm lịch: {lunarOf(to)}</span>
+    </div>
+    <div style={{display:'flex',flexDirection:'column',gap:2}}>
+     <span className="muted" style={{fontSize:12}}>Luồng bán</span>
+     <select className="select" style={{width:160}} value={salesFlow} onChange={e=>setSalesFlow(e.target.value)}>
+      <option value="ALL">Tất cả</option>
+      <option value="CARCASS_POS">Bò Xô</option>
+      <option value="INVENTORY_SALE">Kho</option>
+     </select>
+    </div>
+    <div style={{display:'flex',flexDirection:'column',gap:2,minWidth:220}}>
+     <span className="muted" style={{fontSize:12}}>Khách hàng</span>
+     <EnterpriseAutocomplete
+      items={customers}
+      value={selectedCustomer}
+      onChange={item=>setCustomerId(item?String(item.id):'')}
+      placeholder="Tất cả khách hàng"
+      displayField="name"
+      secondaryFields={['customer_code','phone']}
+      searchFields={['name','customer_code','phone','address']}
+      filter={item=>(Number(item.partner_type||2)&2)===2}
+      emptyText="Không tìm thấy khách hàng"
+      getItemKey={item=>item.id}
+     />
+     {selectedCustomer&&<span className="muted" style={{fontSize:11}}>Tính bill: {selectedCustomer.billing_calendar_type==='LUNAR'?'Âm lịch':'Dương lịch'}</span>}
+    </div>
+    <button className="btn" onClick={()=>load()} style={{marginTop:20}}>Xem báo cáo</button>
    </div>
    <div className="actions" style={{marginTop:8}}>
     <button className="btn secondary" onClick={quickToday}>Hôm nay</button>

@@ -59,6 +59,7 @@ export default function POSProductTableAgent({
               }
             }}
           />
+          <span className="pos-search-hint">F2: Tìm nhanh</span>
         </span>
         {onQuickAdd && (
           <button type="button" className="btn secondary" onClick={onQuickAdd}>

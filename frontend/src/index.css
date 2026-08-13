@@ -2849,6 +2849,17 @@ button,.btn,.menu-item,.input,.select,textarea{
 }
 .pos-agent-search-input{
   padding-left:32px;
+  padding-right:78px;
+}
+.pos-search-hint{
+  position:absolute;
+  right:10px;
+  top:50%;
+  transform:translateY(-50%);
+  font-size:11px;
+  color:#94a3b8;
+  pointer-events:none;
+  white-space:nowrap;
 }
 
 .pos-col-stt,.pos-col-unit{

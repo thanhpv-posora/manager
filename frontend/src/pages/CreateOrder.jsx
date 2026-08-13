@@ -424,6 +424,24 @@ export default function CreateOrder(){
     });
   };
 
+  // F2 = jump to product search from anywhere on this screen (including from a
+  // quantity input, to abandon sequential entry and search another product).
+  // Scoped to this page only — the listener is added/removed with the component.
+  // Suppressed while a real dialog is open, during the keyboard-guided category
+  // step, or while typing in a textarea, since stealing focus there would be unsafe.
+  useEffect(()=>{
+    const handleF2=(e)=>{
+      if(e.key!=='F2')return;
+      if(shipDateModalOpen||categoryChooserOpen||excelImportDialogOpen||quickOpen||otherFlowOpen)return;
+      if(document.activeElement&&document.activeElement.tagName==='TEXTAREA')return;
+      e.preventDefault();
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select?.();
+    };
+    window.addEventListener('keydown',handleF2);
+    return()=>window.removeEventListener('keydown',handleF2);
+  },[shipDateModalOpen,categoryChooserOpen,excelImportDialogOpen,quickOpen,otherFlowOpen]);
+
   const openShipDateModalForCustomer=(customer)=>{
     if(!customer)return;
     const preferred=String(customer.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';

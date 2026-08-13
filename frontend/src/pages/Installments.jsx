@@ -7,6 +7,7 @@ import EnterpriseAutocomplete from'../components/common/EnterpriseAutocomplete';
 import {formatLunarDate,solarToLunar}from'../utils/lunarDate';
 
 const money=n=>Number(n||0).toLocaleString('en-US')+'đ';
+const ymd=v=>{const raw=String(v||'').slice(0,10);const m=raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);return m?`${m[3]}/${m[2]}/${m[1]}`:raw};
 
 function parseLunarText(text){
  const m=String(text||'').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
@@ -63,6 +64,27 @@ export default function Installments(){
  const[draftSolarDate,setDraftSolarDate]=useState(today);
  const[draftLunarDateText,setDraftLunarDateText]=useState('');
 
+ // feat(debt): customer debt MANAGEMENT summary (Nợ tổng ban đầu / Tổng đã
+ // góp nợ / Phát sinh nợ mới / Tổng còn nợ hiện tại) — a reporting view on
+ // top of the existing Góp bill feature, bound to the same statsCustomerId
+ // selection above. Never writes to debt_transactions/orders/payments.
+ const currentUser=useMemo(()=>{try{return JSON.parse(localStorage.getItem('user')||'{}')}catch(e){return {}}},[]);
+ const isAdmin=currentUser?.role==='ADMIN';
+ const[openingDebt,setOpeningDebt]=useState(null);
+ const[mgmtSummary,setMgmtSummary]=useState(null);
+ const[mgmtError,setMgmtError]=useState('');
+ const[mgmtAsOfCalendarType,setMgmtAsOfCalendarType]=useState('SOLAR');
+ const[mgmtAsOfDate,setMgmtAsOfDate]=useState(today);
+ const[mgmtAsOfLunar,setMgmtAsOfLunar]=useState(formatLunarDate(today).replace(/^ÂL\s*/,''));
+ const[mgmtPeriodOn,setMgmtPeriodOn]=useState(false);
+ const[mgmtPeriodCalendarType,setMgmtPeriodCalendarType]=useState('SOLAR');
+ const[mgmtPeriodFrom,setMgmtPeriodFrom]=useState(today);
+ const[mgmtPeriodTo,setMgmtPeriodTo]=useState(today);
+ const[mgmtPeriodFromLunar,setMgmtPeriodFromLunar]=useState(formatLunarDate(today).replace(/^ÂL\s*/,''));
+ const[mgmtPeriodToLunar,setMgmtPeriodToLunar]=useState(formatLunarDate(today).replace(/^ÂL\s*/,''));
+ const[showOpeningDebtModal,setShowOpeningDebtModal]=useState(false);
+ const[openingDebtForm,setOpeningDebtForm]=useState({amount:'',calendar_type:'SOLAR',date:today,lunar_date_text:'',note:''});
+
  const selectedPeriod=useMemo(()=>{
   if(calendarType==='LUNAR'){
    const parsed=parseLunarText(lunarDateText);
@@ -91,6 +113,72 @@ export default function Installments(){
    setStatsToLunar(formatLunarDate(statsTo||today).replace(/^ÂL\s*/,''));
   }
  },[statsCustomerId,customers]);
+
+ // feat(debt): opening-debt management summary — bound to statsCustomerId
+ // (the same customer picker as the "Thống kê tổng tiền góp bill" card
+ // above). Also default the as-of/period calendar to the customer's own
+ // billing calendar, same convention as the rest of this page.
+ useEffect(()=>{
+  if(!statsCustomerId){setMgmtAsOfCalendarType('SOLAR');setMgmtPeriodCalendarType('SOLAR');return;}
+  const c=customers.find(x=>String(x.id)===String(statsCustomerId));
+  const ct=String(c?.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
+  setMgmtAsOfCalendarType(ct);
+  setMgmtPeriodCalendarType(ct);
+  if(ct==='LUNAR'){
+   setMgmtAsOfLunar(formatLunarDate(mgmtAsOfDate||today).replace(/^ÂL\s*/,''));
+   setMgmtPeriodFromLunar(formatLunarDate(mgmtPeriodFrom||today).replace(/^ÂL\s*/,''));
+   setMgmtPeriodToLunar(formatLunarDate(mgmtPeriodTo||today).replace(/^ÂL\s*/,''));
+  }
+ },[statsCustomerId,customers]);
+
+ const loadOpeningDebt=async id=>{
+  if(!id){setOpeningDebt(null);return}
+  try{setOpeningDebt((await api.get('/installments/opening-debt/'+id)).data)}catch(e){/* view-only failure, non-blocking */}
+ };
+ const loadMgmtSummary=async(id=statsCustomerId,ct=mgmtAsOfCalendarType,d=mgmtAsOfDate,dl=mgmtAsOfLunar,periodOn=mgmtPeriodOn,pct=mgmtPeriodCalendarType,pf=mgmtPeriodFrom,pt=mgmtPeriodTo,pfl=mgmtPeriodFromLunar,ptl=mgmtPeriodToLunar)=>{
+  if(!id){setMgmtSummary(null);return}
+  try{
+   setMgmtError('');
+   const params=ct==='LUNAR'?{as_of_calendar_type:'LUNAR',as_of_lunar_date_text:dl}:{as_of_calendar_type:'SOLAR',as_of_date:d};
+   if(periodOn){
+    Object.assign(params,pct==='LUNAR'
+     ?{period_calendar_type:'LUNAR',period_from_lunar_date_text:pfl,period_to_lunar_date_text:ptl}
+     :{period_calendar_type:'SOLAR',period_from_date:pf,period_to_date:pt});
+   }
+   setMgmtSummary((await api.get('/installments/opening-debt/'+id+'/summary',{params})).data);
+  }catch(e){setMgmtError(e.response?.data?.message||e.message);setMgmtSummary(null)}
+ };
+ useEffect(()=>{
+  if(!statsCustomerId)return;
+  loadOpeningDebt(statsCustomerId);
+  loadMgmtSummary(statsCustomerId);
+ },[statsCustomerId]);
+
+ const changeMgmtAsOfDate=v=>{setMgmtAsOfDate(v);if(mgmtAsOfCalendarType==='LUNAR')setMgmtAsOfLunar(formatLunarDate(v||today).replace(/^ÂL\s*/,''));};
+ const changeMgmtAsOfLunar=v=>{setMgmtAsOfLunar(v);const solar=lunarToSolarDate(parseLunarText(v));if(solar)setMgmtAsOfDate(solar);};
+ const changeMgmtPeriodFrom=v=>{setMgmtPeriodFrom(v);if(mgmtPeriodCalendarType==='LUNAR')setMgmtPeriodFromLunar(formatLunarDate(v||today).replace(/^ÂL\s*/,''));};
+ const changeMgmtPeriodTo=v=>{setMgmtPeriodTo(v);if(mgmtPeriodCalendarType==='LUNAR')setMgmtPeriodToLunar(formatLunarDate(v||today).replace(/^ÂL\s*/,''));};
+ const changeMgmtPeriodFromLunar=v=>{setMgmtPeriodFromLunar(v);const solar=lunarToSolarDate(parseLunarText(v));if(solar)setMgmtPeriodFrom(solar);};
+ const changeMgmtPeriodToLunar=v=>{setMgmtPeriodToLunar(v);const solar=lunarToSolarDate(parseLunarText(v));if(solar)setMgmtPeriodTo(solar);};
+ const runMgmtSummary=()=>loadMgmtSummary(statsCustomerId,mgmtAsOfCalendarType,mgmtAsOfDate,mgmtAsOfLunar,mgmtPeriodOn,mgmtPeriodCalendarType,mgmtPeriodFrom,mgmtPeriodTo,mgmtPeriodFromLunar,mgmtPeriodToLunar);
+
+ const openOpeningDebtModal=()=>{
+  setOpeningDebtForm(openingDebt
+   ?{amount:Number(openingDebt.opening_debt_amount||0),calendar_type:'SOLAR',date:String(openingDebt.effective_date||today).slice(0,10),lunar_date_text:openingDebt.lunar_date_text||'',note:openingDebt.note||''}
+   :{amount:'',calendar_type:'SOLAR',date:today,lunar_date_text:'',note:''});
+  setShowOpeningDebtModal(true);
+ };
+ const saveOpeningDebt=async()=>{
+  if(!statsCustomerId)return alert('Chọn khách hàng trước');
+  if(Number(openingDebtForm.amount||0)<0)return alert('Nợ tổng ban đầu không được âm');
+  const payload=openingDebtForm.calendar_type==='LUNAR'
+   ?{opening_debt_amount:Number(openingDebtForm.amount||0),effective_calendar_type:'LUNAR',effective_lunar_date_text:openingDebtForm.lunar_date_text,note:openingDebtForm.note}
+   :{opening_debt_amount:Number(openingDebtForm.amount||0),effective_calendar_type:'SOLAR',effective_date:openingDebtForm.date,note:openingDebtForm.note};
+  await api.put('/installments/opening-debt/'+statsCustomerId,payload);
+  setShowOpeningDebtModal(false);
+  await loadOpeningDebt(statsCustomerId);
+  await runMgmtSummary();
+ };
 
  // Auto-derive calendar type from selected customer's billing_calendar_type
  // User does not manually choose calendar type — it follows the customer setting.
@@ -288,6 +376,101 @@ th{background:#1A73E8;color:white}
     <div className="installment-date-dialog-actions">
      <button className="btn" onClick={()=>{if(calendarType==='SOLAR'){changeConfigDate(draftSolarDate);}else{changeLunarDateText(draftLunarDateText);}setShowDateDialog(false);}}>Xác nhận</button>
      <button className="btn secondary" onClick={()=>setShowDateDialog(false)}>Đóng</button>
+    </div>
+   </div>
+  </div>}
+
+  {/* Tổng quan quản lý công nợ — Nợ tổng ban đầu / Đã góp / Nợ mới / Còn nợ */}
+  <div className="card">
+   <h3>Tổng quan công nợ khách hàng</h3>
+   <p className="muted">Nợ tổng ban đầu do ADMIN xác nhận thủ công. Tổng đã góp nợ chỉ tính tiền góp nợ/ngày THỰC THU (không tính tiền góp theo kế hoạch chưa thu). Phát sinh nợ mới chỉ tính phần hàng hoá chưa thu, không tính phần góp nợ/ngày.</p>
+   <div className="form-grid" style={{gridTemplateColumns:'1.3fr 1fr 1fr auto'}}>
+    <label className="field-label"><span>Khách hàng</span>
+     <EnterpriseAutocomplete items={customers} value={customers.find(c=>String(c.id)===String(statsCustomerId))||null} onChange={item=>setStatsCustomerId(item?String(item.id):'')} placeholder="Tìm khách hàng..." displayField="name" secondaryFields={['customer_code','phone']} searchFields={['name','customer_code','phone','address']} filter={item=>(Number(item.partner_type||2)&2)===2} emptyText="Không tìm thấy khách hàng" getItemKey={item=>item.id}/>
+    </label>
+    <label className="field-label"><span>Loại lịch đến thời điểm</span>
+     <select className="select" value={mgmtAsOfCalendarType} onChange={e=>setMgmtAsOfCalendarType(e.target.value)}>
+      <option value="SOLAR">Dương lịch</option>
+      <option value="LUNAR">Âm lịch</option>
+     </select>
+    </label>
+    {mgmtAsOfCalendarType==='LUNAR'
+     ?<label className="field-label"><span>Đến ngày âm lịch</span><input className="input" value={mgmtAsOfLunar} onChange={e=>changeMgmtAsOfLunar(e.target.value)} placeholder="VD: 31/07/2026"/></label>
+     :<label className="field-label"><span>Đến ngày</span><input className="input" type="date" value={mgmtAsOfDate} onChange={e=>changeMgmtAsOfDate(e.target.value)}/></label>}
+    <div style={{display:'flex',gap:8,alignSelf:'end'}}>
+     <button type="button" className="btn" onClick={runMgmtSummary} disabled={!statsCustomerId}>Xem</button>
+     {isAdmin&&<button type="button" className="btn secondary" onClick={openOpeningDebtModal} disabled={!statsCustomerId}>Cài đặt nợ gốc</button>}
+    </div>
+   </div>
+   {!statsCustomerId&&<p className="muted">Chọn khách hàng để xem tổng quan công nợ.</p>}
+   {mgmtError&&<div className="ai-alert danger">{mgmtError}</div>}
+   {mgmtSummary&&<>
+    {!mgmtSummary.opening_debt&&<div className="ai-alert warn" style={{marginTop:10}}>Khách hàng này chưa được cấu hình Nợ tổng ban đầu. Đang tính với nợ gốc = 0.{isAdmin?' Bấm "Cài đặt nợ gốc" để nhập.':' Liên hệ ADMIN để nhập nợ gốc ban đầu.'}</div>}
+    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:12,marginTop:14}}>
+     <div className="payment-total-box" style={{marginTop:0}}><div>Nợ tổng ban đầu</div><b>{money(mgmtSummary.opening_debt_amount)}</b></div>
+     <div className="payment-total-box" style={{marginTop:0}}><div>Tổng đã góp nợ</div><b>{money(mgmtSummary.total_contributed)}</b></div>
+     <div className="payment-total-box" style={{marginTop:0}}><div>Phát sinh nợ mới</div><b>{money(mgmtSummary.new_debt)}</b></div>
+     <div className="payment-total-box" style={{marginTop:0,background:'#fff7ed',border:'1px solid #fdba74'}}><div>TỔNG CÒN NỢ HIỆN TẠI</div><b style={{fontSize:26}}>{money(mgmtSummary.remaining_debt)}</b></div>
+    </div>
+    <div className="muted" style={{marginTop:10}}>
+     Đến thời điểm <b>{mgmtSummary.as_of_calendar_type==='LUNAR'?`${mgmtSummary.as_of_lunar_date_text} ÂL (${ymd(mgmtSummary.as_of_date)} DL)`:ymd(mgmtSummary.as_of_date)}</b>
+     {mgmtSummary.opening_debt?.effective_date&&<> · Hiệu lực từ <b>{ymd(mgmtSummary.opening_debt.effective_date)}</b></>}
+    </div>
+    {Math.abs(mgmtSummary.ledger_difference||0)>=1&&<div className="ai-alert warn" style={{marginTop:10}}>
+     Số liệu quản lý này khác với công nợ theo sổ cái hệ thống (<b>{money(mgmtSummary.ledger_current_debt)}</b>) một khoản <b>{money(mgmtSummary.ledger_difference)}</b>.
+     Đây là chênh lệch do sổ cái không có khái niệm "nợ gốc ban đầu"; số liệu kế toán ở nơi khác trong hệ thống không bị thay đổi.
+    </div>}
+    <div className="check-line" style={{marginTop:14}}>
+     <input type="checkbox" checked={mgmtPeriodOn} onChange={e=>{setMgmtPeriodOn(e.target.checked);loadMgmtSummary(statsCustomerId,mgmtAsOfCalendarType,mgmtAsOfDate,mgmtAsOfLunar,e.target.checked,mgmtPeriodCalendarType,mgmtPeriodFrom,mgmtPeriodTo,mgmtPeriodFromLunar,mgmtPeriodToLunar);}}/>
+     <span>Xem chi tiết theo kỳ (tuỳ chọn)</span>
+    </div>
+    {mgmtPeriodOn&&<div className="form-grid" style={{gridTemplateColumns:'auto 1fr 1fr auto',alignItems:'end',marginTop:8}}>
+     <label className="field-label"><span>Loại lịch kỳ</span>
+      <select className="select" value={mgmtPeriodCalendarType} onChange={e=>setMgmtPeriodCalendarType(e.target.value)}>
+       <option value="SOLAR">Dương lịch</option>
+       <option value="LUNAR">Âm lịch</option>
+      </select>
+     </label>
+     {mgmtPeriodCalendarType==='LUNAR'?<>
+      <label className="field-label"><span>Từ ngày âm lịch</span><input className="input" value={mgmtPeriodFromLunar} onChange={e=>changeMgmtPeriodFromLunar(e.target.value)}/></label>
+      <label className="field-label"><span>Đến ngày âm lịch</span><input className="input" value={mgmtPeriodToLunar} onChange={e=>changeMgmtPeriodToLunar(e.target.value)}/></label>
+     </>:<>
+      <label className="field-label"><span>Từ ngày</span><input className="input" type="date" value={mgmtPeriodFrom} onChange={e=>changeMgmtPeriodFrom(e.target.value)}/></label>
+      <label className="field-label"><span>Đến ngày</span><input className="input" type="date" value={mgmtPeriodTo} onChange={e=>changeMgmtPeriodTo(e.target.value)}/></label>
+     </>}
+     <button type="button" className="btn secondary" onClick={runMgmtSummary}>Xem kỳ</button>
+    </div>}
+    {mgmtPeriodOn&&mgmtSummary.period&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:12,marginTop:10}}>
+     <div className="payment-total-box" style={{marginTop:0}}><div>Đã góp nợ trong kỳ</div><b>{money(mgmtSummary.period.contributed_in_period)}</b></div>
+     <div className="payment-total-box" style={{marginTop:0}}><div>Phát sinh nợ mới trong kỳ</div><b>{money(mgmtSummary.period.new_debt_in_period)}</b></div>
+    </div>}
+   </>}
+  </div>
+
+  {/* Cài đặt nợ gốc ban đầu — ADMIN only */}
+  {showOpeningDebtModal&&<div className="installment-date-overlay" onClick={()=>setShowOpeningDebtModal(false)}>
+   <div className="installment-date-dialog" onClick={e=>e.stopPropagation()}>
+    <div className="installment-date-dialog-head">
+     <b>Cài đặt nợ tổng ban đầu</b>
+     <span className="muted" style={{fontSize:13,fontWeight:400}}>{selectedStatsCustomer?.name||''}</span>
+    </div>
+    <div className="installment-date-dialog-body">
+     <label className="field-label"><span>Nợ tổng ban đầu</span><MoneyInput placeholder="1,000,000,000" value={openingDebtForm.amount} onChange={v=>setOpeningDebtForm(f=>({...f,amount:v}))}/></label>
+     <label className="field-label"><span>Loại lịch ngày hiệu lực</span>
+      <select className="select" value={openingDebtForm.calendar_type} onChange={e=>setOpeningDebtForm(f=>({...f,calendar_type:e.target.value}))}>
+       <option value="SOLAR">Dương lịch</option>
+       <option value="LUNAR">Âm lịch</option>
+      </select>
+     </label>
+     {openingDebtForm.calendar_type==='LUNAR'
+      ?<label className="field-label"><span>Ngày hiệu lực (âm lịch)</span><input className="input" value={openingDebtForm.lunar_date_text} onChange={e=>setOpeningDebtForm(f=>({...f,lunar_date_text:e.target.value}))} placeholder="VD: 30/11/2023"/></label>
+      :<label className="field-label"><span>Ngày hiệu lực</span><input className="input" type="date" value={openingDebtForm.date} onChange={e=>setOpeningDebtForm(f=>({...f,date:e.target.value}))}/></label>}
+     <label className="field-label"><span>Ghi chú</span><input className="input" value={openingDebtForm.note} onChange={e=>setOpeningDebtForm(f=>({...f,note:e.target.value}))} placeholder="VD: Chốt sổ công nợ cuối 2023"/></label>
+     {openingDebt&&<p className="muted">Giá trị hiện tại: <b>{money(openingDebt.opening_debt_amount)}</b>, hiệu lực từ {ymd(openingDebt.effective_date)}. Lưu lại sẽ ghi đè và lưu vết giá trị cũ vào nhật ký.</p>}
+    </div>
+    <div className="installment-date-dialog-actions">
+     <button className="btn" onClick={saveOpeningDebt}>Lưu</button>
+     <button className="btn secondary" onClick={()=>setShowOpeningDebtModal(false)}>Đóng</button>
     </div>
    </div>
   </div>}

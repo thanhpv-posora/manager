@@ -526,6 +526,29 @@ CREATE TABLE IF NOT EXISTS debt_installment_payments (
   INDEX idx_installment_payment_plan(plan_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- feat(debt): one authoritative admin-confirmed opening/carry-over debt per
+-- customer, for the Góp bill management summary only. Deliberately NOT a row
+-- in debt_transactions -- that ledger already drives "Tổng dư nợ hiện tại"
+-- everywhere else in the app (Payments.jsx, CustomerAgent.list, etc.), and
+-- this management figure must never silently change those. UNIQUE(customer_id)
+-- keeps it to one authoritative value per customer -- DebtOpeningAgent.set()
+-- snapshots the previous value to audit_logs before overwriting so history
+-- is never silently lost.
+CREATE TABLE IF NOT EXISTS customer_opening_debts (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  customer_id BIGINT NOT NULL,
+  opening_debt_amount DECIMAL(15,2) NOT NULL DEFAULT 0,
+  effective_date DATE NOT NULL,
+  calendar_type VARCHAR(10) NOT NULL DEFAULT 'SOLAR',
+  lunar_date_text VARCHAR(30) NULL,
+  note TEXT NULL,
+  created_by BIGINT NULL,
+  updated_by BIGINT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_customer_opening_debt(customer_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS import_audit_logs (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   source_type VARCHAR(50) NOT NULL,

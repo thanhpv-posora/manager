@@ -3,7 +3,15 @@ const {auth}=require('../middleware/auth');
 const {assertCustomerScope}=require('../middleware/scope');
 const DebtInstallmentAgent=require('../agents/DebtInstallmentAgent');
 const DebtMonthlyInstallmentAgent=require('../agents/DebtMonthlyInstallmentAgent');
+const DebtOpeningAgent=require('../agents/DebtOpeningAgent');
 const router=express.Router();
+
+// feat(debt): opening-debt management summary — STAFF may view, only ADMIN
+// may set/change the opening figure (spec: "STAFF may view but not change
+// opening debt unless current permission rules explicitly allow it").
+router.get('/opening-debt/:customerId', auth(['ADMIN','STAFF']), async(req,res,next)=>{try{res.json(await DebtOpeningAgent.get(req.params.customerId))}catch(e){next(e)}});
+router.put('/opening-debt/:customerId', auth(['ADMIN']), async(req,res,next)=>{try{res.json(await DebtOpeningAgent.set(req.params.customerId,req.body,req.user))}catch(e){next(e)}});
+router.get('/opening-debt/:customerId/summary', auth(['ADMIN','STAFF']), async(req,res,next)=>{try{res.json(await DebtOpeningAgent.managementSummary(req.params.customerId,req.query,req.user))}catch(e){next(e)}});
 
 router.get('/monthly',auth(['ADMIN','STAFF']),async(req,res,next)=>{try{res.json(await DebtMonthlyInstallmentAgent.list(req.query.month,req.query.year,req.query.calendar_type))}catch(e){next(e)}});
 router.get('/monthly/active',auth(['ADMIN','STAFF','CUSTOMER']),async(req,res,next)=>{try{

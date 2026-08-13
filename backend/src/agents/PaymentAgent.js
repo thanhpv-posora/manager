@@ -1,6 +1,8 @@
 const pool = require('../config/db');
 const { nextCode } = require('../utils/code');
 const { assertCustomerScope, customerScopeWhere }=require('../middleware/scope');
+const { parseLunarText, lunarToSolarDate, solarToLunar } = require('../utils/lunarDate');
+const DebtInstallmentAgent = require('./DebtInstallmentAgent');
 
 class PaymentAgent {
   async transactionStatus(key) {
@@ -91,6 +93,130 @@ class PaymentAgent {
     const [cashBank]=await pool.query(`SELECT COALESCE(SUM(cash_amount),0) cash_total,COALESCE(SUM(bank_amount),0) bank_total,COALESCE(SUM(current_bill_amount),0) current_bill_total,COALESCE(SUM(installment_amount),0) installment_total FROM payments WHERE customer_id=?`, [customerId]);
     const [recent]=await pool.query(`SELECT p.*,o.order_code FROM payments p LEFT JOIN orders o ON o.id=p.order_id WHERE p.customer_id=? ORDER BY p.payment_date DESC,p.id DESC LIMIT 20`, [customerId]);
     return {customer:customers[0], current_debt:debtRows[0].current_debt, unpaid_orders:unpaid, payment_split:split, cash_bank_summary:cashBank[0], recent_payments:recent};
+  }
+
+  // feat(debt): period contribution summary — "Đã góp trong kỳ" for a
+  // customer over a solar or lunar-selected date range.
+  // Authority: the `payments` table itself, one row per real receipt — never
+  // payment_allocations (a receipt split across bills) and never
+  // debt_installment_payments (a receipt tied to a daily-installment plan),
+  // both of which would either double-count or miss allocation-free receipts.
+  // Cancelled/reverted receipts are excluded by status; cancel()/update() also
+  // already zero their amounts and delete their allocation rows, so this is
+  // belt-and-suspenders, not the only guard. Calendar mode only resolves which
+  // solar date range to query — historical payment_date values are never
+  // reinterpreted (BR-CORE-005).
+  resolvePeriodRange(query = {}) {
+    const calendarType = String(query.calendar_type || 'SOLAR').toUpperCase() === 'LUNAR' ? 'LUNAR' : 'SOLAR';
+    if (calendarType === 'LUNAR') {
+      const fromLunarText = String(query.from_lunar_date_text || query.lunar_from || '').trim();
+      const toLunarText = String(query.to_lunar_date_text || query.lunar_to || '').trim();
+      const fromLunar = parseLunarText(fromLunarText);
+      const toLunar = parseLunarText(toLunarText);
+      if (!fromLunar || !toLunar) throw Object.assign(new Error('Vui lòng chọn từ ngày và đến ngày âm lịch (định dạng DD/MM/YYYY)'), { status: 400 });
+      const fromDate = lunarToSolarDate(fromLunar);
+      const toDate = lunarToSolarDate(toLunar);
+      if (!fromDate || !toDate) throw Object.assign(new Error('Không thể quy đổi ngày âm lịch sang dương lịch'), { status: 400 });
+      return { calendarType, fromDate, toDate, fromLunarText, toLunarText };
+    }
+    const fromDate = String(query.from_date || query.from || '').slice(0, 10);
+    const toDate = String(query.to_date || query.to || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fromDate) || !/^\d{4}-\d{2}-\d{2}$/.test(toDate)) {
+      throw Object.assign(new Error('Vui lòng chọn từ ngày và đến ngày'), { status: 400 });
+    }
+    return { calendarType, fromDate, toDate, fromLunarText: '', toLunarText: '' };
+  }
+
+  async periodContribution(customerId, query = {}, user) {
+    await assertCustomerScope(user, customerId);
+    const [customers] = await pool.query(`SELECT id,name,phone,billing_calendar_type FROM customers WHERE id=?`, [customerId]);
+    if (!customers.length) throw new Error('Không tìm thấy khách');
+
+    const range = this.resolvePeriodRange(query);
+    const [fromDate, toDate] = range.fromDate <= range.toDate ? [range.fromDate, range.toDate] : [range.toDate, range.fromDate];
+
+    // Same signed ledger read every other current-debt display in the app
+    // uses — see DebtInstallmentAgent.customerDebt(). Independent of the
+    // selected period, per LOCKED RULE A.
+    const currentDebt = await DebtInstallmentAgent.customerDebt(customerId);
+
+    const [rows] = await pool.query(
+      `SELECT id,payment_code,payment_date,cash_amount,bank_amount,note,order_id,status
+       FROM payments
+       WHERE customer_id=? AND COALESCE(status,'ACTIVE')<>'CANCELLED' AND payment_date BETWEEN ? AND ?
+       ORDER BY payment_date ASC,id ASC`,
+      [customerId, fromDate, toDate]
+    );
+
+    const paymentIds = rows.map(r => Number(r.id)).filter(Boolean);
+    const allocMap = new Map();
+    if (paymentIds.length) {
+      try {
+        const placeholders = paymentIds.map(() => '?').join(',');
+        const [allocRows] = await pool.query(
+          `SELECT pa.payment_id, o.order_code
+           FROM payment_allocations pa LEFT JOIN orders o ON o.id=pa.order_id
+           WHERE pa.payment_id IN (${placeholders})
+           ORDER BY o.order_date ASC,o.id ASC,pa.id ASC`,
+          paymentIds
+        );
+        for (const a of allocRows) {
+          const pid = Number(a.payment_id);
+          if (!allocMap.has(pid)) allocMap.set(pid, []);
+          if (a.order_code) allocMap.get(pid).push(a.order_code);
+        }
+      } catch (e) {
+        if (!(e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146))) throw e;
+      }
+    }
+
+    let cashTotal = 0, bankTotal = 0;
+    const detail = rows.map(r => {
+      const cash = Number(r.cash_amount || 0);
+      const bank = Number(r.bank_amount || 0);
+      cashTotal += cash;
+      bankTotal += bank;
+      const bills = allocMap.get(Number(r.id)) || [];
+      return {
+        payment_id: r.id,
+        payment_date: r.payment_date,
+        lunar_date_text: (() => { const l = solarToLunar(r.payment_date); return `${String(l.day).padStart(2,'0')}/${String(l.month).padStart(2,'0')}/${l.year}`; })(),
+        payment_code: r.payment_code,
+        bill_codes: bills.length ? bills.join(', ') : (r.order_id ? '' : 'Chưa phân bổ'),
+        cash_amount: cash,
+        bank_amount: bank,
+        total_amount: cash + bank,
+        note: r.note || ''
+      };
+    });
+
+    // LOCKED RULE D (optional): only surfaced when a real
+    // debt_installment_plans authority already exists for this customer —
+    // never a derived/guessed number.
+    let remainingPlanTotal;
+    try {
+      const plans = await DebtInstallmentAgent.list(customerId);
+      const active = (plans || []).filter(p => p.status === 'ACTIVE');
+      if (active.length) remainingPlanTotal = active.reduce((s, p) => s + Number(p.remaining_amount || 0), 0);
+    } catch (e) { /* optional field — never blocks the period summary */ }
+
+    return {
+      customer: customers[0],
+      calendar_type: range.calendarType,
+      from_date: fromDate,
+      to_date: toDate,
+      from_lunar_date_text: range.calendarType === 'LUNAR' ? range.fromLunarText : '',
+      to_lunar_date_text: range.calendarType === 'LUNAR' ? range.toLunarText : '',
+      current_debt: currentDebt,
+      period_summary: {
+        cash_total: cashTotal,
+        bank_total: bankTotal,
+        total: cashTotal + bankTotal,
+        payment_count: detail.length
+      },
+      remaining_plan_total: remainingPlanTotal,
+      rows: detail
+    };
   }
 
   // GO-LIVE BLOCKER 3 fix: single source of truth for "what does this order

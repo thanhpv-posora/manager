@@ -126,6 +126,10 @@ export default function CreateOrder(){
   const priceRefs=useRef({});
   const otherFlowQtyRefs=useRef({});
   const searchInputRef=useRef(null);
+  // True only for the one qty input that search-Enter just focused, so its own
+  // Enter returns to search instead of falling through to grid navigation.
+  // Reset the moment focus moves anywhere else (see onFocus in POSProductTableAgent).
+  const fastEntryFromSearchRef=useRef(false);
   // S6.5: stable per-bill-attempt key sent to /orders so a double-click or a
   // network retry of the SAME save() attempt resolves to the same order instead
   // of creating a second one. Generated lazily on first use, rotated only after
@@ -358,6 +362,7 @@ export default function CreateOrder(){
 
 
   const reloadCustomerCatalogClearQty=async(id)=>{
+    fastEntryFromSearchRef.current=false;
     if(!id||!selectedCategoryId){setItems([]);return;}
     setCatalogLoading(true);
     try{
@@ -392,12 +397,17 @@ export default function CreateOrder(){
     return shown.find(x=>qtyRefs.current[x.product_id])||null;
   };
 
-  const focusFirstQtyInput=()=>{
+  // `fromSearch` is only true for the search box's own Enter — that's the sole
+  // trigger that should arm fastEntryFromSearchRef. The post-save "keep going"
+  // auto-focus reuses this same function but must NOT arm it, or the very next
+  // plain grid Enter would wrongly jump back to search instead of the next row.
+  const focusFirstQtyInput=(fromSearch=false)=>{
     setTimeout(()=>{
       const target=resolveSearchTargetProduct();
       if(target&&qtyRefs.current[target.product_id]){
         qtyRefs.current[target.product_id].focus();
         qtyRefs.current[target.product_id].select?.();
+        fastEntryFromSearchRef.current=fromSearch;
       }
     },80);
   };
@@ -406,6 +416,7 @@ export default function CreateOrder(){
   // Enter, hand focus straight back to search with the old keyword cleared so the
   // next product code/name can be typed immediately — no mouse needed.
   const returnToSearchAfterQty=()=>{
+    fastEntryFromSearchRef.current=false;
     setFilter('');
     requestAnimationFrame(()=>{
       searchInputRef.current?.focus();
@@ -1794,8 +1805,9 @@ export default function CreateOrder(){
                 setFilter={setFilter}
                 qtyRefs={qtyRefs}
                 searchInputRef={searchInputRef}
+                fastEntryFromSearchRef={fastEntryFromSearchRef}
                 focusNext={focusNext}
-                focusFirstFilteredItem={focusFirstQtyInput}
+                focusFirstFilteredItem={()=>focusFirstQtyInput(true)}
                 onQtyCommitEnter={returnToSearchAfterQty}
                 updateQtyExpr={updateQtyExpr}
                 dragId={dragId}

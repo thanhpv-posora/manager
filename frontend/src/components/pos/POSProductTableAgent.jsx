@@ -18,6 +18,7 @@ export default function POSProductTableAgent({
   setFilter,
   qtyRefs,
   searchInputRef,
+  fastEntryFromSearchRef,
   focusNext,
   focusFirstFilteredItem,
   onQtyCommitEnter,
@@ -134,14 +135,21 @@ export default function POSProductTableAgent({
                       data-pos-col="qty"
                       data-pos-row={rowKey}
                       value={i.quantity_expr || ''}
+                      onFocus={() => { if (fastEntryFromSearchRef) fastEntryFromSearchRef.current = false; }}
                       onKeyDown={e => {
-                        if(e.key==='Enter' && !e.shiftKey){
+                        // Only the one row that search's Enter just landed on gets the
+                        // "return to search" behavior; every other qty Enter (manual click,
+                        // or already mid-grid) keeps the original next-row grid navigation.
+                        if (e.key === 'Enter' && !e.shiftKey && fastEntryFromSearchRef?.current) {
                           e.preventDefault();
-                          // Fast-entry: a valid, in-stock quantity sends focus back to
-                          // search for the next product. An overstock or empty/zero
-                          // quantity keeps focus here — the inline warning above already
-                          // covers the overstock case, nothing more to show.
-                          if(!overStock && qty > 0) onQtyCommitEnter?.();
+                          // A valid, in-stock quantity sends focus back to search for the
+                          // next product. An overstock or empty/zero quantity keeps focus
+                          // here — the inline warning above already covers the overstock
+                          // case, nothing more to show.
+                          if (!overStock && qty > 0) {
+                            fastEntryFromSearchRef.current = false;
+                            onQtyCommitEnter?.();
+                          }
                           return;
                         }
                         movePosGridFocus(e);

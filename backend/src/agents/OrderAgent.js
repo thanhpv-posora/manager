@@ -422,12 +422,17 @@ class OrderAgent {
 
       await assertCustomerScope(user, o.customer_id);
 
+      // Guard: any effective payment/allocation against this bill, regardless of
+      // path — all three checks below share one machine-readable code so the
+      // frontend/API caller can react uniformly (reverse payment, then retry).
+      const PAYMENT_GUARD_MSG = 'Bill đã phát sinh thanh toán. Vui lòng hủy/đảo thanh toán trước khi hủy bill.';
+      const paymentGuardError = () => Object.assign(new Error(PAYMENT_GUARD_MSG), { status: 400, code: 'ORDER_HAS_PAYMENT_REVERSE_FIRST' });
+
       // Guard: payment_allocations — any bill this receipt was actually applied to.
       const [allocs] = await conn.query(
         `SELECT COUNT(*) cnt FROM payment_allocations WHERE order_id=?`, [orderId]
       ).catch(async e => { if (e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146)) return [[{ cnt: 0 }]]; throw e; });
-      if (Number(allocs[0]?.cnt || 0) > 0)
-        throw Object.assign(new Error('Bill đã có thu tiền/phân bổ, không thể hủy. Vui lòng hủy phiếu thu liên quan trước.'), { status: 400 });
+      if (Number(allocs[0]?.cnt || 0) > 0) throw paymentGuardError();
 
       // Guard: legacy direct payments (payments.order_id, pre-payment_allocations bills).
       let directPayCount = 0;
@@ -441,28 +446,47 @@ class OrderAgent {
         const [r] = await conn.query(`SELECT COUNT(*) cnt FROM payments WHERE order_id=?`, [orderId]);
         directPayCount = Number(r[0]?.cnt || 0);
       }
-      if (directPayCount > 0)
-        throw Object.assign(new Error('Bill đã có phiếu thu áp dụng, không thể hủy. Vui lòng hủy phiếu thu liên quan trước.'), { status: 400 });
+      if (directPayCount > 0) throw paymentGuardError();
 
       // Guard: any money already recorded against this bill, regardless of path.
-      if (Number(o.paid_amount || 0) > 0)
-        throw Object.assign(new Error('Bill đã ghi nhận tiền đã thu, không thể hủy.'), { status: 400 });
+      if (Number(o.paid_amount || 0) > 0) throw paymentGuardError();
 
       // Debt reversal — append-only compensation, never rewrite the original SALE row.
-      await this._reverseOrderDebt(conn, orderId, o.customer_id, user?.id || null);
+      const debtReversalAmount = await this._reverseOrderDebt(conn, orderId, o.customer_id, user?.id || null);
 
       // Inventory reversal — through the single-writer boundary (InventoryService),
       // decided from order_items' frozen historical facts, not the product's
       // current config. Bò Xô / NON_STOCK lines post no row (see method doc).
-      await InventoryService.reverseOrderInventory(
+      const stockReversal = await InventoryService.reverseOrderInventory(
         conn, orderId, user?.id || null,
         `Hoàn tồn kho do hủy bill ${o.order_code}: ${reason}`
       );
 
+      const cancelledAt = new Date();
       await conn.query(
         `UPDATE orders SET status='CANCELLED', debt_amount=0, cancelled_at=NOW(), cancelled_by=?, cancel_reason=? WHERE id=?`,
         [user?.id || null, reason, orderId]
       );
+
+      // Mirrors PaymentAgent.revertPaymentEffects()'s audit_logs snapshot — same
+      // shared, entity-agnostic table, no new audit framework. Best-effort: a
+      // logging failure must never block the cancel itself.
+      try {
+        await conn.query(
+          `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, note) VALUES (?,?,?,?,?)`,
+          [user?.id || null, 'ORDER_CANCEL', 'orders', orderId, JSON.stringify({
+            order_id: Number(orderId),
+            order_code: o.order_code,
+            previous_status: o.status,
+            new_status: 'CANCELLED',
+            cancel_reason: reason,
+            user_id: user?.id || null,
+            cancelled_at: cancelledAt.toISOString(),
+            stock_reversal: stockReversal,
+            debt_reversal_amount: debtReversalAmount,
+          })]
+        );
+      } catch (e) { /* best-effort — audit_logs must never block an order cancel */ }
 
       await conn.commit();
       return { message: 'Đã hủy bill', order_id: Number(orderId), order_code: o.order_code };

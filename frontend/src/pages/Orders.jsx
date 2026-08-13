@@ -84,7 +84,14 @@ export default function Orders(){
   if(!detail||cancelSaving)return;
   const reason=String(cancelDlg?.reason||'').trim();
   if(!reason){showToast('error','Thiếu lý do','Vui lòng nhập lý do hủy bill.');return;}
-  if(!await window.appConfirm(`Hủy bill ${detail.order_code}?\nHành động này sẽ hoàn tồn kho và công nợ liên quan của bill này. Không thể hoàn tác.`,{title:'Hủy bill',confirmText:'Hủy bill',cancelText:'Đóng',variant:'danger'}))return;
+  // Frozen order_items.stock_checked facts (not current product config) decide
+  // whether cancelling this bill will actually move warehouse stock — mirrors
+  // InventoryService.reverseOrderInventory()'s own per-line check on the backend.
+  const willRestoreStock=(detail.items||[]).some(i=>Number(i.stock_checked)===1);
+  const cancelWarning=willRestoreStock
+    ?`Hủy bill ${detail.order_code}?\nSố lượng hàng đã bán sẽ được hoàn lại vào tồn kho và công nợ liên quan của bill này. Không thể hoàn tác.`
+    :`Hủy bill ${detail.order_code}?\nCông nợ liên quan của bill này sẽ được hoàn lại. Không thể hoàn tác.`;
+  if(!await window.appConfirm(cancelWarning,{title:'Hủy bill',confirmText:'Hủy bill',cancelText:'Đóng',variant:'danger'}))return;
   try{
    setCancelSaving(true);
    await api.post(`/orders/${detail.id}/cancel`,{reason});

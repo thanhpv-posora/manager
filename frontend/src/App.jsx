@@ -19,6 +19,7 @@ import StockLedger from'./pages/StockLedger';
 import InventoryAdjustments from'./pages/InventoryAdjustments';
 import Revenue from'./pages/Revenue';
 import Profit from'./pages/Profit';
+import ProductQuantityReport from'./pages/ProductQuantityReport';
 import RetailDailySummary from'./pages/RetailDailySummary';
 import Agents from'./pages/Agents';
 import Trash from'./pages/Trash';
@@ -122,6 +123,7 @@ export default function App(){
     'inventory-adjustments':<InventoryAdjustments/>,
     revenue:<Revenue/>,
     profit:<Profit/>,
+    'product-quantity-report':<ProductQuantityReport/>,
     'retail-daily-summary':<RetailDailySummary/>,
     agents:<Agents/>,
     trash:<Trash/>,

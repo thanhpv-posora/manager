@@ -265,5 +265,143 @@ class ReportAgent {
     return { rows, details };
   }
 
+  // ── Product Quantity Report ──────────────────────────────────────────────
+  // Sales-quantity-only report ("Báo cáo sản lượng"): how many kg/units of
+  // each product actually shipped, never a cash figure. Reuses the exact
+  // where/params guard pattern already established by revenue()/profit()
+  // above (o.status<>'CANCELLED', o.order_date range, CUSTOMER row-scoping)
+  // rather than a parallel filter system.
+  //
+  // Date authority: o.order_date — this is "Ngày xuất hàng" everywhere else
+  // in the app (see PrintService.js's billDate/order.order_date usage). The
+  // schema has no column literally named bill_date; order_date is that field.
+  //
+  // sales_flow authority: COALESCE(oi.sales_flow, o.sales_flow) — both are
+  // already-frozen historical facts (order_items.sales_flow is written by
+  // OrderAgent.create()'s INSERT, order_items.sales_flow per line, order
+  // header sales_flow derived from the distinct per-line values — see
+  // OrderAgent.js recalcOrderSalesFlow/create()). Deliberately never joins
+  // products.sales_flow — that is current, mutable product configuration,
+  // not what was true at sale time. A handful of legacy rows predating this
+  // column (verified: ~3% of historical order_items) have both NULL; those
+  // lines simply don't match a specific Bò Xô/Kho filter and only appear
+  // under "Tất cả" — honest behavior, not backfilled or guessed.
+  _productQuantityFilters(query, user) {
+    const isoDateRe = /^\d{4}-\d{2}-\d{2}$/;
+    const from = String(query?.from_date || '').slice(0, 10);
+    const to = String(query?.to_date || '').slice(0, 10);
+    if (!isoDateRe.test(from) || !isoDateRe.test(to))
+      throw Object.assign(new Error('from_date/to_date phải là ngày hợp lệ (YYYY-MM-DD)'), { status: 400 });
+    if (from > to)
+      throw Object.assign(new Error('from_date phải nhỏ hơn hoặc bằng to_date'), { status: 400 });
+
+    const allowedFlows = ['ALL', 'CARCASS_POS', 'INVENTORY_SALE'];
+    const flow = String(query?.sales_flow || 'ALL').toUpperCase();
+    if (!allowedFlows.includes(flow))
+      throw Object.assign(new Error('sales_flow không hợp lệ (ALL, CARCASS_POS, INVENTORY_SALE)'), { status: 400 });
+
+    const where = [`o.status<>'CANCELLED'`, `o.order_date>=?`, `o.order_date<=?`];
+    const params = [from, to];
+    if (flow !== 'ALL') { where.push(`COALESCE(oi.sales_flow,o.sales_flow)=?`); params.push(flow); }
+
+    // BR-SCOPE-006/007: a CUSTOMER can never widen scope via query params —
+    // their own customer_id always wins, ignoring whatever they sent.
+    let customerId = null;
+    if (user.role === 'CUSTOMER') customerId = user.customer_id;
+    else if (query?.customer_id) customerId = Number(query.customer_id) || null;
+    if (customerId) { where.push('o.customer_id=?'); params.push(customerId); }
+
+    return { from, to, flow, customerId, where: where.join(' AND '), params };
+  }
+
+  async productQuantity(query, user) {
+    const f = this._productQuantityFilters(query, user);
+
+    // Grouped by (product_id, unit) — not product_id alone — so a product
+    // whose recorded unit genuinely differs across historical lines (unit
+    // changed, or a data entry inconsistency) surfaces as separate rows
+    // instead of silently summing incompatible units into one number.
+    const [rows] = await pool.query(
+      `SELECT oi.product_id product_id, oi.unit unit,
+              COALESCE(MAX(p.product_code),'') product_code,
+              COALESCE(MAX(p.name),MAX(oi.product_name)) product_name,
+              SUM(oi.quantity) quantity,
+              COUNT(DISTINCT o.id) order_count
+       FROM order_items oi
+       JOIN orders o ON o.id=oi.order_id
+       LEFT JOIN products p ON p.id=oi.product_id
+       WHERE ${f.where}
+       GROUP BY oi.product_id, oi.unit
+       ORDER BY quantity DESC`,
+      f.params
+    );
+
+    const [[billCountRow]] = await pool.query(
+      `SELECT COUNT(DISTINCT o.id) cnt
+       FROM order_items oi JOIN orders o ON o.id=oi.order_id
+       WHERE ${f.where}`,
+      f.params
+    );
+
+    // Unit-safety (rule 6): never add kg + cái + thùng into one fake total.
+    // One grand total is shown only when every row shares the same unit;
+    // otherwise totals are reported per unit.
+    const totalsByUnit = new Map();
+    for (const r of rows) totalsByUnit.set(r.unit, (totalsByUnit.get(r.unit) || 0) + Number(r.quantity || 0));
+    const units = Array.from(totalsByUnit.keys());
+    const singleUnit = units.length === 1 ? units[0] : null;
+    const totalQuantity = singleUnit ? totalsByUnit.get(singleUnit) : null;
+
+    const items = rows.map(r => ({
+      product_id: r.product_id,
+      product_code: r.product_code,
+      product_name: r.product_name,
+      unit: r.unit,
+      quantity: Number(r.quantity || 0),
+      order_count: r.order_count,
+      // Percentage only meaningful within its own unit group — computed
+      // against that unit's own total, never a cross-unit fake total.
+      percentage: (totalsByUnit.get(r.unit) || 0) > 0
+        ? Number((Number(r.quantity || 0) / totalsByUnit.get(r.unit) * 100).toFixed(2))
+        : 0,
+    }));
+
+    return {
+      from: f.from, to: f.to, sales_flow: f.flow, customer_id: f.customerId,
+      total_bills: Number(billCountRow?.cnt || 0),
+      product_count: items.length,
+      top_product: items[0] || null,
+      single_unit: singleUnit,
+      total_quantity: totalQuantity,
+      totals_by_unit: units.map(u => ({ unit: u, quantity: totalsByUnit.get(u) })),
+      items,
+    };
+  }
+
+  async productQuantityDetails(productId, query, user) {
+    const pid = Number(productId);
+    if (!pid) throw Object.assign(new Error('product_id không hợp lệ'), { status: 400 });
+    const f = this._productQuantityFilters(query, user);
+
+    // Identical WHERE (date range, sales_flow, CANCELLED exclusion, customer
+    // scope) plus one extra product_id predicate — by construction, summing
+    // this result's quantity always equals the parent summary row exactly.
+    const [rows] = await pool.query(
+      `SELECT o.order_date, o.order_code, o.id order_id, c.name customer_name,
+              o.payment_status, oi.quantity, oi.sale_price, oi.total_price, oi.unit
+       FROM order_items oi
+       JOIN orders o ON o.id=oi.order_id
+       LEFT JOIN customers c ON c.id=o.customer_id
+       WHERE ${f.where} AND oi.product_id=?
+       ORDER BY o.order_date ASC, o.id ASC`,
+      [...f.params, pid]
+    );
+    return {
+      product_id: pid,
+      quantity: rows.reduce((s, r) => s + Number(r.quantity || 0), 0),
+      rows,
+    };
+  }
+
 }
 module.exports = new ReportAgent();

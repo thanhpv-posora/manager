@@ -5,4 +5,6 @@ const router=express.Router();
 router.get('/dashboard', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await ReportAgent.dashboard(req.user))}catch(e){next(e)}});
 router.get('/revenue', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await ReportAgent.revenue(req.query,req.user))}catch(e){next(e)}});
 router.get('/profit', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await ReportAgent.profit(req.query,req.user))}catch(e){next(e)}});
+router.get('/product-quantity', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await ReportAgent.productQuantity(req.query,req.user))}catch(e){next(e)}});
+router.get('/product-quantity/:productId/details', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await ReportAgent.productQuantityDetails(req.params.productId,req.query,req.user))}catch(e){next(e)}});
 module.exports=router;

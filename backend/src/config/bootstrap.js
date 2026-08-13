@@ -1785,6 +1785,7 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       ['inventory-adjustments','Kiểm kê tồn kho','Nhập số lượng thực tế sau khi kiểm kê. Hệ thống tự tính chênh lệch và tạo điều chỉnh tăng/giảm tồn kho — chỉ Admin.','inventory-adjustments','Package','purchase',7,0,1,'InventoryAdjustments'],
       ['revenue','Doanh thu','Xem doanh thu, đã thu và công nợ theo thời gian.','revenue','BarChart3','report',1,0,1,'Revenue'],
       ['profit','Lợi nhuận','Thống kê lợi nhuận theo ngày/tháng/năm, giá vốn FIFO và ngày nhập NCC.','profit','BarChart3','report',2,0,1,'Profit'],
+      ['product-quantity-report','Sản lượng','Theo dõi số lượng bán theo từng mặt hàng, theo ngày hoặc khoảng ngày.','product-quantity-report','BarChart3','report',3,0,1,'ProductQuantityReport'],
       ['agents','Agent AI','Các kỹ năng AI phục vụ vận hành bán sỉ.','agents','Bot','ai',1,0,1,'Agents'],
       ['portal','Trang thông tin / tài trợ','Quản lý nội dung giới thiệu và portal.','portal','Megaphone','ai',2,0,1,'BusinessPortal'],
       ['sponsor-videos','Video nhà tài trợ','Quản lý video và nội dung truyền thông.','sponsor-videos','Megaphone','ai',3,0,1,'SponsorVideos'],
@@ -1972,7 +1973,7 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       `INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled)
        SELECT 'ADMIN', menu_key, 1 FROM app_menus WHERE is_active = 1`
     );
-    for (const mk of ['create-order','orders','sales-returns','retail-daily-summary','payments','customers','products','product-import','ocr-providers','price-matrix','lots','revenue','profit','portal','my-menu','inventory-purchases','inventory-receives','stock-ledger']) {
+    for (const mk of ['create-order','orders','sales-returns','retail-daily-summary','payments','customers','products','product-import','ocr-providers','price-matrix','lots','revenue','profit','product-quantity-report','portal','my-menu','inventory-purchases','inventory-receives','stock-ledger']) {
       await conn.query(`INSERT IGNORE INTO role_menu_permissions (role, menu_key, is_enabled) VALUES ('STAFF', ?, 1)`, [mk]);
     }
     for (const mk of ['orders','sales-returns','payments','portal','customers','my-menu']) {

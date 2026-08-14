@@ -288,10 +288,16 @@ ${showInstallment ? `<div class="right total">Gop no/ngay: ${formatMoneyValue(mo
     const lotUrl = `${publicAppUrl()}/api/lots/public/${lot.public_token}/print`;
     const lotQr = await QRCode.toDataURL(lotUrl);
 
+    const isPriced = lot.price_status === 'PRICED';
+    // Bold border + explicit label text, not color alone, so the status still
+    // reads on a grayscale/thermal print — color is layered on top only as a
+    // secondary cue, per the print-only scope of this patch.
+    const priceStatusBadge = `<div style="display:inline-block;margin-top:6px;padding:4px 10px;border:2px solid #111;border-radius:4px;font-weight:900;letter-spacing:.5px;${isPriced?'color:#166534':'color:#7f1d1d'}">TRẠNG THÁI TÍNH TIỀN: ${isPriced?'ĐÃ TÍNH TIỀN':'CHƯA TÍNH TIỀN'}</div>`;
+
     return `<!doctype html><html><head><meta charset="utf-8"><title>${lot.lot_code}</title><style>
 body{font-family:Arial;margin:28px;color:#111}.header{display:flex;justify-content:space-between;gap:18px;border-bottom:3px solid #7f1d1d;padding-bottom:12px}.logo{font-size:28px;font-weight:900;color:#7f1d1d}.qr{width:120px;height:120px}.sub{color:#666;font-size:12px;text-align:center}
 table{width:100%;border-collapse:collapse;margin-top:18px}td,th{border:1px solid #ddd;padding:10px}th{background:#7f1d1d;color:white}.right{text-align:right;white-space:nowrap}.total{font-size:22px;font-weight:900;text-align:right;margin-top:18px}.print{position:fixed;right:20px;top:20px;padding:12px 18px;background:#7f1d1d;color:#fff;border:0;border-radius:10px}.note{white-space:pre-wrap}.muted{color:#666}@media print{.print{display:none}}</style></head><body>
-<button class="print" onclick="window.print()">IN PHIẾU</button><div class="header"><div><div class="logo">PHIẾU NHẬP LÔ / NHÀ CUNG CẤP</div><div>Mã lô: <b>${lot.lot_code}</b></div><div>Ngày lập phiếu: ${lotCreatedDate}</div><div>Ngày nhập hàng: ${lot.calendar_type==='LUNAR' ? `${lotMappedSolarDate} (${lotDate} âm lịch)` : lotMappedSolarDate}</div><div>Lịch tính bill: ${lot.calendar_type==='LUNAR'?'Âm lịch':'Dương lịch'}</div></div><div><img class="qr" src="${lotQr}"><div class="sub">Quét QR xem phiếu NCC</div></div></div>
+<button class="print" onclick="window.print()">IN PHIẾU</button><div class="header"><div><div class="logo">PHIẾU NHẬP LÔ / NHÀ CUNG CẤP</div><div>Mã lô: <b>${lot.lot_code}</b></div><div>Ngày lập phiếu: ${lotCreatedDate}</div><div>Ngày nhập hàng: ${lot.calendar_type==='LUNAR' ? `${lotMappedSolarDate} (${lotDate} âm lịch)` : lotMappedSolarDate}</div><div>Lịch tính bill: ${lot.calendar_type==='LUNAR'?'Âm lịch':'Dương lịch'}</div>${priceStatusBadge}</div><div><img class="qr" src="${lotQr}"><div class="sub">Quét QR xem phiếu NCC</div></div></div>
 <p><b>Nhà cung cấp:</b> ${lot.supplier_name||''} - ${lot.supplier_phone||''}<br><b>Địa chỉ:</b> ${lot.supplier_address||''}</p>
 <table><tbody>
 <tr><th>Nội dung</th><th>Cách nhập</th><th class="right">Giá trị (kg)</th></tr>
@@ -317,7 +323,7 @@ table{width:100%;border-collapse:collapse;margin-top:18px}td,th{border:1px solid
 <tr><td>Còn phải trả</td><td class="right">${formatMoneyValue(lot.remaining_amount)}</td></tr>
 <tr><td>Ghi chú / mô tả lô</td><td class="note">${lot.note||''}</td></tr>
 </tbody></table>
-<div class="total">Thành tiền: ${formatMoneyWithCurrency(lot.total_cost)}</div></body></html>`;
+<div class="total">Thành tiền: ${isPriced ? formatMoneyWithCurrency(lot.total_cost) : 'CHƯA TÍNH'}</div></body></html>`;
   }
   
 }

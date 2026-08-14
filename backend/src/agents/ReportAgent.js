@@ -1,18 +1,33 @@
 const pool = require('../config/db');
 
+// fix(report): goods-only sales revenue authority. orders.total_amount =
+// current_bill_amount + installment_amount (OrderAgent.js create()/
+// recalcOrderTotals()) — the góp-bill/ngày old-debt contribution is folded
+// into it, so summing it as "revenue" overstates sales by exactly that
+// contribution. current_bill_amount is the goods-only figure (verified
+// equal to SUM(order_items.total_price) for every order). Falls back to
+// total_amount-installment_amount, floored at 0, for any legacy row where
+// current_bill_amount is still 0/unmigrated — the same fallback shape
+// already established by PaymentAgent.js's orderCurrentBill derivation,
+// DebtMonthlyInstallmentAgent.js's installmentPaidExpr(), and
+// DebtOpeningAgent.js's billsInRange(), not a new rule invented here.
+// Paid/debt/receivable figures elsewhere in this file are untouched — only
+// what is explicitly labeled/used as sales revenue.
+const GOODS_REVENUE_EXPR = `COALESCE(NULLIF(o.current_bill_amount,0), GREATEST(COALESCE(o.total_amount,0)-COALESCE(o.installment_amount,0),0))`;
+
 class ReportAgent {
   async dashboard(user) {
     const today=new Date().toISOString().slice(0,10);
     const params=[]; const cw=user.role==='CUSTOMER'?'AND o.customer_id=?':'';
     if (user.role==='CUSTOMER') params.push(user.customer_id);
     const [summary]=await pool.query(
-      `SELECT COALESCE(SUM(total_amount),0) total_revenue,COALESCE(SUM(paid_amount),0) total_paid,COALESCE(SUM(debt_amount),0) total_debt,COUNT(*) total_orders,
-       COALESCE(SUM(CASE WHEN order_date=? THEN total_amount ELSE 0 END),0) today_revenue
+      `SELECT COALESCE(SUM(${GOODS_REVENUE_EXPR}),0) total_revenue,COALESCE(SUM(paid_amount),0) total_paid,COALESCE(SUM(debt_amount),0) total_debt,COUNT(*) total_orders,
+       COALESCE(SUM(CASE WHEN order_date=? THEN ${GOODS_REVENUE_EXPR} ELSE 0 END),0) today_revenue
        FROM orders o WHERE o.status<>'CANCELLED' ${cw}`,
       [today,...params]
     );
     const [daily]=await pool.query(
-      `SELECT order_date,SUM(total_amount) revenue,SUM(paid_amount) paid,SUM(debt_amount) debt,COUNT(*) orders
+      `SELECT order_date,SUM(${GOODS_REVENUE_EXPR}) revenue,SUM(paid_amount) paid,SUM(debt_amount) debt,COUNT(*) orders
        FROM orders o WHERE o.status<>'CANCELLED' ${cw} GROUP BY order_date ORDER BY order_date DESC LIMIT 30`,
       params
     );
@@ -21,7 +36,7 @@ class ReportAgent {
        WHERE o.status<>'CANCELLED' ${cw} GROUP BY oi.product_name ORDER BY revenue DESC LIMIT 10`, params
     );
     const [topCustomers]=user.role==='CUSTOMER'?[[]]:await pool.query(
-      `SELECT c.name,SUM(o.total_amount) revenue FROM orders o JOIN customers c ON c.id=o.customer_id
+      `SELECT c.name,SUM(${GOODS_REVENUE_EXPR}) revenue FROM orders o JOIN customers c ON c.id=o.customer_id
        WHERE o.status<>'CANCELLED' GROUP BY c.id ORDER BY revenue DESC LIMIT 10`
     );
     const result = {summary:summary[0], daily:daily.reverse(), topProducts, topCustomers};
@@ -49,7 +64,7 @@ class ReportAgent {
     if (to) { where.push('o.order_date<=?'); params.push(to); }
     const groupExpr=group_by==='month'?`DATE_FORMAT(o.order_date,'%Y-%m')`:`o.order_date`;
     const [posRows]=await pool.query(
-      `SELECT ${groupExpr} period,SUM(o.total_amount) revenue,SUM(o.paid_amount) paid,SUM(o.debt_amount) debt,COUNT(*) orders
+      `SELECT ${groupExpr} period,SUM(${GOODS_REVENUE_EXPR}) revenue,SUM(o.paid_amount) paid,SUM(o.debt_amount) debt,COUNT(*) orders
        FROM orders o WHERE ${where.join(' AND ')} GROUP BY ${groupExpr} ORDER BY period`, params
     );
     // P0-004: retail_daily_summary is a company-wide aggregate with no

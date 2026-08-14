@@ -47,6 +47,20 @@ function notDeletedWhere(alias, columns) {
   return columns.has('del_flg') ? ` AND ${alias}.del_flg = 0 ` : '';
 }
 
+// fix(report): goods-only revenue — see ReportAgent.js's GOODS_REVENUE_EXPR
+// for the full rationale (orders.total_amount folds in the góp-bill/ngày
+// contribution; current_bill_amount is the goods-only figure). Kept as a
+// function, not a constant, because this file already defensively checks
+// column existence per call (older/unmigrated schemas) — mirrors that same
+// pattern rather than assuming the V6.51 columns are always present.
+function goodsRevenueExpr(columns, prefix = '') {
+  const col = name => `${prefix}${name}`;
+  if (columns.has('current_bill_amount') && columns.has('total_amount') && columns.has('installment_amount')) {
+    return `COALESCE(NULLIF(${col('current_bill_amount')},0), GREATEST(COALESCE(${col('total_amount')},0)-COALESCE(${col('installment_amount')},0),0))`;
+  }
+  return columns.has('total_amount') ? col('total_amount') : '0';
+}
+
 function isInsightMessage(message) {
   const text = normalizeText(message);
 
@@ -126,7 +140,7 @@ async function findCustomer(name) {
 async function dailyRevenue() {
   const oCols = await tableColumns('orders');
   const del = notDeletedWhere('o', oCols);
-  const totalExpr = oCols.has('total_amount') ? 'total_amount' : '0';
+  const totalExpr = goodsRevenueExpr(oCols);
   const paidExpr = oCols.has('paid_amount') ? 'paid_amount' : '0';
   const debtExpr = oCols.has('debt_amount') ? 'debt_amount' : '0';
   const dateCol = oCols.has('order_date') ? 'order_date' : (oCols.has('created_at') ? 'created_at' : 'id');
@@ -248,7 +262,7 @@ async function dashboardSummary() {
   const pDel = notDeletedWhere('p', pCols);
   const cDel = notDeletedWhere('c', cCols);
   const dateCol = oCols.has('order_date') ? 'order_date' : (oCols.has('created_at') ? 'created_at' : 'id');
-  const totalExpr = oCols.has('total_amount') ? 'o.total_amount' : '0';
+  const totalExpr = goodsRevenueExpr(oCols, 'o.');
   const paidExpr = oCols.has('paid_amount') ? 'o.paid_amount' : '0';
   const debtExpr = oCols.has('debt_amount') ? 'o.debt_amount' : '0';
 

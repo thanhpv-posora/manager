@@ -64,10 +64,14 @@ export default function Installments(){
  const[draftSolarDate,setDraftSolarDate]=useState(today);
  const[draftLunarDateText,setDraftLunarDateText]=useState('');
 
- // feat(debt): customer debt MANAGEMENT summary (Nợ tổng ban đầu / Tổng đã
- // góp nợ / Phát sinh nợ mới / Tổng còn nợ hiện tại) — a reporting view on
- // top of the existing Góp bill feature, bound to the same statsCustomerId
- // selection above. Never writes to debt_transactions/orders/payments.
+ // feat(debt): customer debt MANAGEMENT summary — final confirmed formula:
+ // current_total_debt = opening_debt - total_contribution + total_outstanding.
+ // total_contribution = SUM(orders.installment_amount) on valid bills (counted
+ // at bill creation, whether or not paid yet — NOT payments.installment_amount).
+ // total_outstanding = SUM(MAX(0,total_amount-paid_amount)) on the same bills.
+ // A reporting view on top of the existing Góp bill feature, bound to the
+ // same statsCustomerId selection above. Never writes to debt_transactions/
+ // orders/payments.
  const currentUser=useMemo(()=>{try{return JSON.parse(localStorage.getItem('user')||'{}')}catch(e){return {}}},[]);
  const isAdmin=currentUser?.role==='ADMIN';
  const[openingDebt,setOpeningDebt]=useState(null);
@@ -76,12 +80,7 @@ export default function Installments(){
  const[mgmtAsOfCalendarType,setMgmtAsOfCalendarType]=useState('SOLAR');
  const[mgmtAsOfDate,setMgmtAsOfDate]=useState(today);
  const[mgmtAsOfLunar,setMgmtAsOfLunar]=useState(formatLunarDate(today).replace(/^ÂL\s*/,''));
- const[mgmtPeriodOn,setMgmtPeriodOn]=useState(false);
- const[mgmtPeriodCalendarType,setMgmtPeriodCalendarType]=useState('SOLAR');
- const[mgmtPeriodFrom,setMgmtPeriodFrom]=useState(today);
- const[mgmtPeriodTo,setMgmtPeriodTo]=useState(today);
- const[mgmtPeriodFromLunar,setMgmtPeriodFromLunar]=useState(formatLunarDate(today).replace(/^ÂL\s*/,''));
- const[mgmtPeriodToLunar,setMgmtPeriodToLunar]=useState(formatLunarDate(today).replace(/^ÂL\s*/,''));
+ const[mgmtDrilldown,setMgmtDrilldown]=useState(''); // '', 'contribution', 'outstanding'
  const[showOpeningDebtModal,setShowOpeningDebtModal]=useState(false);
  const[openingDebtForm,setOpeningDebtForm]=useState({amount:'',calendar_type:'SOLAR',date:today,lunar_date_text:'',note:''});
 
@@ -116,51 +115,38 @@ export default function Installments(){
 
  // feat(debt): opening-debt management summary — bound to statsCustomerId
  // (the same customer picker as the "Thống kê tổng tiền góp bill" card
- // above). Also default the as-of/period calendar to the customer's own
- // billing calendar, same convention as the rest of this page.
+ // above). Also default the as-of calendar to the customer's own billing
+ // calendar, same convention as the rest of this page.
  useEffect(()=>{
-  if(!statsCustomerId){setMgmtAsOfCalendarType('SOLAR');setMgmtPeriodCalendarType('SOLAR');return;}
+  if(!statsCustomerId){setMgmtAsOfCalendarType('SOLAR');return;}
   const c=customers.find(x=>String(x.id)===String(statsCustomerId));
   const ct=String(c?.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
   setMgmtAsOfCalendarType(ct);
-  setMgmtPeriodCalendarType(ct);
-  if(ct==='LUNAR'){
-   setMgmtAsOfLunar(formatLunarDate(mgmtAsOfDate||today).replace(/^ÂL\s*/,''));
-   setMgmtPeriodFromLunar(formatLunarDate(mgmtPeriodFrom||today).replace(/^ÂL\s*/,''));
-   setMgmtPeriodToLunar(formatLunarDate(mgmtPeriodTo||today).replace(/^ÂL\s*/,''));
-  }
+  if(ct==='LUNAR')setMgmtAsOfLunar(formatLunarDate(mgmtAsOfDate||today).replace(/^ÂL\s*/,''));
  },[statsCustomerId,customers]);
 
  const loadOpeningDebt=async id=>{
   if(!id){setOpeningDebt(null);return}
   try{setOpeningDebt((await api.get('/installments/opening-debt/'+id)).data)}catch(e){/* view-only failure, non-blocking */}
  };
- const loadMgmtSummary=async(id=statsCustomerId,ct=mgmtAsOfCalendarType,d=mgmtAsOfDate,dl=mgmtAsOfLunar,periodOn=mgmtPeriodOn,pct=mgmtPeriodCalendarType,pf=mgmtPeriodFrom,pt=mgmtPeriodTo,pfl=mgmtPeriodFromLunar,ptl=mgmtPeriodToLunar)=>{
+ const loadMgmtSummary=async(id=statsCustomerId,ct=mgmtAsOfCalendarType,d=mgmtAsOfDate,dl=mgmtAsOfLunar)=>{
   if(!id){setMgmtSummary(null);return}
   try{
    setMgmtError('');
    const params=ct==='LUNAR'?{as_of_calendar_type:'LUNAR',as_of_lunar_date_text:dl}:{as_of_calendar_type:'SOLAR',as_of_date:d};
-   if(periodOn){
-    Object.assign(params,pct==='LUNAR'
-     ?{period_calendar_type:'LUNAR',period_from_lunar_date_text:pfl,period_to_lunar_date_text:ptl}
-     :{period_calendar_type:'SOLAR',period_from_date:pf,period_to_date:pt});
-   }
    setMgmtSummary((await api.get('/installments/opening-debt/'+id+'/summary',{params})).data);
   }catch(e){setMgmtError(e.response?.data?.message||e.message);setMgmtSummary(null)}
  };
  useEffect(()=>{
   if(!statsCustomerId)return;
+  setMgmtDrilldown('');
   loadOpeningDebt(statsCustomerId);
   loadMgmtSummary(statsCustomerId);
  },[statsCustomerId]);
 
  const changeMgmtAsOfDate=v=>{setMgmtAsOfDate(v);if(mgmtAsOfCalendarType==='LUNAR')setMgmtAsOfLunar(formatLunarDate(v||today).replace(/^ÂL\s*/,''));};
  const changeMgmtAsOfLunar=v=>{setMgmtAsOfLunar(v);const solar=lunarToSolarDate(parseLunarText(v));if(solar)setMgmtAsOfDate(solar);};
- const changeMgmtPeriodFrom=v=>{setMgmtPeriodFrom(v);if(mgmtPeriodCalendarType==='LUNAR')setMgmtPeriodFromLunar(formatLunarDate(v||today).replace(/^ÂL\s*/,''));};
- const changeMgmtPeriodTo=v=>{setMgmtPeriodTo(v);if(mgmtPeriodCalendarType==='LUNAR')setMgmtPeriodToLunar(formatLunarDate(v||today).replace(/^ÂL\s*/,''));};
- const changeMgmtPeriodFromLunar=v=>{setMgmtPeriodFromLunar(v);const solar=lunarToSolarDate(parseLunarText(v));if(solar)setMgmtPeriodFrom(solar);};
- const changeMgmtPeriodToLunar=v=>{setMgmtPeriodToLunar(v);const solar=lunarToSolarDate(parseLunarText(v));if(solar)setMgmtPeriodTo(solar);};
- const runMgmtSummary=()=>loadMgmtSummary(statsCustomerId,mgmtAsOfCalendarType,mgmtAsOfDate,mgmtAsOfLunar,mgmtPeriodOn,mgmtPeriodCalendarType,mgmtPeriodFrom,mgmtPeriodTo,mgmtPeriodFromLunar,mgmtPeriodToLunar);
+ const runMgmtSummary=()=>loadMgmtSummary(statsCustomerId,mgmtAsOfCalendarType,mgmtAsOfDate,mgmtAsOfLunar);
 
  const openOpeningDebtModal=()=>{
   setOpeningDebtForm(openingDebt
@@ -383,7 +369,7 @@ th{background:#1A73E8;color:white}
   {/* Tổng quan quản lý công nợ — Nợ tổng ban đầu / Đã góp / Nợ mới / Còn nợ */}
   <div className="card">
    <h3>Tổng quan công nợ khách hàng</h3>
-   <p className="muted">Nợ tổng ban đầu do ADMIN xác nhận thủ công. Tổng đã góp nợ chỉ tính tiền góp nợ/ngày THỰC THU (không tính tiền góp theo kế hoạch chưa thu). Phát sinh nợ mới chỉ tính phần hàng hoá chưa thu, không tính phần góp nợ/ngày.</p>
+   <p className="muted">Nợ tổng ban đầu do ADMIN xác nhận thủ công. Tổng tiền góp nợ là số tiền góp nợ/ngày đã gắn vào bill hợp lệ (tính ngay khi tạo bill, kể cả bill chưa thu đủ). Tổng bill còn nợ là số tiền còn phải thu trên các bill đó (đã gồm cả phần góp nợ/ngày của bill).</p>
    <div className="form-grid" style={{gridTemplateColumns:'1.3fr 1fr 1fr auto'}}>
     <label className="field-label"><span>Khách hàng</span>
      <EnterpriseAutocomplete items={customers} value={customers.find(c=>String(c.id)===String(statsCustomerId))||null} onChange={item=>setStatsCustomerId(item?String(item.id):'')} placeholder="Tìm khách hàng..." displayField="name" secondaryFields={['customer_code','phone']} searchFields={['name','customer_code','phone','address']} filter={item=>(Number(item.partner_type||2)&2)===2} emptyText="Không tìm thấy khách hàng" getItemKey={item=>item.id}/>
@@ -406,43 +392,39 @@ th{background:#1A73E8;color:white}
    {mgmtError&&<div className="ai-alert danger">{mgmtError}</div>}
    {mgmtSummary&&<>
     {!mgmtSummary.opening_debt&&<div className="ai-alert warn" style={{marginTop:10}}>Khách hàng này chưa được cấu hình Nợ tổng ban đầu. Đang tính với nợ gốc = 0.{isAdmin?' Bấm "Cài đặt nợ gốc" để nhập.':' Liên hệ ADMIN để nhập nợ gốc ban đầu.'}</div>}
+    {mgmtSummary.opening_debt&&!mgmtSummary.opening_applicable&&<div className="ai-alert warn" style={{marginTop:10}}>Thời điểm đang chọn trước ngày hiệu lực nợ gốc (<b>{ymd(mgmtSummary.opening_debt.effective_date)}</b>). Nợ gốc ban đầu chưa áp dụng, đang tính với nợ gốc = 0.</div>}
     <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:12,marginTop:14}}>
      <div className="payment-total-box" style={{marginTop:0}}><div>Nợ tổng ban đầu</div><b>{money(mgmtSummary.opening_debt_amount)}</b></div>
-     <div className="payment-total-box" style={{marginTop:0}}><div>Tổng đã góp nợ</div><b>{money(mgmtSummary.total_contributed)}</b></div>
-     <div className="payment-total-box" style={{marginTop:0}}><div>Phát sinh nợ mới</div><b>{money(mgmtSummary.new_debt)}</b></div>
-     <div className="payment-total-box" style={{marginTop:0,background:'#fff7ed',border:'1px solid #fdba74'}}><div>TỔNG CÒN NỢ HIỆN TẠI</div><b style={{fontSize:26}}>{money(mgmtSummary.remaining_debt)}</b></div>
+     <div className="payment-total-box" style={{marginTop:0,cursor:'pointer'}} onClick={()=>setMgmtDrilldown(d=>d==='contribution'?'':'contribution')}><div>(-) Tổng tiền góp nợ</div><b>-{money(mgmtSummary.total_contribution)}</b><span style={{fontSize:12,fontWeight:600,color:'#1A73E8'}}>{mgmtDrilldown==='contribution'?'Ẩn chi tiết ▲':'Xem chi tiết ▼'}</span></div>
+     <div className="payment-total-box" style={{marginTop:0,cursor:'pointer'}} onClick={()=>setMgmtDrilldown(d=>d==='outstanding'?'':'outstanding')}><div>(+) Tổng bill còn nợ</div><b>+{money(mgmtSummary.total_outstanding)}</b><span style={{fontSize:12,fontWeight:600,color:'#1A73E8'}}>{mgmtDrilldown==='outstanding'?'Ẩn chi tiết ▲':'Xem chi tiết ▼'}</span></div>
+     <div className="payment-total-box" style={{marginTop:0,background:'#fff7ed',border:'1px solid #fdba74'}}><div>TỔNG NỢ HIỆN TẠI</div><b style={{fontSize:26}}>{money(mgmtSummary.current_total_debt)}</b></div>
     </div>
     <div className="muted" style={{marginTop:10}}>
      Đến thời điểm <b>{mgmtSummary.as_of_calendar_type==='LUNAR'?`${mgmtSummary.as_of_lunar_date_text} ÂL (${ymd(mgmtSummary.as_of_date)} DL)`:ymd(mgmtSummary.as_of_date)}</b>
      {mgmtSummary.opening_debt?.effective_date&&<> · Hiệu lực từ <b>{ymd(mgmtSummary.opening_debt.effective_date)}</b></>}
     </div>
+    {!mgmtSummary.reconciliation?.matches&&<div className="ai-alert danger" style={{marginTop:10}}>
+     Cảnh báo: công thức đối chiếu (Nợ gốc + Tổng hàng hoá − Tổng đã thu = <b>{money(mgmtSummary.reconciliation?.formula_result)}</b>) không khớp với TỔNG NỢ HIỆN TẠI (<b>{money(mgmtSummary.current_total_debt)}</b>), lệch <b>{money(mgmtSummary.reconciliation?.difference)}</b>. Vui lòng báo kỹ thuật kiểm tra trước khi dùng số liệu này.
+    </div>}
     {Math.abs(mgmtSummary.ledger_difference||0)>=1&&<div className="ai-alert warn" style={{marginTop:10}}>
      Số liệu quản lý này khác với công nợ theo sổ cái hệ thống (<b>{money(mgmtSummary.ledger_current_debt)}</b>) một khoản <b>{money(mgmtSummary.ledger_difference)}</b>.
      Đây là chênh lệch do sổ cái không có khái niệm "nợ gốc ban đầu"; số liệu kế toán ở nơi khác trong hệ thống không bị thay đổi.
     </div>}
-    <div className="check-line" style={{marginTop:14}}>
-     <input type="checkbox" checked={mgmtPeriodOn} onChange={e=>{setMgmtPeriodOn(e.target.checked);loadMgmtSummary(statsCustomerId,mgmtAsOfCalendarType,mgmtAsOfDate,mgmtAsOfLunar,e.target.checked,mgmtPeriodCalendarType,mgmtPeriodFrom,mgmtPeriodTo,mgmtPeriodFromLunar,mgmtPeriodToLunar);}}/>
-     <span>Xem chi tiết theo kỳ (tuỳ chọn)</span>
-    </div>
-    {mgmtPeriodOn&&<div className="form-grid" style={{gridTemplateColumns:'auto 1fr 1fr auto',alignItems:'end',marginTop:8}}>
-     <label className="field-label"><span>Loại lịch kỳ</span>
-      <select className="select" value={mgmtPeriodCalendarType} onChange={e=>setMgmtPeriodCalendarType(e.target.value)}>
-       <option value="SOLAR">Dương lịch</option>
-       <option value="LUNAR">Âm lịch</option>
-      </select>
-     </label>
-     {mgmtPeriodCalendarType==='LUNAR'?<>
-      <label className="field-label"><span>Từ ngày âm lịch</span><input className="input" value={mgmtPeriodFromLunar} onChange={e=>changeMgmtPeriodFromLunar(e.target.value)}/></label>
-      <label className="field-label"><span>Đến ngày âm lịch</span><input className="input" value={mgmtPeriodToLunar} onChange={e=>changeMgmtPeriodToLunar(e.target.value)}/></label>
-     </>:<>
-      <label className="field-label"><span>Từ ngày</span><input className="input" type="date" value={mgmtPeriodFrom} onChange={e=>changeMgmtPeriodFrom(e.target.value)}/></label>
-      <label className="field-label"><span>Đến ngày</span><input className="input" type="date" value={mgmtPeriodTo} onChange={e=>changeMgmtPeriodTo(e.target.value)}/></label>
-     </>}
-     <button type="button" className="btn secondary" onClick={runMgmtSummary}>Xem kỳ</button>
+    {mgmtDrilldown==='contribution'&&<div style={{marginTop:14}}>
+     <h4 style={{margin:'0 0 8px'}}>Chi tiết Tổng tiền góp nợ ({mgmtSummary.contribution_bills.length} bill)</h4>
+     <div className="installment-table-wrap">
+      <table className="table"><thead><tr><th>Ngày bill</th><th>Mã bill</th><th>Tiền hàng</th><th>Góp/ngày</th><th>Tổng bill</th><th>Trạng thái</th></tr></thead>
+       <tbody>{mgmtSummary.contribution_bills.map(b=><tr key={b.order_id}><td>{ymd(b.order_date)}</td><td>{b.order_code}</td><td>{money(b.goods_amount)}</td><td>{money(b.contribution_amount)}</td><td><b>{money(b.bill_total)}</b></td><td>{b.payment_status}</td></tr>)}</tbody>
+      </table>
+     </div>
     </div>}
-    {mgmtPeriodOn&&mgmtSummary.period&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:12,marginTop:10}}>
-     <div className="payment-total-box" style={{marginTop:0}}><div>Đã góp nợ trong kỳ</div><b>{money(mgmtSummary.period.contributed_in_period)}</b></div>
-     <div className="payment-total-box" style={{marginTop:0}}><div>Phát sinh nợ mới trong kỳ</div><b>{money(mgmtSummary.period.new_debt_in_period)}</b></div>
+    {mgmtDrilldown==='outstanding'&&<div style={{marginTop:14}}>
+     <h4 style={{margin:'0 0 8px'}}>Chi tiết Tổng bill còn nợ ({mgmtSummary.outstanding_bills.length} bill)</h4>
+     <div className="installment-table-wrap">
+      <table className="table"><thead><tr><th>Ngày bill</th><th>Mã bill</th><th>Tiền hàng</th><th>Góp/ngày</th><th>Tổng bill</th><th>Đã trả</th><th>Còn nợ</th></tr></thead>
+       <tbody>{mgmtSummary.outstanding_bills.length?mgmtSummary.outstanding_bills.map(b=><tr key={b.order_id}><td>{ymd(b.order_date)}</td><td>{b.order_code}</td><td>{money(b.goods_amount)}</td><td>{money(b.contribution_amount)}</td><td>{money(b.bill_total)}</td><td>{money(b.paid_amount)}</td><td><b>{money(b.remaining_amount)}</b></td></tr>):<tr><td colSpan="7" className="muted" style={{textAlign:'center'}}>Không có bill còn nợ trong khoảng đang chọn</td></tr>}</tbody>
+      </table>
+     </div>
     </div>}
    </>}
   </div>

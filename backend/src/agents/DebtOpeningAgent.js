@@ -77,39 +77,48 @@ class DebtOpeningAgent {
     return this.get(cid);
   }
 
-  // Goods-first priority — identical to PaymentAgent.create()'s installment
-  // split (productPaidBefore = MIN(paidBefore, currentBillAmount)) — so "new
-  // unpaid goods debt" here can never disagree with how a real payment was
-  // actually applied. fromDateExclusive is the opening-debt effective date
-  // (orders on/before it are part of the opening baseline, never "new");
-  // fromDateInclusive additionally narrows to a reporting period on top of
-  // that floor — whichever bound is later wins, both are optional.
-  async newUnpaidGoodsDebt(customerId, fromDateExclusive, toDate, fromDateInclusive = null) {
+  // FINAL BUSINESS FORMULA (confirmed):
+  //   CURRENT TOTAL DEBT = OPENING DEBT - TOTAL BILL CONTRIBUTION + TOTAL OUTSTANDING BILL BALANCE
+  // where, per valid (non-CANCELLED) bill from the opening-debt effective
+  // date through the as-of date:
+  //   contribution = orders.installment_amount — the góp/ngày amount
+  //     ATTACHED to the bill at creation, counted whether or not the bill
+  //     has been paid yet. Deliberately NOT payments.installment_amount
+  //     (that is "actually collected", a different, explicitly rejected
+  //     metric for this formula).
+  //   remaining    = MAX(0, total_amount - paid_amount)
+  // orders.paid_amount is the authority for "effective paid amount" — it is
+  // the one field every payment mutation path (PaymentAgent.create/update/
+  // cancel, via applyPaymentToOrder/recalcOrderAfterPaymentChange) already
+  // keeps in sync net of allocations, edits, and reversals, so a cancelled
+  // or reverted payment's contribution is already backed out by the time
+  // this reads it. payment_allocations is not needed here.
+  // current_bill_amount/total_amount both fall back to the same pre-V6.51
+  // derivation PaymentAgent.create() already uses for legacy rows, so the
+  // goods+contribution=total_amount identity holds for every row read here.
+  async billsInRange(customerId, fromDateInclusive, toDate) {
     const where = [`customer_id=?`, `status<>'CANCELLED'`, `order_date<=?`];
     const params = [customerId, toDate];
-    if (fromDateExclusive) { where.push('order_date>?'); params.push(fromDateExclusive); }
     if (fromDateInclusive) { where.push('order_date>=?'); params.push(fromDateInclusive); }
-    const [[row]] = await pool.query(
-      `SELECT COALESCE(SUM(GREATEST(0, COALESCE(current_bill_amount,0) - LEAST(COALESCE(paid_amount,0), COALESCE(current_bill_amount,0)))),0) new_debt
-       FROM orders WHERE ${where.join(' AND ')}`,
+    const [rows] = await pool.query(
+      `SELECT id,order_code,order_date,current_bill_amount,installment_amount,total_amount,paid_amount,payment_status
+       FROM orders WHERE ${where.join(' AND ')} ORDER BY order_date ASC,id ASC`,
       params
     );
-    return Number(row.new_debt || 0);
-  }
-
-  // payments.installment_amount is the REAL amount a receipt actually applied
-  // toward the daily góp-nợ contribution (PaymentAgent.js's installmentPaid
-  // calc) — never orders.installment_amount, which is only the planned/due
-  // amount attached to a bill regardless of what was actually collected.
-  async actualContribution(customerId, fromDateInclusive, toDate) {
-    const where = [`customer_id=?`, `COALESCE(status,'ACTIVE')<>'CANCELLED'`, `payment_date<=?`];
-    const params = [customerId, toDate];
-    if (fromDateInclusive) { where.push('payment_date>=?'); params.push(fromDateInclusive); }
-    const [[row]] = await pool.query(
-      `SELECT COALESCE(SUM(installment_amount),0) contributed FROM payments WHERE ${where.join(' AND ')}`,
-      params
-    );
-    return Number(row.contributed || 0);
+    return rows.map(r => {
+      const totalAmount = Number(r.total_amount || 0);
+      const installmentAmount = Number(r.installment_amount || 0);
+      const goodsAmount = Number(r.current_bill_amount || 0) > 0
+        ? Number(r.current_bill_amount || 0)
+        : Math.max(0, totalAmount - installmentAmount);
+      const paidAmount = Number(r.paid_amount || 0);
+      const remainingAmount = Math.max(0, totalAmount - paidAmount);
+      return {
+        order_id: r.id, order_code: r.order_code, order_date: r.order_date,
+        goods_amount: goodsAmount, contribution_amount: installmentAmount, bill_total: totalAmount,
+        paid_amount: paidAmount, remaining_amount: remainingAmount, payment_status: r.payment_status
+      };
+    });
   }
 
   async managementSummary(customerId, query = {}, user) {
@@ -120,46 +129,63 @@ class DebtOpeningAgent {
 
     const asOf = this.resolveDate(query, 'as_of_');
     const opening = await this.get(cid);
-    const openingAmount = Number(opening?.opening_debt_amount || 0);
     const effectiveDate = opening?.effective_date ? String(opening.effective_date).slice(0, 10) : null;
+    // LOCKED RULE: opening debt only applies when as_of_date >= effective_date.
+    const openingApplicable = !!opening && (!effectiveDate || asOf.solarDate >= effectiveDate);
+    const openingAmount = openingApplicable ? Number(opening.opening_debt_amount || 0) : 0;
 
-    const totalContributed = await this.actualContribution(cid, effectiveDate, asOf.solarDate);
-    const newDebt = await this.newUnpaidGoodsDebt(cid, effectiveDate, asOf.solarDate);
-    const remainingDebt = openingAmount - totalContributed + newDebt;
+    const bills = await this.billsInRange(cid, effectiveDate, asOf.solarDate);
+    const agg = this.aggregate(openingAmount, bills);
 
     // Existing ledger-based authority, unchanged — surfaced only for
     // comparison. A difference is reported, never used to silently adjust
     // this management figure or the ledger itself.
     const ledgerCurrentDebt = await DebtInstallmentAgent.customerDebt(cid);
 
-    let periodDetail = null;
-    if (query.period_from_date || query.period_to_date || query.period_from_lunar_date_text || query.period_to_lunar_date_text) {
-      const from = this.resolveDate({ ...query, calendar_type: query.period_calendar_type, date: query.period_from_date, lunar_date_text: query.period_from_lunar_date_text }, '');
-      const to = this.resolveDate({ ...query, calendar_type: query.period_calendar_type, date: query.period_to_date, lunar_date_text: query.period_to_lunar_date_text }, '');
-      periodDetail = {
-        calendar_type: from.calendarType,
-        from_date: from.solarDate,
-        to_date: to.solarDate,
-        contributed_in_period: await this.actualContribution(cid, from.solarDate, to.solarDate),
-        // Both bounds apply: never counts an order before the opening-debt
-        // effective date as "new", even if the selected period starts earlier.
-        new_debt_in_period: await this.newUnpaidGoodsDebt(cid, effectiveDate, to.solarDate, from.solarDate)
-      };
-    }
-
     return {
       customer: customers[0],
       opening_debt: opening,
+      opening_applicable: openingApplicable,
       as_of_calendar_type: asOf.calendarType,
       as_of_date: asOf.solarDate,
       as_of_lunar_date_text: asOf.calendarType === 'LUNAR' ? asOf.lunarText : solarToLunarText(asOf.solarDate),
-      opening_debt_amount: openingAmount,
-      total_contributed: totalContributed,
-      new_debt: newDebt,
-      remaining_debt: remainingDebt,
+      ...agg,
       ledger_current_debt: ledgerCurrentDebt,
-      ledger_difference: remainingDebt - ledgerCurrentDebt,
-      period: periodDetail
+      ledger_difference: agg.current_total_debt - ledgerCurrentDebt,
+      contribution_bills: bills,
+      outstanding_bills: bills.filter(b => b.remaining_amount > 0)
+    };
+  }
+
+  // Pure aggregation — no I/O — so the exact business-confirmed test matrix
+  // can be run against this real code path without touching the database.
+  // FINAL BUSINESS FORMULA: current_total_debt = opening - contribution + outstanding.
+  // Algebraic invariant (BillTotal=Goods+Contribution, Remaining=BillTotal-Paid
+  // => Opening-Contribution+Remaining === Opening+Goods-Paid) is recomputed from
+  // the exact same per-bill rows every call, so any mismatch means a real bug
+  // in this method, not a data-timing race — surfaced, never hidden.
+  aggregate(openingAmount, bills) {
+    const totalContribution = bills.reduce((s, b) => s + b.contribution_amount, 0);
+    const totalOutstanding = bills.reduce((s, b) => s + b.remaining_amount, 0);
+    const totalGoods = bills.reduce((s, b) => s + b.goods_amount, 0);
+    const totalPaid = bills.reduce((s, b) => s + b.paid_amount, 0);
+
+    const currentTotalDebt = openingAmount - totalContribution + totalOutstanding;
+    const reconciliationDebt = openingAmount + totalGoods - totalPaid;
+    const reconciliationDifference = currentTotalDebt - reconciliationDebt;
+
+    return {
+      opening_debt_amount: openingAmount,
+      total_contribution: totalContribution,
+      total_outstanding: totalOutstanding,
+      current_total_debt: currentTotalDebt,
+      reconciliation: {
+        total_goods: totalGoods,
+        total_paid: totalPaid,
+        formula_result: reconciliationDebt,
+        matches: Math.abs(reconciliationDifference) < 0.01,
+        difference: reconciliationDifference
+      }
     };
   }
 

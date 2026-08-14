@@ -406,10 +406,6 @@ th{background:#1A73E8;color:white}
     {!mgmtSummary.reconciliation?.matches&&<div className="ai-alert danger" style={{marginTop:10}}>
      Cảnh báo: công thức đối chiếu (Nợ gốc + Tổng hàng hoá − Tổng đã thu = <b>{money(mgmtSummary.reconciliation?.formula_result)}</b>) không khớp với TỔNG NỢ HIỆN TẠI (<b>{money(mgmtSummary.current_total_debt)}</b>), lệch <b>{money(mgmtSummary.reconciliation?.difference)}</b>. Vui lòng báo kỹ thuật kiểm tra trước khi dùng số liệu này.
     </div>}
-    {Math.abs(mgmtSummary.ledger_difference||0)>=1&&<div className="ai-alert warn" style={{marginTop:10}}>
-     Số liệu quản lý này khác với công nợ theo sổ cái hệ thống (<b>{money(mgmtSummary.ledger_current_debt)}</b>) một khoản <b>{money(mgmtSummary.ledger_difference)}</b>.
-     Đây là chênh lệch do sổ cái không có khái niệm "nợ gốc ban đầu"; số liệu kế toán ở nơi khác trong hệ thống không bị thay đổi.
-    </div>}
     {mgmtDrilldown==='contribution'&&<div style={{marginTop:14}}>
      <h4 style={{margin:'0 0 8px'}}>Chi tiết Tổng tiền góp nợ ({mgmtSummary.contribution_bills.length} bill)</h4>
      <div className="installment-table-wrap">

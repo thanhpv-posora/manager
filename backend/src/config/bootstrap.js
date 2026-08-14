@@ -1069,6 +1069,26 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
   await safeAddColumn(conn, 'purchase_lots', 'female_price', 'female_price DECIMAL(15,2) NOT NULL DEFAULT 0');
   await safeAddColumn(conn, 'purchase_lots', 'male_weight', 'male_weight DECIMAL(15,3) NOT NULL DEFAULT 0');
   await safeAddColumn(conn, 'purchase_lots', 'female_weight', 'female_weight DECIMAL(15,3) NOT NULL DEFAULT 0');
+
+  // price_status: independent price/billing-confirmation status, separate from
+  // `status` (payment/settlement: OPEN/CLOSED/CANCELLED). CLOSED already implies
+  // fully paid (updateLotStatus() requires remaining_amount<=0) — that says
+  // nothing about whether the price was ever explicitly confirmed, so it cannot
+  // be reused as "chưa/đã tính tiền" (see SupplierAgent.priceLot()). Default
+  // UNPRICED so every new lot starts unconfirmed regardless of whatever
+  // total_cost calc() produced from whatever was on the form at save time.
+  await safeAddColumn(conn, 'purchase_lots', 'price_status', "price_status ENUM('UNPRICED','PRICED') NOT NULL DEFAULT 'UNPRICED'");
+  // Backfill audited 2026-08-15 (2 existing lots): CLOSED is only reachable by
+  // paying a lot off in full, which requires total_cost to already reflect
+  // confirmed weight/price data — safe to treat every existing CLOSED lot as
+  // PRICED. OPEN rows are deliberately left UNPRICED: total_cost>0 alone cannot
+  // prove the price was ever confirmed/chốt (calc() runs on every create/edit
+  // regardless of intent), so existing OPEN lots require an explicit "Tính
+  // tiền" click before they can be treated as priced or closed — including the
+  // one audited OPEN lot that already happens to be fully paid off already.
+  // WHERE price_status='UNPRICED' keeps this idempotent across every boot.
+  await runSql(conn, `UPDATE purchase_lots SET price_status='PRICED' WHERE status='CLOSED' AND price_status='UNPRICED'`);
+
     if (await hasTable(conn, 'orders')) {
       await safeAddColumn(conn, 'orders', 'calendar_type', "calendar_type ENUM('SOLAR','LUNAR') NOT NULL DEFAULT 'SOLAR'");
       await safeAddColumn(conn, 'orders', 'lunar_date_text', 'lunar_date_text VARCHAR(30) NULL');

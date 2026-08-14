@@ -1,5 +1,5 @@
 import React,{useEffect,useRef,useState}from'react';
-import {CheckCircle2,Pencil,Printer}from'lucide-react';
+import {CheckCircle2,Pencil,Printer,Calculator}from'lucide-react';
 import api from'../api/api';
 import SafePage from'../components/SafePage';
 import MoneyInput from'../components/MoneyInput';
@@ -48,7 +48,7 @@ export default function Lots(){
   const[saving,setSaving]=useState(false);
   const[saveStatus,setSaveStatus]=useState(null);
   const[reportTab,setReportTab]=useState('DETAIL');
-  const[reportFilter,setReportFilter]=useState({from:'',to:'',supplier_id:''});
+  const[reportFilter,setReportFilter]=useState({from:'',to:'',supplier_id:'',price_status:'ALL'});
   const[editingLotId,setEditingLotId]=useState(null);
   const[priceSource,setPriceSource]=useState(null);
   const[dateDialogOpen,setDateDialogOpen]=useState(false);
@@ -408,6 +408,11 @@ export default function Lots(){
     try{await api.put('/lots/'+id+'/status',{status:'CLOSED'});await load();}
     catch(e){alert(e.response?.data?.message||e.message);}
   };
+  const priceLot=async(id,lot_code)=>{
+    if(!await window.appConfirm('Tính tiền phiếu nhập '+lot_code+'?\n\nHệ thống sẽ tính lại thành tiền theo số liệu hiện tại của phiếu.',{title:'Tính tiền phiếu nhập',confirmText:'Tính tiền',cancelText:'Hủy',variant:'primary'}))return;
+    try{await api.put('/lots/'+id+'/price');await load();}
+    catch(e){alert(e.response?.data?.message||e.message);}
+  };
 
   const kg=formatQty;
   const isoDate=v=>v?String(v).slice(0,10):'';
@@ -440,8 +445,22 @@ export default function Lots(){
     if(reportFilter.from && d<reportFilter.from)return false;
     if(reportFilter.to && d>reportFilter.to)return false;
     if(reportFilter.supplier_id && String(r.supplier_id)!==String(reportFilter.supplier_id))return false;
+    if(reportFilter.price_status && reportFilter.price_status!=='ALL' && r.price_status!==reportFilter.price_status)return false;
     return true;
   });
+  // Multi-voucher summary by price/billing status (Đã tính tiền / Chưa tính
+  // tiền) — independent of detailTotals/summaryRows above, which stay exactly
+  // as-is so the existing report tabs and print buttons are unaffected.
+  // Chưa tính tiền never contributes a money figure: its total_cost may still
+  // be a stale/unconfirmed number from calc() running on whatever was last on
+  // the form, not a confirmed price.
+  const priceStatusBuckets=reportRows.reduce((acc,r)=>{
+    const key=r.price_status==='PRICED'?'priced':'unpriced';
+    acc[key].count+=1;
+    acc[key].kg+=n(r.total_weight);
+    if(key==='priced')acc[key].cost+=n(r.total_cost);
+    return acc;
+  },{priced:{count:0,kg:0,cost:0},unpriced:{count:0,kg:0}});
   const detailTotals=reportRows.reduce((a,r)=>({
     lots:a.lots+1,
     animals:a.animals+n(r.total_animals),
@@ -625,6 +644,7 @@ export default function Lots(){
           <label><span className="muted">Từ ngày</span><input className="input" type="date" value={reportFilter.from} onChange={e=>setReportFilter({...reportFilter,from:e.target.value})}/></label>
           <label><span className="muted">Đến ngày</span><input className="input" type="date" value={reportFilter.to} onChange={e=>setReportFilter({...reportFilter,to:e.target.value})}/></label>
           <label><span className="muted">Nhà cung cấp</span><EnterpriseAutocomplete items={s} value={s.find(x=>String(x.id)===String(reportFilter.supplier_id))||null} onChange={item=>setReportFilter({...reportFilter,supplier_id:item?String(item.id):''})} placeholder="Tất cả NCC..." displayField="name" secondaryFields={['phone']} searchFields={['name','supplier_code','customer_code','phone','address']} emptyText="Không tìm thấy NCC" getItemKey={item=>item.id}/></label>
+          <label><span className="muted">Trạng thái tính tiền</span><select className="select" value={reportFilter.price_status||'ALL'} onChange={e=>setReportFilter({...reportFilter,price_status:e.target.value})}><option value="ALL">Tất cả</option><option value="PRICED">Đã tính tiền</option><option value="UNPRICED">Chưa tính tiền</option></select></label>
           <div className="actions" style={{alignItems:'end'}}>
             {reportTab==='DETAIL'?<button className="btn secondary" disabled={!reportRows.length} onClick={printDetail}>🖨 In chi tiết</button>:<button className="btn secondary" disabled={!summaryRows.length} onClick={printSummary}>🖨 In tổng hợp</button>}
           </div>
@@ -644,21 +664,39 @@ export default function Lots(){
           <div><span>Tổng thành tiền</span><b>{money(detailTotals.cost)}</b></div>
         </div>
 
+        <div className="lots-stat-grid" style={{marginTop:10}}>
+          <div><span>Tổng số phiếu (theo bộ lọc)</span><b>{reportRows.length}</b></div>
+          <div><span>Tổng kg (theo bộ lọc)</span><b>{kg(reportRows.reduce((s,r)=>s+n(r.total_weight),0))}kg</b></div>
+        </div>
+        {(reportFilter.price_status==='ALL'||reportFilter.price_status==='PRICED')&&
+          <div className="lots-stat-grid" style={{marginTop:10}}>
+            <div><span>Đã tính tiền — số phiếu</span><b>{priceStatusBuckets.priced.count}</b></div>
+            <div><span>Đã tính tiền — tổng kg</span><b>{kg(priceStatusBuckets.priced.kg)}kg</b></div>
+            <div><span>Đã tính tiền — tổng tiền</span><b>{money(priceStatusBuckets.priced.cost)}</b></div>
+          </div>}
+        {(reportFilter.price_status==='ALL'||reportFilter.price_status==='UNPRICED')&&
+          <div className="lots-stat-grid" style={{marginTop:10}}>
+            <div><span>Chưa tính tiền — số phiếu</span><b>{priceStatusBuckets.unpriced.count}</b></div>
+            <div><span>Chưa tính tiền — tổng kg</span><b>{kg(priceStatusBuckets.unpriced.kg)}kg</b></div>
+          </div>}
+
         <h3>Danh sách phiếu nhập / Thanh toán NCC</h3>
         <table className="table">
-          <thead><tr><th>NCC</th><th>Kg</th><th>Thành tiền</th><th>Còn trả</th><th></th></tr></thead>
+          <thead><tr><th>NCC</th><th>Kg</th><th>Thành tiền</th><th>Còn trả</th><th>Tính tiền</th><th></th></tr></thead>
           <tbody>
             {reportRows.length===0
-              ?<tr><td colSpan="5" className="muted" style={{textAlign:'center'}}>Không có dữ liệu trong khoảng ngày đã chọn.</td></tr>
+              ?<tr><td colSpan="6" className="muted" style={{textAlign:'center'}}>Không có dữ liệu trong khoảng ngày đã chọn.</td></tr>
               :lotPaginated.map(r=><tr key={r.id}>
                 <td>{r.supplier_name}</td>
                 <td>{r.total_weight}kg</td>
                 <td>{money(r.total_cost)}</td>
                 <td><b>{money(r.remaining_amount)}</b></td>
+                <td>{r.price_status==='PRICED'?'Đã tính tiền':'Chưa tính tiền'}</td>
                 <td>
                   <div style={{display:'flex',gap:6,alignItems:'center'}}>
                     <button className="btn secondary" style={{padding:0,width:30,height:30,display:'inline-flex',alignItems:'center',justifyContent:'center'}} title="In" onClick={()=>print(r)}><Printer size={14}/></button>
                     <button className="btn secondary" style={{padding:0,width:30,height:30,display:'inline-flex',alignItems:'center',justifyContent:'center'}} title="Sửa" disabled={r.status!=='OPEN'} onClick={()=>loadLotIntoForm(r)}><Pencil size={14}/></button>
+                    {r.status==='OPEN'&&<button className="btn secondary" style={{padding:0,width:30,height:30,display:'inline-flex',alignItems:'center',justifyContent:'center'}} title="Tính tiền" onClick={()=>priceLot(r.id,r.lot_code)}><Calculator size={14}/></button>}
                     {r.status==='OPEN'&&<button className="btn" style={{padding:0,width:30,height:30,display:'inline-flex',alignItems:'center',justifyContent:'center',background:'#16a34a',borderColor:'#16a34a',color:'#fff'}} title="Chốt" onClick={()=>closeLot(r.id,r.lot_code)}><CheckCircle2 size={14}/></button>}
                   </div>
                 </td>

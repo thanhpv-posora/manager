@@ -185,9 +185,9 @@ class SupplierAgent {
           damage_weight,fat_weight,fragment_weight,fragment_price,fragment_cost,other_deduct_weight,deduct_note,
           total_animals,male_animals,female_animals,deduct_mode,deduct_kg_per_animal,
           male_price,female_price,male_weight,female_weight,
-          status,note,created_by,del_flg,public_token
+          status,price_status,note,created_by,del_flg,public_token
         )
-         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN',?,?,0,?)`,
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN','UNPRICED',?,?,0,?)`,
         [
           code,data.lot_name||code,data.supplier_id||null,purchaseBillDate,calendarType,lunarDateText,
           c.rawWeight,c.boneWeight,c.deductedWeight,c.totalWeight,c.purchasePrice,c.totalCost,
@@ -218,6 +218,48 @@ class SupplierAgent {
       [id,data.payment_date,data.amount,data.type||'PAYMENT',data.payment_method||'CASH',data.note||'',user.id]
     );
     return {message:data.type==='ADVANCE'?'Đã ghi nhận tiền ứng':'Đã ghi nhận trả tiền nhà cung cấp'};
+  }
+
+  // "Tính tiền / Chốt giá": explicit confirmation that a lot's price is final,
+  // independent of payment. Recomputes from the lot's own persisted inputs —
+  // the same calc() the create/edit form uses — so it reflects whatever
+  // weight/price data is actually saved on the row right now rather than
+  // trusting stale numbers from whenever it was created. Does not touch
+  // payment, does not lock further edits (updateLot() still allows changes
+  // while status='OPEN' — no new lock rule added here), and only requires
+  // status='OPEN' because that's the same precondition create/edit already
+  // enforce for writing calc() output back to the row.
+  async priceLot(id, user) {
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [rows] = await conn.query(`SELECT * FROM purchase_lots WHERE id=? AND del_flg=0 FOR UPDATE`, [id]);
+      if (!rows.length) throw Object.assign(new Error('Không tìm thấy phiếu nhập.'), { status: 404 });
+      const lot = rows[0];
+      if (lot.status !== 'OPEN') throw Object.assign(new Error('Phiếu nhập đã chốt hoặc đã hủy, không thể tính tiền.'), { status: 400 });
+      const c = this.calc({
+        raw_weight_expr: lot.raw_weight_expr, raw_weight: lot.raw_weight,
+        bone_weight_expr: lot.bone_weight_expr, bone_weight: lot.bone_weight,
+        deducted_weight_expr: lot.deducted_weight_expr, deducted_weight: lot.deducted_weight,
+        deduct_mode: lot.deduct_mode, deduct_kg_per_animal: lot.deduct_kg_per_animal,
+        total_animals: lot.total_animals, male_animals: lot.male_animals, female_animals: lot.female_animals,
+        damage_weight: lot.damage_weight, fat_weight: lot.fat_weight,
+        fragment_weight: lot.fragment_weight, fragment_price: lot.fragment_price,
+        other_deduct_weight: lot.other_deduct_weight,
+        male_price: lot.male_price, female_price: lot.female_price, purchase_price: lot.purchase_price
+      });
+      if (c.rawWeight <= 0) throw new Error('Tổng kg thịt xô phải lớn hơn 0. Không thể tính tiền phiếu trống.');
+      if (c.totalAnimals <= 0) throw new Error('Tổng số con phải lớn hơn 0.');
+      if (c.totalWeight <= 0) throw new Error('Kg tính tiền phải lớn hơn 0. Vui lòng kiểm tra lại số kg trừ.');
+      const [result] = await conn.query(
+        `UPDATE purchase_lots SET total_weight=?, purchase_price=?, total_cost=?, fragment_cost=?, male_weight=?, female_weight=?, price_status='PRICED'
+         WHERE id=? AND status='OPEN' AND del_flg=0`,
+        [c.totalWeight, c.purchasePrice, c.totalCost, c.fragmentCost, c.maleWeight, c.femaleWeight, id]
+      );
+      if (!result.affectedRows) throw new Error('Phiếu nhập đã chốt hoặc đã hủy, không thể tính tiền.');
+      await conn.commit();
+      return { message: 'Đã tính tiền phiếu nhập', lot_code: lot.lot_code, total_weight: c.totalWeight, total_cost: c.totalCost };
+    } catch (e) { await conn.rollback(); throw e; } finally { conn.release(); }
   }
 
   async printLot(id) {
@@ -348,10 +390,14 @@ class SupplierAgent {
     try{
       await conn.beginTransaction();
       const [rows]=await conn.query(
-        `SELECT id,status,lot_code,total_cost FROM purchase_lots WHERE id=? AND del_flg=0 FOR UPDATE`,[id]
+        `SELECT id,status,lot_code,total_cost,price_status FROM purchase_lots WHERE id=? AND del_flg=0 FOR UPDATE`,[id]
       );
       if(!rows.length) throw Object.assign(new Error('Không tìm thấy phiếu nhập.'),{status:404});
       if(rows[0].status!=='OPEN') throw Object.assign(new Error('Phiếu nhập không ở trạng thái mở.'),{status:400});
+      // Blocks the edge case a total_cost=0 UNPRICED lot could previously be
+      // CLOSED merely because remaining_amount computed to 0 (nothing priced,
+      // nothing owed). Price must be explicitly confirmed via priceLot() first.
+      if(rows[0].price_status!=='PRICED') throw Object.assign(new Error('Phiếu nhập chưa tính tiền, không thể chốt.'),{status:400});
       const summary=await this.getLotPaymentSummary(conn,id,rows[0].total_cost);
       if(summary.remaining_amount>0) throw Object.assign(new Error('Phiếu nhập còn công nợ, không thể chốt.'),{status:400});
       await conn.query(`UPDATE purchase_lots SET status='CLOSED' WHERE id=? AND del_flg=0`,[id]);

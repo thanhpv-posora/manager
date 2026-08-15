@@ -35,6 +35,12 @@ export default function Orders(){
  const[ saving,setSaving]=useState(false);
  const[cancelDlg,setCancelDlg]=useState(null);
  const[cancelSaving,setCancelSaving]=useState(false);
+ // Shared A4 print-options dialog — reused by BOTH the row-level Printer
+ // button and the detail-modal "In A4 + QR" button so there is exactly one
+ // implementation of the showUnpaid option state/logic (no per-entry-point
+ // duplication). K80 is untouched — it has no unpaid-bills section to gate.
+ const[printOptDlg,setPrintOptDlg]=useState(null);
+ const[printShowUnpaid,setPrintShowUnpaid]=useState(true);
  const currentUser=(()=>{try{return JSON.parse(localStorage.getItem('user')||'{}')}catch{return {}}})();
  const canCancelOrder=currentUser.role==='ADMIN'; // S8.2: ADMIN only per CEO directive
  const[filters,setFilters]=useState({from:'',to:'',customer:''});
@@ -74,8 +80,10 @@ export default function Orders(){
  const changeFilter=(k,v)=>{setFilters(f=>({...f,[k]:v}));setPage(1)};
  const open=async id=>{const d=(await api.get('/orders/'+id)).data;const q=(await api.get('/orders/'+id+'/qrcode')).data;setDetail(d);setQr(q);setAddLine({product_id:'',product_name:'',quantity:'',sale_price:'',unit:'kg'})};
  const getToken=async order=>{let token=qr?.token;if(!token||detail?.id!==order.id){token=(await api.get('/orders/'+order.id+'/qrcode')).data.token}return token};
- const print=async order=>{const token=await getToken(order);window.open(base+'/orders/public/'+encodeURIComponent(token)+'/print','_blank')};
+ const print=async(order,opts={})=>{const token=await getToken(order);const showUnpaid=opts.showUnpaid!==false;window.open(base+'/orders/public/'+encodeURIComponent(token)+'/print?showUnpaid='+(showUnpaid?1:0),'_blank')};
  const printK80=async order=>{const token=await getToken(order);window.open(base+'/orders/public/'+encodeURIComponent(token)+'/k80','_blank')};
+ const openPrintOptions=order=>{setPrintOptDlg(order);setPrintShowUnpaid(true)};
+ const confirmPrintA4=async()=>{if(!printOptDlg)return;await print(printOptDlg,{showUnpaid:printShowUnpaid});setPrintOptDlg(null)};
  const isLocked=o=>Number(o?.is_locked||0)===1||!!o?.locked_at;
  const isCancelled=o=>String(o?.status||'').toUpperCase()==='CANCELLED';
  const lockOrder=async o=>{if(!await window.appConfirm(`Chốt sổ bill ${o.order_code}?\nSau khi chốt sẽ không sửa/thêm hàng.`,{title:'Chốt sổ bill',confirmText:'Chốt bill',variant:'warning'}))return;await api.post('/orders/'+o.id+'/lock',{});await load();if(detail?.id===o.id)await refreshDetail();showToast('success','Đã chốt bill','Bill chỉ còn xem/in.');};
@@ -222,7 +230,7 @@ export default function Orders(){
      <label className="field-label"><span>Tên khách hàng</span><input className="input" placeholder="Nhập tên khách" value={filters.customer} onChange={e=>changeFilter('customer',e.target.value)}/></label>
      <button className="btn secondary" onClick={()=>{setFilters({from:'',to:'',customer:''});setPage(1)}}>Xóa lọc</button>
     </div>
-    <div className="table-wrap"><table className="table orders-table"><thead><tr><th>Thao tác</th><th>Ngày</th><th>Khách hàng</th><th>Tổng</th><th>Trạng thái</th><th>Bill</th></tr></thead><tbody>{pageRows.map(o=><tr key={o.id}><td><div style={{display:'flex',flexWrap:'nowrap',gap:6,alignItems:'center',justifyContent:'center'}}><button className="btn secondary" title="Xem" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>open(o.id)}><Eye size={14}/></button><button className="btn" title="In A4" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>print(o)}><Printer size={14}/></button><button className="btn secondary" title="In K80" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>printK80(o)}><Printer size={12}/></button><button className="btn secondary" title={isLocked(o)?'Đã chốt':'Chốt'} style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} disabled={isLocked(o)||isCancelled(o)} onClick={()=>lockOrder(o)}>{isLocked(o)?<Lock size={14}/>:<CheckCircle2 size={14}/>}</button></div></td><td>{billDateLabel(o)}</td><td>{o.customer_name}</td><td>{money(o.total_amount)}</td><td>{isCancelled(o)?<b style={{color:'#b91c1c'}}>ĐÃ HỦY</b>:<>{o.payment_status}{isLocked(o)?' / Đã chốt':''}</>}</td><td><b>{o.order_code}</b></td></tr>)}</tbody></table></div>
+    <div className="table-wrap"><table className="table orders-table"><thead><tr><th>Thao tác</th><th>Ngày</th><th>Khách hàng</th><th>Tổng</th><th>Trạng thái</th><th>Bill</th></tr></thead><tbody>{pageRows.map(o=><tr key={o.id}><td><div style={{display:'flex',flexWrap:'nowrap',gap:6,alignItems:'center',justifyContent:'center'}}><button className="btn secondary" title="Xem" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>open(o.id)}><Eye size={14}/></button><button className="btn" title="In A4" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>openPrintOptions(o)}><Printer size={14}/></button><button className="btn secondary" title="In K80" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} onClick={()=>printK80(o)}><Printer size={12}/></button><button className="btn secondary" title={isLocked(o)?'Đã chốt':'Chốt'} style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} disabled={isLocked(o)||isCancelled(o)} onClick={()=>lockOrder(o)}>{isLocked(o)?<Lock size={14}/>:<CheckCircle2 size={14}/>}</button></div></td><td>{billDateLabel(o)}</td><td>{o.customer_name}</td><td>{money(o.total_amount)}</td><td>{isCancelled(o)?<b style={{color:'#b91c1c'}}>ĐÃ HỦY</b>:<>{o.payment_status}{isLocked(o)?' / Đã chốt':''}</>}</td><td><b>{o.order_code}</b></td></tr>)}</tbody></table></div>
     <div style={{display:'flex',justifyContent:'flex-end',alignItems:'center',gap:8,marginTop:12,flexWrap:'wrap'}}><select className="select" value={billPageSize} onChange={e=>{setBillPageSize(Number(e.target.value));setPage(1);}} style={{width:'auto'}}><option value={10}>10 / trang</option><option value={20}>20 / trang</option><option value={50}>50 / trang</option><option value={100}>100 / trang</option></select><span className="muted">Trang {currentPage} / {totalPages}</span><button className="btn secondary" disabled={currentPage<=1} onClick={()=>setPage(p=>Math.max(1,p-1))}>Trước</button><button className="btn secondary" disabled={currentPage>=totalPages} onClick={()=>setPage(p=>Math.min(totalPages,p+1))}>Sau</button></div>
    </div>
 
@@ -254,7 +262,7 @@ export default function Orders(){
     <div className="bill-edit-shell">
      <div className="bill-edit-head">
       <div className="bill-edit-title"><span className="eyebrow">Sửa bill bán hàng</span><h2>{detail.order_code}{isCancelled(detail)&&<span style={{marginLeft:10,color:'#b91c1c',fontWeight:900}}>ĐÃ HỦY</span>}</h2><p>{detail.customer_name} - {detail.phone}</p>{isCancelled(detail)&&detail.cancel_reason&&<p className="muted">Lý do hủy: {detail.cancel_reason}</p>}</div>
-      <div className="bill-edit-head-actions"><button className="btn" onClick={()=>print(detail)}>In A4 + QR</button><button className="btn secondary" onClick={()=>printK80(detail)}>In nhiệt K80</button>{canCancelOrder&&!isCancelled(detail)&&<button className="btn danger" onClick={openCancelDlg}>Hủy bill</button>}<button className="btn secondary" onClick={closeDetail}>Đóng</button></div>
+      <div className="bill-edit-head-actions"><button className="btn" onClick={()=>openPrintOptions(detail)}>In A4 + QR</button><button className="btn secondary" onClick={()=>printK80(detail)}>In nhiệt K80</button>{canCancelOrder&&!isCancelled(detail)&&<button className="btn danger" onClick={openCancelDlg}>Hủy bill</button>}<button className="btn secondary" onClick={closeDetail}>Đóng</button></div>
       {qr&&<img src={qr.qrcode} className="bill-qr"/>}
      </div>
 
@@ -303,6 +311,18 @@ export default function Orders(){
      </div>
     </div></div>}
     {toast&&<div className={`bill-toast ${toast.type}`}><b>{toast.title}</b><span>{toast.message}</span><button onClick={()=>setToast(null)}>×</button></div>}
-   </div></div>}  </div>
+   </div></div>}
+   {printOptDlg&&<div className="bill-edit-overlay" style={{zIndex:30}}><div className="card" style={{width:380,maxWidth:'92vw'}}>
+    <h3 style={{marginTop:0}}>Tùy chọn in bill</h3>
+    <label style={{display:'flex',alignItems:'center',gap:8,fontWeight:600,margin:'14px 0'}}>
+     <input type="checkbox" checked={printShowUnpaid} onChange={e=>setPrintShowUnpaid(e.target.checked)}/>
+     Hiển thị các bill chưa thanh toán của khách hàng
+    </label>
+    <div className="actions" style={{justifyContent:'flex-end'}}>
+     <button className="btn secondary" onClick={()=>setPrintOptDlg(null)}>Hủy</button>
+     <button className="btn" onClick={confirmPrintA4}>Xem / In bill</button>
+    </div>
+   </div></div>}
+  </div>
  </SafePage>;
 }

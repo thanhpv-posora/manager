@@ -1078,7 +1078,10 @@ const orderId = r.insertId;
     return PrintService.billK80Html(await this.getByToken(token));
   }
 
-  async printHtmlById(id, user) { return PrintService.billHtml(await this.get(id, user)); }
-  async printHtmlByToken(token) { return PrintService.billHtml(await this.getByToken(token)); }
+  // options.showUnpaid: presentation-only A4 toggle (see routes/orders.js for
+  // the absent/malformed→true parsing). K80 above intentionally does not take
+  // this — it has no unpaid-bills section to gate.
+  async printHtmlById(id, user, options={}) { return PrintService.billHtml(await this.get(id, user), options); }
+  async printHtmlByToken(token, options={}) { return PrintService.billHtml(await this.getByToken(token), options); }
 }
 module.exports = new OrderAgent();

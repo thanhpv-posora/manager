@@ -112,6 +112,16 @@ function ymd(v){
   const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   return m ? `${m[3]}/${m[2]}/${m[1]}` : raw;
 }
+// Old-debt rows carry their OWN frozen calendar_type/lunar_date_text (selected
+// by OrderAgent.get()/getByToken()'s old_debts query) — same authority the bill
+// header already uses for `billDate` above. Never derive from the customer's
+// current billing_calendar_type: a historical bill keeps the calendar facts it
+// was created under, even if the customer's setting changed afterward.
+function oldDebtDateLabel(d){
+  return d.calendar_type==='LUNAR' && d.lunar_date_text
+    ? `${d.lunar_date_text} ÂL / ${ymd(d.order_date)} DL`
+    : ymd(d.order_date);
+}
 const floor1=v=>Math.floor((Number(v)||0)*10)/10;
 const animal=v=>floor1(v).toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1});
 
@@ -138,7 +148,12 @@ class PrintService {
       return {shop_name:'MEATBIZ FOOD', bill_footer:'Cảm ơn quý khách!'};
     }
   }
-  async billHtml(order) {
+  // options.showUnpaid: presentation-only toggle for the "Những bill chưa
+  // thanh toán" section. Defaults to true (preserve current behavior) — the
+  // caller (routes/orders.js) is responsible for the absent/malformed→true
+  // fallback, so this stays a plain boolean check here.
+  async billHtml(order, options={}) {
+    const showUnpaid = options.showUnpaid !== false;
     const settings = await this.settings();
     const app = publicAppUrl();
     const url = `${app}/bill/${order.private_token || order.order_code}`;
@@ -177,9 +192,9 @@ class PrintService {
     const billDate = order.calendar_type==='LUNAR' && order.lunar_date_text ? `${order.lunar_date_text} ÂL / ${ymd(order.order_date)} DL` : (ymd(order.order_date) || ymd(pay.payment_date) || '');
     const createdDate = ymd(order.created_at) || ymd(order.order_date);
     const showInstallment = monthlyInstallment > 0;
-    const oldDebtRows = (order.old_debts||[]).map(d=>`
-      <tr><td>${d.order_date}</td><td>${d.order_code}</td><td class="right">${formatMoneyValue(d.total_amount)}</td><td class="right">${formatMoneyValue(d.paid_amount)}</td><td class="right"><b>${formatMoneyValue(d.debt_amount)}</b></td></tr>
-    `).join('');
+    const oldDebtRows = showUnpaid ? (order.old_debts||[]).map(d=>`
+      <tr><td>${oldDebtDateLabel(d)}</td><td>${d.order_code}</td><td class="right">${formatMoneyValue(d.total_amount)}</td><td class="right">${formatMoneyValue(d.paid_amount)}</td><td class="right"><b>${formatMoneyValue(d.debt_amount)}</b></td></tr>
+    `).join('') : '';
     const rows = order.items.map((i,idx)=>`
       <tr><td class="center">${idx+1}</td><td>${i.product_name}</td><td class="center">${i.unit}</td><td class="right"${qtyTitleAttr(i,qty(i.quantity,settings.quantity_decimal_places))}>${qty(i.quantity,settings.quantity_decimal_places)}</td><td class="right">${formatMoneyValue(i.sale_price)}</td><td class="right">${formatMoneyValue(i.total_price)}</td></tr>
     `).join('');

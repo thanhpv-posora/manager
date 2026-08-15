@@ -5,7 +5,13 @@ const OrderAgent=require('../agents/OrderAgent');
 const ReturnAgent=require('../agents/ReturnAgent');
 const router=express.Router();
 
-router.get('/public/:token/print', async (req,res,next)=>{try{res.setHeader('Content-Type','text/html; charset=utf-8');res.send(await OrderAgent.printHtmlByToken(req.params.token))}catch(e){next(e)}});
+// A4 print options are presentation-only and never persisted. Only an exact
+// showUnpaid=0 disables the unpaid-bills section — absent/empty/unknown/
+// malformed values (undefined, '', 'abc', '01', ...) all fall back to true so
+// every existing/shared/bookmarked print link keeps rendering it.
+function parseShowUnpaid(v){ return String(v) !== '0'; }
+
+router.get('/public/:token/print', async (req,res,next)=>{try{res.setHeader('Content-Type','text/html; charset=utf-8');res.send(await OrderAgent.printHtmlByToken(req.params.token,{showUnpaid:parseShowUnpaid(req.query.showUnpaid)}))}catch(e){next(e)}});
 router.get('/public/:token/k80', async (req,res,next)=>{try{res.setHeader('Content-Type','text/html; charset=utf-8');res.send(await OrderAgent.printK80ByToken(req.params.token))}catch(e){next(e)}});
 router.get('/', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await OrderAgent.list(req.user,req.query))}catch(e){next(e)}});
 router.post('/', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await OrderAgent.create(req.body,req.user))}catch(e){next(e)}});
@@ -24,7 +30,7 @@ router.get('/:id/qrcode', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,nex
   const app=getPublicAppUrl(req); const token=o.private_token; const url=`${app}/bill/${token}`;
   res.json({url,token,qrcode:await QRCode.toDataURL(url)})
 }catch(e){next(e)}});
-router.get('/:id/print', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.setHeader('Content-Type','text/html; charset=utf-8');res.send(await OrderAgent.printHtmlById(req.params.id,req.user))}catch(e){next(e)}});
+router.get('/:id/print', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.setHeader('Content-Type','text/html; charset=utf-8');res.send(await OrderAgent.printHtmlById(req.params.id,req.user,{showUnpaid:parseShowUnpaid(req.query.showUnpaid)}))}catch(e){next(e)}});
 router.post('/:id/lock', auth(['ADMIN','STAFF']), async (req,res,next)=>{try{res.json(await OrderAgent.lock(req.params.id,req.body,req.user))}catch(e){next(e)}});
 // S8.2: ADMIN only per CEO directive — not STAFF (despite PaymentAgent's cancel precedent), not CUSTOMER.
 router.post('/:id/cancel', auth(['ADMIN']), async (req,res,next)=>{try{res.json(await OrderAgent.cancel(req.params.id,req.body,req.user))}catch(e){next(e)}});

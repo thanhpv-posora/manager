@@ -7,6 +7,33 @@ const { formatQty: qty } = require('../utils/quantityFormat');
 // stored/calculated amount — presentation only.
 function formatMoneyValue(n) { return Number(n || 0).toLocaleString('en-US'); }
 function formatMoneyWithCurrency(n) { return `${formatMoneyValue(n)} VND`; }
+
+// order_items has no dedicated quantity_expr column — the cashier's original typed
+// expression (e.g. "12.5+7") is frozen into order_items.note with a "SL nhập: " prefix,
+// written once by CreateOrder.jsx's POS save() flow, and only when the expression
+// actually differs from the plain calculated quantity (see that file's payloadItems
+// mapping) — so any note matching this exact prefix is guaranteed by the writer to be a
+// real calculation, never a no-op tooltip. Items added via OrderAgent.addItem() or
+// order.service.js don't write this prefix, so they simply get no tooltip (same as an
+// empty/null note) rather than a reconstructed/guessed expression. Applies identically
+// to CARCASS_POS and INVENTORY_SALE lines — sales_flow never affects this.
+function qtyExprOf(item) {
+  const m = /^SL nhập:\s*(.+)$/.exec(String(item?.note || '').trim());
+  return m ? m[1].trim() : '';
+}
+// Minimal attribute-context escaping for the new title="..." usage below — the rest of
+// this file interpolates into text nodes (HTML doesn't parse those as markup the same
+// way), this is the first place a value lands inside an HTML attribute.
+function escAttr(s) { return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function qtyTitleAttr(item, displayValue) {
+  const expr = qtyExprOf(item);
+  if (!expr) return '';
+  // Noise reduction (belt-and-suspenders — CreateOrder.jsx's writer already
+  // skips writing the note at all when expr===String(quantity), but this
+  // stays correct even if some other future writer doesn't apply that filter).
+  if (expr === String(displayValue).trim() || expr === String(item?.quantity ?? '').trim()) return '';
+  return ` title="${escAttr(expr)}"`;
+}
 function allocationTender(row){
   const amount = Number(row?.allocated_amount || 0);
   let cash = Number(row?.allocation_cash_amount || 0);
@@ -154,7 +181,7 @@ class PrintService {
       <tr><td>${d.order_date}</td><td>${d.order_code}</td><td class="right">${formatMoneyValue(d.total_amount)}</td><td class="right">${formatMoneyValue(d.paid_amount)}</td><td class="right"><b>${formatMoneyValue(d.debt_amount)}</b></td></tr>
     `).join('');
     const rows = order.items.map((i,idx)=>`
-      <tr><td class="center">${idx+1}</td><td>${i.product_name}</td><td class="center">${i.unit}</td><td class="right">${qty(i.quantity,settings.quantity_decimal_places)}</td><td class="right">${formatMoneyValue(i.sale_price)}</td><td class="right">${formatMoneyValue(i.total_price)}</td></tr>
+      <tr><td class="center">${idx+1}</td><td>${i.product_name}</td><td class="center">${i.unit}</td><td class="right"${qtyTitleAttr(i,qty(i.quantity,settings.quantity_decimal_places))}>${qty(i.quantity,settings.quantity_decimal_places)}</td><td class="right">${formatMoneyValue(i.sale_price)}</td><td class="right">${formatMoneyValue(i.total_price)}</td></tr>
     `).join('');
     return `<!doctype html><html><head><meta charset="utf-8"><title>${order.order_code}</title><style>
 @page{margin:14mm 16mm 14mm 16mm}
@@ -221,7 +248,7 @@ ${oldDebtRows ? `<h3>Những bill chưa thanh toán</h3><table><thead><tr><th>Ng
     const rows = (order.items||[]).map((i,idx)=>`
       <tr>
         <td>${idx+1}. ${i.product_name}<br>
-          ${qty(i.quantity,settings.quantity_decimal_places)} ${i.unit} × ${formatMoneyValue(i.sale_price)} = ${formatMoneyValue(i.total_price)}
+          <span${qtyTitleAttr(i,qty(i.quantity,settings.quantity_decimal_places))}>${qty(i.quantity,settings.quantity_decimal_places)}</span> ${i.unit} × ${formatMoneyValue(i.sale_price)} = ${formatMoneyValue(i.total_price)}
         </td>
       </tr>
     `).join('');

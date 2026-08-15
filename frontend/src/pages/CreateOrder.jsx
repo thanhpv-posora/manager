@@ -49,7 +49,32 @@ export default function CreateOrder(){
 
   const[customers,setCustomers]=useState([]);
   const[categories,setCategories]=useState([]);
-  const[items,setItems]=useState([]);
+  const[items,setItemsRaw]=useState([]);
+  // ENTRY-ORDER-RULE: line_no is assigned once, the first time a row's quantity
+  // goes positive (rule A), and is never reassigned afterward — including a
+  // zero->positive->zero->positive round-trip before save (rules B/C/D). This
+  // wraps the single setItems setter (instead of touching every call site that
+  // can set a quantity — POS table typing, quick-add/other-flow merge,
+  // Excel/OCR import, voice bill, +/- steppers) so no current or future entry
+  // path can bypass it. `selected` is set in lockstep with quantity by every
+  // one of those call sites, so `selected && quantity>0` is the same "really
+  // entered" signal already used by the selected/payloadItems totals below.
+  // This function only ever adds a line_no, never removes one (rule C) — a
+  // genuinely new bill instead constructs fresh item objects with no line_no
+  // field at all (the catalog-load setItems([])/mapped(...) paths below).
+  const setItems=updater=>{
+    setItemsRaw(prev=>{
+      const next=typeof updater==='function'?updater(prev):updater;
+      let maxLineNo=next.reduce((m,x)=>Math.max(m,Number(x.line_no)||0),0);
+      return next.map(x=>{
+        if(x.selected&&Number(x.quantity)>0&&!x.line_no){
+          maxLineNo+=1;
+          return {...x,line_no:maxLineNo};
+        }
+        return x;
+      });
+    });
+  };
   const[cid,setCid]=useState('');
   const[selectedCategoryId,setSelectedCategoryId]=useState('');
   const[categorySelection,setCategorySelection]=useState({categories:[],auto_selected_category_id:null,requires_selection:false,needs_initialization:false});
@@ -943,6 +968,7 @@ export default function CreateOrder(){
       price_type:i.price_type||'MANUAL_PRICE',
       price_book_id:i.price_book_id||null,
       note:i.quantity_expr&&i.quantity_expr!==String(i.quantity)?`SL nhập: ${i.quantity_expr}`:'',
+      line_no:i.line_no||null,
       ...(needManualPrice?{manual_price:true}:{})
     }));
 

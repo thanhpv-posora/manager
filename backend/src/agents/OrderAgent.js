@@ -601,7 +601,10 @@ return await this.loadLegacyDirectPayments(orderId);
     if (!orders.length) throw new Error('Không tìm thấy bill');
     const order = orders[0];
     await assertCustomerScope(user, order.customer_id);
-    const [items] = await pool.query(`SELECT * FROM order_items WHERE order_id=? ORDER BY id`, [id]);
+    // ENTRY-ORDER-RULE (rule G): display order is always persisted line_no first;
+    // legacy rows (line_no NULL, saved before this feature) fall back to id ASC,
+    // their only prior ordering signal — never renumbered, never backfilled.
+    const [items] = await pool.query(`SELECT * FROM order_items WHERE order_id=? ORDER BY (line_no IS NULL) ASC, line_no ASC, id ASC`, [id]);
     const [oldDebts] = await pool.query(
       `SELECT id,order_code,order_date,total_amount,paid_amount,debt_amount,calendar_type,lunar_date_text
        FROM orders
@@ -631,7 +634,8 @@ return await this.loadLegacyDirectPayments(orderId);
     );
     if (!orders.length) throw new Error('Không tìm thấy bill');
     const order = orders[0];
-    const [items] = await pool.query(`SELECT * FROM order_items WHERE order_id=? ORDER BY id`, [order.id]);
+    // ENTRY-ORDER-RULE (rule G) — same null-safe line_no ordering as get() above.
+    const [items] = await pool.query(`SELECT * FROM order_items WHERE order_id=? ORDER BY (line_no IS NULL) ASC, line_no ASC, id ASC`, [order.id]);
     const [oldDebts] = await pool.query(
       `SELECT id,order_code,order_date,total_amount,paid_amount,debt_amount,calendar_type,lunar_date_text
        FROM orders
@@ -772,7 +776,7 @@ const orderId = r.insertId;
     }catch(e){
       // Ignore if DB has not migrated optional V6.51 columns yet.
     }
-      for (const it of data.items) {
+      for (const [idx, it] of data.items.entries()) {
         const line = Number(it.quantity||0)*Number(it.sale_price||0);
         const inv = await InventoryService.out(conn,it.product_id,it.quantity,billSolarDate,'SALE',orderId,`Xuất bill ${code}`,user.id);
         // Mixed Sales Phase 1A/1B: per-item sales_flow and customer_price_category_id,
@@ -780,14 +784,23 @@ const orderId = r.insertId;
         // freshly-read DB facts — never from the request body.
         const itemSalesFlow = itemFlowByProductId.get(Number(it.product_id)) || null;
         const itemCategoryId = categoryByProductId.has(Number(it.product_id)) ? categoryByProductId.get(Number(it.product_id)) : null;
+        // ENTRY-ORDER-RULE: line_no is the first-entry sequence CreateOrder.jsx's POS
+        // form assigned as the cashier filled in quantities (frozen client-side even
+        // through zero->positive->zero->positive re-entry before save — see that
+        // file's update()/updateQtyExpr()). Falls back to submission-array position
+        // only if the client didn't send one (older client build).
+        const lineNo = Number.isFinite(Number(it.line_no)) && Number(it.line_no) > 0 ? Number(it.line_no) : idx + 1;
         try {
           await conn.query(
-            `INSERT INTO order_items(order_id,product_id,product_name,unit,quantity,sale_price,total_price,price_type,price_book_id,note,inventory_mode,stock_checked,sales_flow,customer_price_category_id)
-             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-            [orderId,it.product_id,it.product_name,it.unit||'kg',it.quantity,it.sale_price,line,it.price_type||'MANUAL_PRICE',it.price_book_id||null,it.note||null,inv.inventory_mode,inv.stock_checked?1:0,itemSalesFlow,itemCategoryId]
+            `INSERT INTO order_items(order_id,product_id,product_name,unit,quantity,sale_price,total_price,price_type,price_book_id,note,inventory_mode,stock_checked,sales_flow,customer_price_category_id,line_no)
+             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            [orderId,it.product_id,it.product_name,it.unit||'kg',it.quantity,it.sale_price,line,it.price_type||'MANUAL_PRICE',it.price_book_id||null,it.note||null,inv.inventory_mode,inv.stock_checked?1:0,itemSalesFlow,itemCategoryId,lineNo]
           );
         } catch (e) {
           // Backward compatibility if production DB has not run V65.44.1 migration yet.
+          // Deliberately no line_no here either — this is the pre-migration-safe
+          // minimal column set; if this path is hit, line_no stays NULL and read
+          // queries fall back to id ASC for this row, same as any other legacy row.
           const safePriceType = (it.price_type === 'PRICE_BOOK') ? 'PRIVATE_PRICE' : (it.price_type || 'MANUAL_PRICE');
           await conn.query(
             `INSERT INTO order_items(order_id,product_id,product_name,unit,quantity,sale_price,total_price,price_type,note,inventory_mode,stock_checked)
@@ -994,11 +1007,17 @@ const orderId = r.insertId;
       if(!(salePrice >= 0)) throw new Error('Giá bán không hợp lệ');
       const line = qty * salePrice;
       const inv = await InventoryService.out(conn, p.product_id, qty, order.order_date, 'SALE', orderId, `Thêm hàng vào bill ${order.order_code}`, user.id || order.created_by || null);
+      // ENTRY-ORDER-RULE: adding a product to an already-saved bill is "entering
+      // it for the first time in this bill" (rule A), just after save instead of
+      // before — so it gets the next line_no continuing the bill's existing
+      // sequence. Never touches any existing item's line_no (rule F).
+      const [[lineNoRow]] = await conn.query(`SELECT COALESCE(MAX(line_no),0) maxLineNo FROM order_items WHERE order_id=?`, [orderId]);
+      const nextLineNo = Number(lineNoRow.maxLineNo || 0) + 1;
       try {
         await conn.query(
-          `INSERT INTO order_items(order_id,product_id,product_name,unit,quantity,sale_price,total_price,price_type,price_book_id,note,inventory_mode,stock_checked,sales_flow,customer_price_category_id)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-          [orderId, p.product_id, p.product_name, p.unit || data.unit || 'kg', qty, salePrice, line, p.price_type || 'MANUAL_PRICE', p.price_book_id || null, data.note || null, inv.inventory_mode, inv.stock_checked?1:0, itemFlow, itemCategoryId]
+          `INSERT INTO order_items(order_id,product_id,product_name,unit,quantity,sale_price,total_price,price_type,price_book_id,note,inventory_mode,stock_checked,sales_flow,customer_price_category_id,line_no)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [orderId, p.product_id, p.product_name, p.unit || data.unit || 'kg', qty, salePrice, line, p.price_type || 'MANUAL_PRICE', p.price_book_id || null, data.note || null, inv.inventory_mode, inv.stock_checked?1:0, itemFlow, itemCategoryId, nextLineNo]
         );
       } catch (e) {
         const safePriceType = p.price_type === 'PRICE_BOOK' ? 'PRIVATE_PRICE' : (p.price_type || 'MANUAL_PRICE');

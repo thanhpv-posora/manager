@@ -949,7 +949,7 @@ async function createRepeatOrderDraft(customerName, options = {}) {
       sale_price
     FROM order_items
     WHERE order_id = ?
-    ORDER BY id ASC
+    ORDER BY (line_no IS NULL) ASC, line_no ASC, id ASC
   `, [sourceOrder.id]);
 
   if (items.length === 0) {

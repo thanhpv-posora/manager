@@ -1605,6 +1605,15 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
     // column in this migration.
     await safeAddColumn(conn, 'order_items', 'customer_price_category_id', 'customer_price_category_id BIGINT NULL');
 
+    // ENTRY-ORDER-RULE: line_no is the first-entry sequence number — assigned once
+    // client-side (CreateOrder.jsx) the moment a product's quantity first goes from
+    // zero/empty to positive, then frozen forever; never renumbered by any later
+    // edit/add-item path (OrderAgent.js updateItem()/addItem()). NULL for every
+    // pre-existing row — no historical entry order was ever captured, so none is
+    // invented; read queries (OrderAgent.js get()/getByToken()) fall back to id ASC
+    // for those rows. No backfill — this is forward-only, zero data rewrite.
+    await safeAddColumn(conn, 'order_items', 'line_no', 'line_no SMALLINT NULL');
+
     // Mixed Sales Phase 1B: customer_price_categories.sales_flow — classifies an
     // existing Customer Price Category into CARCASS_POS or INVENTORY_SALE so the
     // dual-price-category write/read guards can enforce "at most one category per

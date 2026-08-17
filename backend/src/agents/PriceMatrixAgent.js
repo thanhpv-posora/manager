@@ -186,19 +186,14 @@ async function upsertBook(conn, customerId, categoryId, meta, { bookName, note, 
   return { price_book_id: bookId, created: !existing.length };
 }
 
-async function ensureCustomerAccessV626(customerId,user){
-  if(user&&user.role==='CUSTOMER'){
-    const [rows]=await pool.query(`SELECT id FROM customers WHERE id=? AND (id=? OR parent_customer_id=?) AND del_flg=0`,[customerId,user.customer_id,user.customer_id]);
-    if(!rows.length) throw new Error('Không có quyền xem khách hàng này');
-  }
-}
-
-function customerScopeSqlV626(user,alias='c'){
-  if(user&&user.role==='CUSTOMER'){
-    return {sql:` AND (${alias}.id=${Number(user.customer_id||0)} OR ${alias}.parent_customer_id=${Number(user.customer_id||0)})`};
-  }
-  return {sql:''};
-}
+// AUTH-SCOPE-001 (Phase 1 authorization foundation): removed
+// ensureCustomerAccessV626()/customerScopeSqlV626() — dead code, zero
+// callers anywhere in the repo (re-verified before deletion). They checked
+// only ONE level of the customer tree (id === mine OR parent_customer_id ===
+// mine), unlike the real, live scope this file actually uses everywhere
+// (assertCustomerScope() from middleware/scope.js, recursive via
+// getCustomerTree()). Left in place they were a landmine for a future
+// endpoint to copy-paste and silently lose visibility of grandchildren.
 
 class PriceMatrixAgent {
   constructor(){this.version='6.9.0';this.responsibility='Private price matrix, customer catalog package, Excel-like price editing';}

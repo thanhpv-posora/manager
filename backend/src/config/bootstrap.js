@@ -1799,6 +1799,22 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
       }
     }
 
+    // AUTH-SCOPE-001 (Phase 1 authorization foundation): supplier_partner_map
+    // already enforces one supplier -> one partner via uq_spm_supplier, but had
+    // no matching constraint on the other direction — partner_id only carried a
+    // plain (non-unique) index. A future supplier-scope derivation
+    // (users.customer_id -> supplier_partner_map.partner_id -> supplier_id,
+    // see middleware/scope.js assertSupplierScope/supplierScopeWhere) depends on
+    // that direction being 1:1 too, so this makes the invariant schema-enforced
+    // instead of relying only on _syncPartnerToSupplier()'s runtime dedup check.
+    // Precondition verified against production data before authoring this
+    // migration: SELECT partner_id, COUNT(*) FROM supplier_partner_map GROUP BY
+    // partner_id HAVING COUNT(*) > 1 returned zero rows (36/36 partner_id values
+    // unique) — safe to add as a UNIQUE key.
+    if (await hasTable(conn, 'supplier_partner_map')) {
+      await safeAddIndex(conn, 'supplier_partner_map', 'uq_spm_partner', 'UNIQUE KEY uq_spm_partner(partner_id)');
+    }
+
     // MENU-SYSTEM-001: Seed app_menus (INSERT IGNORE — idempotent, preserves admin edits)
     // [menu_key, title, subtitle, route, icon_key, group_key, sort_order, is_system, visible_in_sidebar, page_component]
     const appMenusSeed = [

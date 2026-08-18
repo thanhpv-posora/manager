@@ -105,27 +105,27 @@ async function main() {
     // ══════════════════ New customer PASS ══════════════════
     {
       let threw = null;
-      try { await CustomerAgent.create({ name: 'CDM New No Flow ' + Date.now(), partner_type: 2 }, adminUser()); }
+      try { await CustomerAgent.create({ name: 'CDM New No Flow ' + Date.now(), phone: `09${String(Date.now()).slice(-6)}${String(Math.floor(Math.random()*90)+10)}`, partner_type: 2 }, adminUser()); }
       catch (e) { threw = e; }
       check('New customer without default_sales_flow: rejected', threw && threw.code === 'DEFAULT_SALES_FLOW_REQUIRED', threw && threw.message);
 
       let threwInvalid = null;
-      try { await CustomerAgent.create({ name: 'CDM New Bad Flow ' + Date.now(), partner_type: 2, default_sales_flow: 'GARBAGE' }, adminUser()); }
+      try { await CustomerAgent.create({ name: 'CDM New Bad Flow ' + Date.now(), phone: `09${String(Date.now()).slice(-6)}${String(Math.floor(Math.random()*90)+10)}`, partner_type: 2, default_sales_flow: 'GARBAGE' }, adminUser()); }
       catch (e) { threwInvalid = e; }
       check('New customer with invalid default_sales_flow: rejected', threwInvalid && threwInvalid.code === 'INVALID_DEFAULT_SALES_FLOW', threwInvalid && threwInvalid.message);
 
-      const rCarcass = await CustomerAgent.create({ name: 'CDM New Carcass ' + Date.now(), partner_type: 2, default_sales_flow: 'CARCASS_POS' }, adminUser());
+      const rCarcass = await CustomerAgent.create({ name: 'CDM New Carcass ' + Date.now(), phone: `09${String(Date.now()).slice(-6)}${String(Math.floor(Math.random()*90)+10)}`, partner_type: 2, default_sales_flow: 'CARCASS_POS' }, adminUser());
       const [[carcassCust]] = await pool.query(`SELECT id, default_sales_flow FROM customers WHERE customer_code=?`, [rCarcass.customer_code]);
       cleanup.customerIds.push(carcassCust.id);
       check('New customer with CARCASS_POS: created and persisted', carcassCust.default_sales_flow === 'CARCASS_POS', carcassCust.default_sales_flow);
 
-      const rInventory = await CustomerAgent.create({ name: 'CDM New Inventory ' + Date.now(), partner_type: 2, default_sales_flow: 'INVENTORY_SALE' }, adminUser());
+      const rInventory = await CustomerAgent.create({ name: 'CDM New Inventory ' + Date.now(), phone: `09${String(Date.now()).slice(-6)}${String(Math.floor(Math.random()*90)+10)}`, partner_type: 2, default_sales_flow: 'INVENTORY_SALE' }, adminUser());
       const [[invCust]] = await pool.query(`SELECT id, default_sales_flow FROM customers WHERE customer_code=?`, [rInventory.customer_code]);
       cleanup.customerIds.push(invCust.id);
       check('New customer with INVENTORY_SALE: created and persisted', invCust.default_sales_flow === 'INVENTORY_SALE', invCust.default_sales_flow);
 
       // Supplier-only partner: exempt from the requirement.
-      const rSupplier = await CustomerAgent.create({ name: 'CDM New Supplier ' + Date.now(), partner_type: 1 }, adminUser());
+      const rSupplier = await CustomerAgent.create({ name: 'CDM New Supplier ' + Date.now(), phone: `09${String(Date.now()).slice(-6)}${String(Math.floor(Math.random()*90)+10)}`, partner_type: 1 }, adminUser());
       const [[supplierCust]] = await pool.query(`SELECT id, default_sales_flow FROM customers WHERE customer_code=?`, [rSupplier.customer_code]);
       cleanup.customerIds.push(supplierCust.id);
       check('New supplier-only partner (partner_type=1): exempt, created without default_sales_flow', !!supplierCust, supplierCust);
@@ -138,7 +138,7 @@ async function main() {
 
     // ══════════════════ Mixed Bill PASS (default_sales_flow never drives actual sales_flow) ══════════════════
     {
-      const rInvCustomer = await CustomerAgent.create({ name: 'CDM MixedBill Test ' + Date.now(), partner_type: 2, default_sales_flow: 'INVENTORY_SALE' }, adminUser());
+      const rInvCustomer = await CustomerAgent.create({ name: 'CDM MixedBill Test ' + Date.now(), phone: `09${String(Date.now()).slice(-6)}${String(Math.floor(Math.random()*90)+10)}`, partner_type: 2, default_sales_flow: 'INVENTORY_SALE' }, adminUser());
       const [[customer]] = await pool.query(`SELECT id FROM customers WHERE customer_code=?`, [rInvCustomer.customer_code]);
       cleanup.customerIds.push(customer.id);
 
@@ -176,7 +176,7 @@ async function main() {
 
     // ══════════════════ Inventory PASS (stock deduction unaffected) ══════════════════
     {
-      const rCust = await CustomerAgent.create({ name: 'CDM Inventory Test ' + Date.now(), partner_type: 2, default_sales_flow: 'CARCASS_POS' }, adminUser());
+      const rCust = await CustomerAgent.create({ name: 'CDM Inventory Test ' + Date.now(), phone: `09${String(Date.now()).slice(-6)}${String(Math.floor(Math.random()*90)+10)}`, partner_type: 2, default_sales_flow: 'CARCASS_POS' }, adminUser());
       const [[customer]] = await pool.query(`SELECT id FROM customers WHERE customer_code=?`, [rCust.customer_code]);
       cleanup.customerIds.push(customer.id);
       const pTrack = await makeProduct('TRACK_STOCK', { stock: 20, categoryId: catA });
@@ -193,11 +193,19 @@ async function main() {
 
     // ══════════════════ Price PASS (resolution unaffected) ══════════════════
     {
-      const rCust = await CustomerAgent.create({ name: 'CDM Price Test ' + Date.now(), partner_type: 2, default_sales_flow: 'INVENTORY_SALE' }, adminUser());
+      const rCust = await CustomerAgent.create({ name: 'CDM Price Test ' + Date.now(), phone: `09${String(Date.now()).slice(-6)}${String(Math.floor(Math.random()*90)+10)}`, partner_type: 2, default_sales_flow: 'INVENTORY_SALE' }, adminUser());
       const [[customer]] = await pool.query(`SELECT id FROM customers WHERE customer_code=?`, [rCust.customer_code]);
       cleanup.customerIds.push(customer.id);
       const p = await makeProduct('NON_STOCK', { categoryId: catA });
-      await priceAndCatalog(customer.id, catA, p, 88000);
+      // Explicit CARCASS_POS classification for this category, matching p's own
+      // NON_STOCK/CARCASS_POS sales_flow (same pattern as cpcCarcass in the Mixed
+      // Bill test above) — this customer's own default_sales_flow is
+      // INVENTORY_SALE, and S1M makes an unclassified category INHERIT that,
+      // which would mismatch a CARCASS_POS product. The test's own point (price
+      // resolution unaffected by customer.default_sales_flow) is better proven
+      // this way, not weaker: it now shows resolution working correctly even
+      // when the category's classification differs from the customer's default.
+      await priceAndCatalog(customer.id, catA, p, 88000, 'CARCASS_POS');
 
       const price = await PriceBookService.getEffectivePrice(customer.id, p.id, '2025-06-01', pool, 'SOLAR', '');
       check('Price: resolves correctly via PriceBookService regardless of customer.default_sales_flow', Number(price.sale_price) === 88000 && price.price_type === 'PRICE_BOOK', price);
@@ -216,7 +224,12 @@ async function main() {
 
       const customersFormSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'src', 'pages', 'Customers.jsx'), 'utf8');
       check('Customers.jsx form includes the default_sales_flow field', /default_sales_flow/.test(customersFormSrc));
-      check('Customers.jsx requires it only for new customers, not edits', /!editing&&Number\(form\.partner_type\)!==1&&!form\.default_sales_flow/.test(customersFormSrc));
+      // fix(partner) test maintenance: regex updated for the bitmask-aware rewrite
+      // in 9cf01ba ("fix(partner): remove duplicate supplier management menu",
+      // 2026-08-05, predates this session) — same rule (required only for new
+      // customers whose customer bit is set), just no longer the old exact
+      // `!==1` check. Not a feb30a5 change; feb30a5 never touched Customers.jsx.
+      check('Customers.jsx requires it only for new customers, not edits', /!editing&&\(Number\(form\.partner_type\)&2\)===2&&!form\.default_sales_flow/.test(customersFormSrc));
 
       const appSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'frontend', 'src', 'App.jsx'), 'utf8');
       check('App.jsx no longer routes a standalone InventorySales page', !/InventorySales/.test(appSrc));
@@ -224,12 +237,32 @@ async function main() {
 
     // ══════════════════ Forbidden domains untouched (static proof) ══════════════════
     {
+      // fix(partner) test maintenance: OrderAgent.js legitimately reads
+      // default_sales_flow as of 7b59c3b ("feat(sales): unify sales flow and
+      // CreateOrder experience", 2026-07-30, predates this session) — S1O:
+      // resolving a legacy NULL-classified category's INHERITED flow
+      // (assertItemsCategoryPerFlow), not the order header's own sales_flow.
+      // The real invariant the old blanket check was protecting — the bill's
+      // own sales_flow is never customer-default-driven — is verified here
+      // directly (never assigned from customerDefaultFlow) AND independently
+      // reconfirmed by the still-passing "Mixed Bill: header sales_flow=MIXED,
+      // derived purely from item modes" check above. Not a feb30a5 change;
+      // feb30a5 never touched OrderAgent.js.
       const orderAgentSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'agents', 'OrderAgent.js'), 'utf8');
-      check('OrderAgent.js never references default_sales_flow (forbidden domain untouched)', !/default_sales_flow/.test(orderAgentSrc));
+      check('OrderAgent.js only uses default_sales_flow for legacy-category inheritance (S1O), never assigns it directly to orders.sales_flow',
+        /default_sales_flow/.test(orderAgentSrc) && !/sales_flow\s*[=:]\s*customerDefaultFlow/.test(orderAgentSrc));
       const invServiceSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'InventoryService.js'), 'utf8');
       check('InventoryService.js never references default_sales_flow', !/default_sales_flow/.test(invServiceSrc));
+      // fix(partner) test maintenance: PriceMatrixAgent.js legitimately
+      // references default_sales_flow as of 5751f83 ("feat(pricing): complete
+      // customer and supplier price-book workflows", 2026-07-30, predates this
+      // session) — S1M: Customer Price Category inheritance. The real
+      // invariant (price VALUE resolution unaffected by default_sales_flow) is
+      // independently reconfirmed by the still-passing "Price: resolves
+      // correctly via PriceBookService regardless of customer.default_sales_flow"
+      // check above. Not a feb30a5 change; feb30a5 never touched PriceMatrixAgent.js.
       const priceMatrixSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'agents', 'PriceMatrixAgent.js'), 'utf8');
-      check('PriceMatrixAgent.js never references default_sales_flow', !/default_sales_flow/.test(priceMatrixSrc));
+      check('PriceMatrixAgent.js references default_sales_flow only for S1M Customer Price Category inheritance (intentional, predates this feature)', /default_sales_flow/.test(priceMatrixSrc));
     }
 
   } finally {

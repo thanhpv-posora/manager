@@ -41,6 +41,42 @@ function cleanName(data){
   return String(data.name||data.customer_name||data.full_name||'').trim();
 }
 
+// fix(partner) partial-update compatibility: distinguishes "caller omitted
+// this field" (any of `keys` absent from the payload — preserve the existing
+// DB value) from "caller explicitly sent it" (present, even as '' — must be
+// validated, never silently coerced to the old value). A plain `data.x||''`
+// fallback cannot tell these apart, which is exactly what made an explicit
+// blank-out attempt indistinguishable from an omitted field.
+function isFieldProvided(data, keys){
+  return keys.some(k=>Object.prototype.hasOwnProperty.call(data,k));
+}
+
+// fix(partner) identity validation: digits-only comparison so "0905 123 456",
+// "0905-123-456" and "0905123456" are one identity. Comparison-only — the
+// raw phone as typed is still what gets stored/displayed (no reformatting of
+// existing data). Mirrors the REGEXP_REPLACE used in the duplicate check and
+// in _syncPartnerToSupplier's reuse match below, so all three stay consistent.
+function normalizePhoneIdentity(phone){
+  return String(phone||'').replace(/\D/g,'');
+}
+
+// fix(partner) identity validation: normalized name + normalized phone must
+// be unique among ACTIVE (del_flg=0) partners. Deleted partners never block
+// reuse — same del_flg=0 convention already used by list()/_syncPartnerToSupplier
+// elsewhere in this file, not a new rule. excludeId lets update() ignore the
+// record being edited.
+async function assertUniquePartnerIdentity(name, phone, excludeId){
+  const params=[name.trim().toLowerCase(), normalizePhoneIdentity(phone)];
+  let sql=`SELECT id FROM customers WHERE del_flg=0 AND LOWER(TRIM(name))=? AND REGEXP_REPLACE(phone,'[^0-9]','')=?`;
+  if(excludeId){ sql+=' AND id<>?'; params.push(excludeId); }
+  const [rows]=await pool.query(sql, params);
+  if(rows.length){
+    const err=new Error('Đã tồn tại đối tác khác với cùng tên và số điện thoại.');
+    err.status=400; err.statusCode=400; err.code='PARTNER_DUPLICATE_IDENTITY';
+    throw err;
+  }
+}
+
 // Customer Default Model: customers.default_sales_flow picks which screen
 // CreateOrder should default to for this customer. S1M: it is now ALSO the
 // inheritance source for any Customer Price Category that has no sales_flow
@@ -149,10 +185,15 @@ class CustomerAgent{
         SELECT 1 FROM supplier_partner_map am JOIN customers ac ON ac.id=am.partner_id
         WHERE am.supplier_id=s.id AND ac.del_flg=0
       )`;
-    if(partner.phone){
+    // fix(partner) identity validation: normalized (digits-only) comparison so
+    // a supplier row saved as "0905123456" is still matched by a partner phone
+    // typed as "0905-123-456" — consistent with assertUniquePartnerIdentity()
+    // above, not a separate rule.
+    const normPartnerPhone=normalizePhoneIdentity(partner.phone);
+    if(normPartnerPhone){
       const [[byPhone]]=await pool.query(
-        `SELECT s.id FROM suppliers s WHERE s.phone=? ${reuseFilter} LIMIT 1`,
-        [partner.phone]
+        `SELECT s.id FROM suppliers s WHERE REGEXP_REPLACE(s.phone,'[^0-9]','')=? ${reuseFilter} LIMIT 1`,
+        [normPartnerPhone]
       );
       if(byPhone) supplierId=byPhone.id;
     }
@@ -162,6 +203,24 @@ class CustomerAgent{
         [partner.name]
       );
       if(byName) supplierId=byName.id;
+    }
+
+    // fix(partner) defense-in-depth: reuseFilter above already excludes any
+    // supplier currently mapped to an ACTIVE partner, but that SELECT and the
+    // INSERT ... ON DUPLICATE KEY UPDATE below are two separate queries, not
+    // one transaction — do not trust the SELECT alone as the sole
+    // authorization check for reassigning a mapping. Re-verify right before
+    // committing to the candidate: if it now has ANY active-partner mapping,
+    // abandon the reuse entirely rather than reassign it (never steal a
+    // mapping from an active partner) — falls through to the "no reusable
+    // supplier row" branch below, the same existing/correct fallback used
+    // when no candidate was found at all.
+    if(supplierId){
+      const [[stillOrphan]]=await pool.query(
+        `SELECT 1 ok FROM supplier_partner_map m JOIN customers c ON c.id=m.partner_id AND c.del_flg=0 WHERE m.supplier_id=? LIMIT 1`,
+        [supplierId]
+      );
+      if(stillOrphan) supplierId=null;
     }
 
     // No reusable supplier row — create one
@@ -184,8 +243,21 @@ class CustomerAgent{
       );
     }
 
+    // fix(partner) bug found while testing the identity-validation change:
+    // supplier_partner_map.uq_spm_supplier is UNIQUE(supplier_id) — reusing an
+    // orphaned supplier (its OLD mapping row, to the now-deleted partner,
+    // deliberately left in place — see remove() above) means a row for this
+    // supplier_id already exists. Plain INSERT IGNORE silently swallowed that
+    // unique-constraint conflict, so the reuse path looked successful (correct
+    // supplier_id returned, supplier reactivated) but the mapping row was
+    // NEVER actually reassigned to the new partner — it kept pointing at the
+    // dead one. ON DUPLICATE KEY UPDATE reassigns that existing row's
+    // partner_id instead of trying (and silently failing) to insert a second
+    // one; for a genuinely new supplier (no existing row for this supplier_id)
+    // it behaves as a plain insert, unchanged.
     await pool.query(
-      `INSERT IGNORE INTO supplier_partner_map(supplier_id,partner_id) VALUES(?,?)`,
+      `INSERT INTO supplier_partner_map(supplier_id,partner_id) VALUES(?,?)
+       ON DUPLICATE KEY UPDATE partner_id=VALUES(partner_id)`,
       [supplierId,customerId]
     );
     return {partner_id:customerId,supplier_id:supplierId,message:'Đã liên kết nhà cung cấp'};
@@ -229,6 +301,10 @@ class CustomerAgent{
   async create(data,user){
     const name=cleanName(data);
     if(!name) throw new Error('Tên khách hàng không được để trống');
+    // fix(partner) identity validation: phone required on every create/edit
+    // (explicit business rule — Partner Duplicate Validation requirement).
+    if(!normalizePhoneIdentity(data.phone)) throw Object.assign(new Error('Số điện thoại không được để trống'),{status:400,statusCode:400,code:'PARTNER_PHONE_REQUIRED'});
+    await assertUniquePartnerIdentity(name, data.phone);
 
     const code=data.customer_code||await nextCustomerCode();
     const parentCustomerId=(user&&user.role==='CUSTOMER')?user.customer_id:(data.parent_customer_id||null);
@@ -249,10 +325,31 @@ class CustomerAgent{
   }
 
   async update(id,data,user){
-    const name=cleanName(data);
-    if(!name) throw new Error('Tên khách hàng không được để trống');
-
     await assertCustomerScope(user,id);
+
+    // fix(partner) partial-update compatibility: several existing callers
+    // (e.g. price-sync updates, or backend/scripts/verify-*.js regression
+    // scripts touching an unrelated field) legitimately PATCH a Partner
+    // without resending name/phone. The identity rule (phone required,
+    // normalized name+phone unique) must apply to the FINAL effective
+    // record, not to whatever subset of fields this one request happened to
+    // include — an omitted field preserves the existing value; an
+    // explicitly-sent blank value ('') is a real attempt to clear it and
+    // must still be rejected. `data.phone||existing.phone` cannot make that
+    // distinction (both look identical once '' is involved), hence
+    // isFieldProvided() below instead of a truthy fallback.
+    const [[existingCust]] = await pool.query(`SELECT name, phone, default_sales_flow FROM customers WHERE id=? AND del_flg=0`, [id]);
+    if(!existingCust) throw Object.assign(new Error('Không tìm thấy đối tác hoặc đã xóa'),{status:404,statusCode:404});
+
+    const nameProvided = isFieldProvided(data, ['name','customer_name','full_name']);
+    const effectiveName = nameProvided ? cleanName(data) : String(existingCust.name||'').trim();
+    if(!effectiveName) throw new Error('Tên khách hàng không được để trống');
+
+    const phoneProvided = Object.prototype.hasOwnProperty.call(data,'phone');
+    const effectivePhone = phoneProvided ? String(data.phone||'') : String(existingCust.phone||'');
+    if(!normalizePhoneIdentity(effectivePhone)) throw Object.assign(new Error('Số điện thoại không được để trống'),{status:400,statusCode:400,code:'PARTNER_PHONE_REQUIRED'});
+
+    await assertUniquePartnerIdentity(effectiveName, effectivePhone, id);
 
     const partner_type = normalizePartnerType(data.partner_type);
     // Customer Default Model Rule 3: never required on edit — a legacy customer
@@ -267,17 +364,22 @@ class CustomerAgent{
     // already-saved price-book item incompatible; only guard an actual
     // change to a new valid value (clearing it to NULL cannot make anything
     // incompatible, so it is never blocked here).
-    const [[existingCust]] = await pool.query(`SELECT default_sales_flow FROM customers WHERE id=? AND del_flg=0`, [id]);
-    if (existingCust && defaultSalesFlow && defaultSalesFlow !== existingCust.default_sales_flow) {
+    if (defaultSalesFlow && defaultSalesFlow !== existingCust.default_sales_flow) {
       const PriceMatrixAgent = require('./PriceMatrixAgent');
       await PriceMatrixAgent.assertCustomerDefaultFlowChangeIsSafe(id, defaultSalesFlow);
     }
 
     await pool.query(
       `UPDATE customers SET name=?,phone=?,address=?,price_mode=?,billing_calendar_type=?,note=?,is_active=?,partner_type=?,default_sales_flow=? WHERE id=? AND del_flg=0`,
-      [name,data.phone||'',data.address||'',normalizePriceMode(data.price_mode),normalizeBillingCalendarType(data.billing_calendar_type),data.note||'',data.is_active?1:0,partner_type,defaultSalesFlow,id]
+      [effectiveName,effectivePhone,data.address||'',normalizePriceMode(data.price_mode),normalizeBillingCalendarType(data.billing_calendar_type),data.note||'',data.is_active?1:0,partner_type,defaultSalesFlow,id]
     );
-    const sync=(partner_type & 1) === 1 ? await this._syncPartnerToSupplier(id, data) : null;
+    // _syncPartnerToSupplier() re-SELECTs the partner's own name/phone fresh
+    // from `customers` (not from this `data` object), so it always sees the
+    // effectiveName/effectivePhone just committed above regardless of which
+    // fields this particular request included — an omitted phone here can
+    // never reach it as empty/undefined. The explicit name/phone below are
+    // passed for self-documentation only (harmless, not load-bearing).
+    const sync=(partner_type & 1) === 1 ? await this._syncPartnerToSupplier(id, {...data, name: effectiveName, phone: effectivePhone}) : null;
     return {message:'Đã cập nhật đối tác',...(sync||{})};
   }
 
@@ -319,13 +421,15 @@ class CustomerAgent{
           [reason||'',user?.id||null,map.supplier_id]
         );
         // supplier_partner_map row is intentionally left in place — no code
-        // path in this codebase ever deletes from that table (INSERT IGNORE
-        // only, verified), and both FK targets (suppliers, customers) are
-        // always soft-deleted, never physically removed, so the row's FK
-        // constraints stay satisfied either way. Keeping it also preserves
-        // the historical partner<->supplier trail and is what
-        // _syncPartnerToSupplier's reuse fix (below) keys off of to safely
-        // re-link this exact supplier if the partner is ever recreated.
+        // path in this codebase ever DELETEs from that table, and both FK
+        // targets (suppliers, customers) are always soft-deleted, never
+        // physically removed, so the row's FK constraints stay satisfied
+        // either way. Keeping it also preserves the historical
+        // partner<->supplier trail and is what _syncPartnerToSupplier's reuse
+        // fix (below) keys off of to safely re-link this exact supplier if
+        // the partner is ever recreated — reassigning this same row's
+        // partner_id via ON DUPLICATE KEY UPDATE (uq_spm_supplier), not by
+        // inserting a second row.
         if(supRes.affectedRows){
           const [[sup]]=await conn.query(`SELECT supplier_code,name FROM suppliers WHERE id=?`,[map.supplier_id]);
           await conn.query(

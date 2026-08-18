@@ -37,7 +37,7 @@ async function main() {
     // ignores customer.default_sales_flow (the story's explicit "do not filter
     // only from customer.default_sales_flow" requirement), not just untested.
     async function makeCustomer(name, oppositeDefaultFlow) {
-      const res = await CustomerAgent.create({ name: `VERIFY PMSF ${name} ${Date.now()}-${Math.random().toString(36).slice(2,6)}`, partner_type: 0, default_sales_flow: oppositeDefaultFlow }, user);
+      const res = await CustomerAgent.create({ name: `VERIFY PMSF ${name} ${Date.now()}-${Math.random().toString(36).slice(2,6)}`, phone: `09${String(Date.now()).slice(-6)}${String(Math.floor(Math.random()*90)+10)}`, partner_type: 0, default_sales_flow: oppositeDefaultFlow }, user);
       const [[row]] = await pool.query(`SELECT id FROM customers WHERE customer_code=?`, [res.customer_code]);
       customerIds.push(row.id);
       return row.id;

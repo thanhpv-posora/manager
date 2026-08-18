@@ -58,6 +58,7 @@ const EnterpriseAutocomplete=forwardRef(function EnterpriseAutocomplete({
   getItemKey=i=>i.id,
   renderItem,
   renderValue,
+  getTooltip,
 },ref){
   const[open,setOpen]=useState(false);
   const[query,setQuery]=useState('');
@@ -163,6 +164,7 @@ const EnterpriseAutocomplete=forwardRef(function EnterpriseAutocomplete({
               className={`ea-row${idx===hi?' ea-hi':''}`}
               onClick={()=>pick(item)}
               onMouseEnter={()=>setHi(idx)}
+              title={getTooltip?getTooltip(item):undefined}
             >
               {renderItem?renderItem(item):(
                 <>
@@ -195,6 +197,7 @@ const EnterpriseAutocomplete=forwardRef(function EnterpriseAutocomplete({
                 tabIndex={disabled?-1:0}
                 onFocus={openDrop}
                 onKeyDown={kd}
+                title={getTooltip?getTooltip(value):undefined}
               >
                 <span className="ea-lp">{disp}</span>
                 {sec&&<span className="ea-ls">{sec}</span>}

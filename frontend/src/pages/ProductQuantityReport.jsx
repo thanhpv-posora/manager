@@ -119,6 +119,7 @@ export default function ProductQuantityReport(){
       filter={item=>(Number(item.partner_type||2)&2)===2}
       emptyText="Không tìm thấy khách hàng"
       getItemKey={item=>item.id}
+      getTooltip={item=>`ID: ${item.id}\nSĐT: ${item.phone||'—'}`}
      />
      {selectedCustomer&&<span className="muted" style={{fontSize:11}}>Tính bill: {selectedCustomer.billing_calendar_type==='LUNAR'?'Âm lịch':'Dương lịch'}</span>}
     </div>

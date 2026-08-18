@@ -645,6 +645,7 @@ export default function InventoryPurchases() {
               searchFields={['name', 'customer_code', 'phone']}
               emptyText="Không tìm thấy nhà cung cấp"
               getItemKey={s => s.id}
+              getTooltip={item => `ID: ${item.id}\nSĐT: ${item.phone||'—'}`}
             />
           </div>
           <button className="btn secondary" onClick={loadList} disabled={listLoading}>Tải lại</button>
@@ -722,6 +723,7 @@ export default function InventoryPurchases() {
                       searchFields={['name', 'customer_code', 'phone']}
                       emptyText="Không tìm thấy nhà cung cấp"
                       getItemKey={s => s.id}
+                      getTooltip={item => `ID: ${item.id}\nSĐT: ${item.phone||'—'}`}
                     />
                   </div>
                   <div>

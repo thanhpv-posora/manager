@@ -47,7 +47,7 @@ async function main() {
       unitThungId = ins.insertId;
     }
 
-    const partnerRes = await CustomerAgent.create({ name: `VERIFY SPOB Supplier ${Date.now()}`, partner_type: 1 }, user);
+    const partnerRes = await CustomerAgent.create({ name: `VERIFY SPOB Supplier ${Date.now()}`, phone: `09${String(Date.now()).slice(-6)}${String(Math.floor(Math.random()*90)+10)}`, partner_type: 1 }, user);
     const [[partnerRow]] = await pool.query(`SELECT id FROM customers WHERE customer_code=?`, [partnerRes.customer_code]);
     partnerId = partnerRow.id;
     const [[map]] = await pool.query(`SELECT supplier_id FROM supplier_partner_map WHERE partner_id=?`, [partnerId]);

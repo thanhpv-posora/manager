@@ -48,7 +48,7 @@ async function main() {
   }
   async function orderRow(orderId) { const [[r]] = await pool.query(`SELECT * FROM orders WHERE id=?`, [orderId]); return r; }
 
-  const res = await CustomerAgent.create({ name: `${tag} Customer`, partner_type: 2, default_sales_flow: 'INVENTORY_SALE', price_mode: 'PRIVATE_PRICE', billing_calendar_type: 'SOLAR' }, admin);
+  const res = await CustomerAgent.create({ name: `${tag} Customer`, phone: `09${String(Date.now()).slice(-6)}${String(Math.floor(Math.random()*90)+10)}`, partner_type: 2, default_sales_flow: 'INVENTORY_SALE', price_mode: 'PRIVATE_PRICE', billing_calendar_type: 'SOLAR' }, admin);
   const [[custRow]] = await pool.query(`SELECT id FROM customers WHERE customer_code=?`, [res.customer_code]);
   const custId = custRow.id;
   const pname = `${tag} Product`;

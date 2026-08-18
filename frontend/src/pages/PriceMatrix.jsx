@@ -470,6 +470,7 @@ export default function PriceMatrix(){
               loading={customerLoading}
               emptyText="Không tìm thấy bạn hàng"
               getItemKey={item=>item.id}
+              getTooltip={item=>`ID: ${item.id}\nSĐT: ${item.phone||'—'}`}
             />
           </div>
           <select className="select" style={{width:260}} value={copyTo} onChange={e=>changeCopyTo(e.target.value)}>

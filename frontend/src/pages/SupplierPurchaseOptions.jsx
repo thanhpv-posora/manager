@@ -345,6 +345,7 @@ export default function SupplierPurchaseOptions(){
             filter={item=>(Number(item.partner_type||0)&1)===1}
             emptyText="Không tìm thấy nhà cung cấp"
             getItemKey={item=>item.id}
+            getTooltip={item=>`ID: ${item.id}\nSĐT: ${item.phone||'—'}`}
           />
         </div>
         <div>

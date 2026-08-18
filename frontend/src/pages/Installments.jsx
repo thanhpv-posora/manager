@@ -318,7 +318,7 @@ th{background:#1A73E8;color:white}
    <div className="form-grid">
     <label className="field-label">
      <span>Khách hàng</span>
-     <EnterpriseAutocomplete items={customers} value={customers.find(c=>String(c.id)===String(customerId))||null} onChange={item=>setCustomerId(item?String(item.id):'')} placeholder="Tìm khách hàng..." displayField="name" secondaryFields={['customer_code','phone']} searchFields={['name','customer_code','phone','address']} filter={item=>(Number(item.partner_type||2)&2)===2} emptyText="Không tìm thấy khách hàng" getItemKey={item=>item.id}/>
+     <EnterpriseAutocomplete items={customers} value={customers.find(c=>String(c.id)===String(customerId))||null} onChange={item=>setCustomerId(item?String(item.id):'')} placeholder="Tìm khách hàng..." displayField="name" secondaryFields={['customer_code','phone']} searchFields={['name','customer_code','phone','address']} filter={item=>(Number(item.partner_type||2)&2)===2} emptyText="Không tìm thấy khách hàng" getItemKey={item=>item.id} getTooltip={item=>`ID: ${item.id}\nSĐT: ${item.phone||'—'}`}/>
     </label>
     <label className="field-label">
      <span>Ngày góp bill</span>
@@ -372,7 +372,7 @@ th{background:#1A73E8;color:white}
    <p className="muted">Nợ tổng ban đầu do ADMIN xác nhận thủ công. Tổng tiền góp nợ là số tiền góp nợ/ngày đã gắn vào bill hợp lệ (tính ngay khi tạo bill, kể cả bill chưa thu đủ). Tổng bill còn nợ là số tiền còn phải thu trên các bill đó (đã gồm cả phần góp nợ/ngày của bill).</p>
    <div className="form-grid" style={{gridTemplateColumns:'1.3fr 1fr 1fr auto'}}>
     <label className="field-label"><span>Khách hàng</span>
-     <EnterpriseAutocomplete items={customers} value={customers.find(c=>String(c.id)===String(statsCustomerId))||null} onChange={item=>setStatsCustomerId(item?String(item.id):'')} placeholder="Tìm khách hàng..." displayField="name" secondaryFields={['customer_code','phone']} searchFields={['name','customer_code','phone','address']} filter={item=>(Number(item.partner_type||2)&2)===2} emptyText="Không tìm thấy khách hàng" getItemKey={item=>item.id}/>
+     <EnterpriseAutocomplete items={customers} value={customers.find(c=>String(c.id)===String(statsCustomerId))||null} onChange={item=>setStatsCustomerId(item?String(item.id):'')} placeholder="Tìm khách hàng..." displayField="name" secondaryFields={['customer_code','phone']} searchFields={['name','customer_code','phone','address']} filter={item=>(Number(item.partner_type||2)&2)===2} emptyText="Không tìm thấy khách hàng" getItemKey={item=>item.id} getTooltip={item=>`ID: ${item.id}\nSĐT: ${item.phone||'—'}`}/>
     </label>
     <label className="field-label"><span>Loại lịch đến thời điểm</span>
      <select className="select" value={mgmtAsOfCalendarType} onChange={e=>setMgmtAsOfCalendarType(e.target.value)}>
@@ -459,7 +459,7 @@ th{background:#1A73E8;color:white}
    <p className="muted">Chọn khách hàng trước. Khoảng thời gian sẽ tự chạy theo loại lịch tính bill của khách; không hiển thị lẫn lộn âm/dương.</p>
    <div className="form-grid" style={{gridTemplateColumns:'1.3fr 1fr 1fr auto auto',alignItems:'end'}}>
     <label className="field-label"><span>Khách hàng thống kê</span>
-     <EnterpriseAutocomplete items={customers} value={customers.find(c=>String(c.id)===String(statsCustomerId))||null} onChange={item=>setStatsCustomerId(item?String(item.id):'')} placeholder="Tất cả khách hàng..." displayField="name" secondaryFields={['customer_code','phone']} searchFields={['name','customer_code','phone','address']} filter={item=>(Number(item.partner_type||2)&2)===2} emptyText="Không tìm thấy khách hàng" getItemKey={item=>item.id}/>
+     <EnterpriseAutocomplete items={customers} value={customers.find(c=>String(c.id)===String(statsCustomerId))||null} onChange={item=>setStatsCustomerId(item?String(item.id):'')} placeholder="Tất cả khách hàng..." displayField="name" secondaryFields={['customer_code','phone']} searchFields={['name','customer_code','phone','address']} filter={item=>(Number(item.partner_type||2)&2)===2} emptyText="Không tìm thấy khách hàng" getItemKey={item=>item.id} getTooltip={item=>`ID: ${item.id}\nSĐT: ${item.phone||'—'}`}/>
     </label>
     {statsCalendarType==='LUNAR'?<>
      <label className="field-label"><span>{statsFromLabel}</span><input className="input" value={statsFromLunar} onChange={e=>changeStatsFromLunar(e.target.value)} placeholder="VD: 01/03/2026"/></label>

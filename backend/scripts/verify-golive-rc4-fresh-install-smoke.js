@@ -84,7 +84,7 @@ async function main() {
 
   // ══════════════════ 3. Partners / Customers ══════════════════
   {
-    const result = await CustomerAgent.create({ name: `${tag} Customer`, partner_type: 2, default_sales_flow: 'INVENTORY_SALE', price_mode: 'PRIVATE_PRICE' }, admin);
+    const result = await CustomerAgent.create({ name: `${tag} Customer`, phone: `09${String(Date.now()).slice(-6)}${String(Math.floor(Math.random()*90)+10)}`, partner_type: 2, default_sales_flow: 'INVENTORY_SALE', price_mode: 'PRIVATE_PRICE' }, admin);
     check('Customers: create() succeeds on a fresh DB', !!result && !!result.customer_code, result);
     const [[c]] = await pool.query(`SELECT * FROM customers WHERE customer_code=? LIMIT 1`, [result.customer_code]);
     check('Customers: row persisted', !!c, c);

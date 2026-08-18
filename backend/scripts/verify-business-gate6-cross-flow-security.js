@@ -63,7 +63,7 @@ async function main() {
   const [catA, catB, catC] = cats;
 
   async function makeCustomer(name, defaultFlow = 'INVENTORY_SALE') {
-    const res = await CustomerAgent.create({ name: `${tag} ${name}`, partner_type: 2, default_sales_flow: defaultFlow, price_mode: 'PRIVATE_PRICE', billing_calendar_type: 'SOLAR' }, admin);
+    const res = await CustomerAgent.create({ name: `${tag} ${name}`, phone: `09${String(Date.now()).slice(-6)}${String(Math.floor(Math.random()*90)+10)}`, partner_type: 2, default_sales_flow: defaultFlow, price_mode: 'PRIVATE_PRICE', billing_calendar_type: 'SOLAR' }, admin);
     const [[row]] = await pool.query(`SELECT id FROM customers WHERE customer_code=?`, [res.customer_code]);
     return row.id;
   }

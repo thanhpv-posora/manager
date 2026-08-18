@@ -57,6 +57,7 @@ export default function POSBillContextBar({
             filter={item => (Number(item.partner_type || 2) & 2) === 2}
             emptyText="Không tìm thấy khách hàng"
             getItemKey={item => item.id}
+            getTooltip={item => `ID: ${item.id}\nSĐT: ${item.phone||'—'}`}
           />
         </div>
 

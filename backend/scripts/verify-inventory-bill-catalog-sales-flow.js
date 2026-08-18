@@ -33,7 +33,7 @@ async function main() {
     categoryId = cat.id;
 
     async function makeCustomer(name, defaultFlow) {
-      const res = await CustomerAgent.create({ name: `VERIFY IBCF ${name} ${Date.now()}-${Math.random().toString(36).slice(2,6)}`, partner_type: 0, default_sales_flow: defaultFlow }, user);
+      const res = await CustomerAgent.create({ name: `VERIFY IBCF ${name} ${Date.now()}-${Math.random().toString(36).slice(2,6)}`, phone: `09${String(Date.now()).slice(-6)}${String(Math.floor(Math.random()*90)+10)}`, partner_type: 0, default_sales_flow: defaultFlow }, user);
       const [[row]] = await pool.query(`SELECT id FROM customers WHERE customer_code=?`, [res.customer_code]);
       customerIds.push(row.id);
       return row.id;

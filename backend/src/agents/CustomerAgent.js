@@ -122,27 +122,43 @@ class CustomerAgent{
       return {partner_id:customerId,supplier_id:existing.supplier_id,message:'Đã đồng bộ nhà cung cấp liên kết'};
     }
 
-    // Find an unmapped supplier row: prefer phone match, then name match.
-    // A reused pre-existing orphan row's fields are intentionally left as-is
-    // here (first-time link only, no prior "current Partner state" to argue
-    // is stale) — only the already-mapped path above overwrites fields.
+    // Find a reusable supplier row: prefer phone match, then name match.
+    // Eligible = genuinely unmapped (no supplier_partner_map row at all) OR
+    // mapped only to a partner that is itself soft-deleted — i.e. provably
+    // orphaned by CustomerAgent.remove()'s lifecycle sync (above), not some
+    // unrelated supplier a different, still-active partner owns. This is the
+    // fix for the "LÒ Bảy Tầm" duplicate-supplier bug: previously ANY
+    // existing mapping row — even one pointing at an already-deleted partner
+    // — blocked reuse, so re-linking a same phone/name partner always minted
+    // a brand new supplier instead of reclaiming the orphaned one. The
+    // eligibility check itself is keyed off the mapping + the partner's own
+    // del_flg (stable, existing identifiers), not name — name/phone are only
+    // ever used as the original candidate lookup, same as before.
+    // A reused pre-existing row's other fields (name/phone/address/etc) are
+    // intentionally left as-is here (first-time link only, no prior "current
+    // Partner state" to argue is stale) — only the already-mapped path above
+    // overwrites fields; the reactivation below only ever touches
+    // is_active/del_flg/delete_* so a reused orphan becomes selectable again.
     let supplierId=null;
+    const reuseFilter=`
+      AND (
+        s.del_flg=0
+        OR EXISTS (SELECT 1 FROM supplier_partner_map om JOIN customers oc ON oc.id=om.partner_id WHERE om.supplier_id=s.id AND oc.del_flg=1)
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM supplier_partner_map am JOIN customers ac ON ac.id=am.partner_id
+        WHERE am.supplier_id=s.id AND ac.del_flg=0
+      )`;
     if(partner.phone){
       const [[byPhone]]=await pool.query(
-        `SELECT s.id FROM suppliers s
-         WHERE s.phone=? AND s.del_flg=0
-         AND NOT EXISTS (SELECT 1 FROM supplier_partner_map m WHERE m.supplier_id=s.id)
-         LIMIT 1`,
+        `SELECT s.id FROM suppliers s WHERE s.phone=? ${reuseFilter} LIMIT 1`,
         [partner.phone]
       );
       if(byPhone) supplierId=byPhone.id;
     }
     if(!supplierId){
       const [[byName]]=await pool.query(
-        `SELECT s.id FROM suppliers s
-         WHERE s.name=? AND s.del_flg=0
-         AND NOT EXISTS (SELECT 1 FROM supplier_partner_map m WHERE m.supplier_id=s.id)
-         LIMIT 1`,
+        `SELECT s.id FROM suppliers s WHERE s.name=? ${reuseFilter} LIMIT 1`,
         [partner.name]
       );
       if(byName) supplierId=byName.id;
@@ -158,6 +174,14 @@ class CustomerAgent{
          partner.billing_calendar_type||'SOLAR',malePrice,femalePrice,fragmentPrice,partner.is_active]
       );
       supplierId=ins.insertId;
+    } else {
+      // Reactivate — this reuse candidate may have been auto-deactivated by
+      // CustomerAgent.remove()'s lifecycle sync when its previous partner was
+      // deleted. A no-op for a candidate that was already active.
+      await pool.query(
+        `UPDATE suppliers SET is_active=1,del_flg=0,delete_reason=NULL,deleted_at=NULL,deleted_by=NULL WHERE id=?`,
+        [supplierId]
+      );
     }
 
     await pool.query(
@@ -257,13 +281,63 @@ class CustomerAgent{
     return {message:'Đã cập nhật đối tác',...(sync||{})};
   }
 
+  // fix(partner): a partner mapped through supplier_partner_map owns the
+  // visibility lifecycle of its linked supplier row (this is exactly the
+  // relationship AUTH-SCOPE-001's resolveSupplierScope()/supplierScopeWhere()
+  // in middleware/scope.js already assume is 1:1). Previously this only
+  // soft-deleted `customers`, leaving the mapped `suppliers` row (and its
+  // supplier_partner_map row) untouched — a deleted supplier-type partner
+  // stayed fully active/selectable in Nhập Xô forever (root cause of the
+  // "LÒ Bảy Tầm" duplicate-supplier bug: a later re-sync then minted a
+  // second supplier row because _syncPartnerToSupplier saw the orphaned
+  // mapping and refused to reuse it — see that function's reuse query,
+  // fixed alongside this).
+  //
+  // Both updates now run in one transaction so a partner can never end up
+  // deleted-with-supplier-still-active, or vice versa.
   async remove(id,reason,user){
     if(user&&user.role==='CUSTOMER'){
       if(Number(id)===Number(user.customer_id)) throw new Error('Không thể xóa tài khoản chính của mình');
       await assertCustomerScope(user,id);
     }
-    await pool.query(`UPDATE customers SET del_flg=1,note=CONCAT(COALESCE(note,''),'\nXóa: ',?) WHERE id=?`,[reason||'',id]);
-    return {message:'Đã xóa mềm khách hàng'};
+    const conn=await pool.getConnection();
+    try{
+      await conn.beginTransaction();
+      await conn.query(`UPDATE customers SET del_flg=1,note=CONCAT(COALESCE(note,''),'\nXóa: ',?) WHERE id=?`,[reason||'',id]);
+
+      const [[map]]=await conn.query(`SELECT supplier_id FROM supplier_partner_map WHERE partner_id=?`,[id]);
+      if(map){
+        // Deliberately NOT SoftDeleteAgent.softDelete('supplier',...): its
+        // reference check exists to BLOCK deleting data still in active use
+        // (purchase_lots/purchase_orders/etc reference it) — exactly backwards
+        // here, where we're hiding a supplier whose OWNING PARTNER is gone,
+        // not asking permission to delete its history. Historical
+        // purchase_lots/supplier_payments keep supplier_id unchanged and stay
+        // fully readable; only the supplier row's own visibility flags change.
+        const [supRes]=await conn.query(
+          `UPDATE suppliers SET is_active=0,del_flg=1,delete_reason=?,deleted_at=NOW(),deleted_by=? WHERE id=? AND del_flg=0`,
+          [reason||'',user?.id||null,map.supplier_id]
+        );
+        // supplier_partner_map row is intentionally left in place — no code
+        // path in this codebase ever deletes from that table (INSERT IGNORE
+        // only, verified), and both FK targets (suppliers, customers) are
+        // always soft-deleted, never physically removed, so the row's FK
+        // constraints stay satisfied either way. Keeping it also preserves
+        // the historical partner<->supplier trail and is what
+        // _syncPartnerToSupplier's reuse fix (below) keys off of to safely
+        // re-link this exact supplier if the partner is ever recreated.
+        if(supRes.affectedRows){
+          const [[sup]]=await conn.query(`SELECT supplier_code,name FROM suppliers WHERE id=?`,[map.supplier_id]);
+          await conn.query(
+            `INSERT INTO delete_logs(entity_type,entity_id,entity_code,entity_name,reason,deleted_by) VALUES('supplier',?,?,?,?,?)`,
+            [map.supplier_id,sup?.supplier_code||'',sup?.name||'',`Tự động ẩn do xóa đối tác #${id}: ${reason||''}`,user?.id||null]
+          );
+        }
+      }
+
+      await conn.commit();
+      return {message:'Đã xóa mềm khách hàng'};
+    }catch(e){ await conn.rollback(); throw e; }finally{ conn.release(); }
   }
 
   async nextCode(){

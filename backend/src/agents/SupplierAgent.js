@@ -96,6 +96,60 @@ class SupplierAgent {
     };
   }
 
+  // AUTH-SCOPE-001 follow-up / Nhập Xô price authority fix.
+  // price_mode is request/UI state only — no DB column, nothing persisted.
+  // Default CONFIGURED: backend is the price authority (resolveSupplierBeefPrices()),
+  // client-sent male/female/fragment/purchase prices are presentation-only and ignored.
+  // MANUAL: preserves the existing, already-live manual-price-entry capability
+  // (male/female/fragment price fields have always been freely editable in the UI) —
+  // explicit opt-in only, never inferred just because a configured price is missing.
+  // Route-level auth(['ADMIN','STAFF']) already blocks every other role from this
+  // endpoint entirely; the check below is defense-in-depth documenting the rule.
+  _resolvePriceMode(data, user) {
+    const mode = String(data.price_mode || 'CONFIGURED').toUpperCase() === 'MANUAL' ? 'MANUAL' : 'CONFIGURED';
+    if (mode === 'MANUAL' && !(user && (user.role === 'ADMIN' || user.role === 'STAFF'))) {
+      const err = new Error('Chỉ ADMIN/STAFF được nhập giá thủ công.');
+      err.status = 403; err.statusCode = 403; err.code = 'MANUAL_PRICE_FORBIDDEN';
+      throw err;
+    }
+    return mode;
+  }
+
+  // Resolves the price fields calc() should use as final authority.
+  // CONFIGURED: re-resolves via resolveSupplierBeefPrices(supplier_id, businessDate) —
+  // the existing supplier_partner_map -> partner price book -> suppliers.*_price chain.
+  // Only requires a configured price for components the lot actually uses (weight/count > 0);
+  // missing coverage throws SUPPLIER_PRICE_NOT_CONFIGURED rather than silently using 0 or
+  // any hardcoded number. MANUAL: client-submitted values pass through as-is (already
+  // authorized by _resolvePriceMode above).
+  async _resolvePriceFields(data, priceMode, weights, businessDate) {
+    if (priceMode === 'MANUAL') {
+      return {
+        male_price: n(data.male_price),
+        female_price: n(data.female_price),
+        fragment_price: n(data.fragment_price),
+        purchase_price: n(data.purchase_price || data.male_price)
+      };
+    }
+    const resolved = await this.resolveSupplierBeefPrices(data.supplier_id, businessDate);
+    const missing = [];
+    if (weights.maleWeight > 0 && !(n(resolved.male_price) > 0)) missing.push('Giá bò xô đực');
+    if (weights.femaleWeight > 0 && !(n(resolved.female_price) > 0)) missing.push('Giá bò xô cái');
+    if (weights.fragmentWeight > 0 && !(n(resolved.fragment_price) > 0)) missing.push('Giá thịt vụn');
+    if (missing.length) {
+      const err = new Error(`Nhà cung cấp chưa có bảng giá áp dụng cho ngày này (thiếu: ${missing.join(', ')}).`);
+      err.status = 400; err.statusCode = 400; err.code = 'SUPPLIER_PRICE_NOT_CONFIGURED';
+      err.details = { supplier_id: data.supplier_id, business_date: businessDate, missing, source: resolved.source };
+      throw err;
+    }
+    return {
+      male_price: n(resolved.male_price),
+      female_price: n(resolved.female_price),
+      fragment_price: n(resolved.fragment_price),
+      purchase_price: n(resolved.male_price)
+    };
+  }
+
   async suppliers() {
     const [rows]=await pool.query(`SELECT * FROM suppliers WHERE is_active=1 AND del_flg=0 ORDER BY name`);
     return rows;
@@ -161,11 +215,12 @@ class SupplierAgent {
   }
 
   async createLot(data, user) {
-    const c=this.calc(data);
     if(!data.supplier_id) throw new Error('Vui lòng chọn nhà cung cấp trước khi lưu lô nhập.');
-    if(c.rawWeight<=0) throw new Error('Tổng kg thịt xô phải lớn hơn 0. Không thể lưu lô nhập trống.');
-    if(c.totalAnimals<=0) throw new Error('Tổng số con phải lớn hơn 0.');
-    if(c.totalWeight<=0) throw new Error('Kg tính tiền phải lớn hơn 0. Vui lòng kiểm tra lại số kg trừ.');
+    const priceMode=this._resolvePriceMode(data,user);
+    const c0=this.calc(data);
+    if(c0.rawWeight<=0) throw new Error('Tổng kg thịt xô phải lớn hơn 0. Không thể lưu lô nhập trống.');
+    if(c0.totalAnimals<=0) throw new Error('Tổng số con phải lớn hơn 0.');
+    if(c0.totalWeight<=0) throw new Error('Kg tính tiền phải lớn hơn 0. Vui lòng kiểm tra lại số kg trừ.');
     const conn=await pool.getConnection();
     try {
       await conn.beginTransaction();
@@ -177,6 +232,8 @@ class SupplierAgent {
       }
       const lunarDateText=calendarType==='LUNAR' ? String(data.lunar_date_text||'') : '';
       const purchaseBillDate=resolveBillSolarDate(calendarType,data.purchase_date,lunarDateText);
+      const priceFields=await this._resolvePriceFields(data,priceMode,c0,purchaseBillDate);
+      const c=this.calc({...data,...priceFields});
       await conn.query(
         `INSERT INTO purchase_lots(
           lot_code,lot_name,supplier_id,purchase_date,calendar_type,lunar_date_text,
@@ -293,10 +350,11 @@ class SupplierAgent {
     if(!existing.length) throw Object.assign(new Error('Không tìm thấy phiếu nhập'),{status:404});
     if(existing[0].status!=='OPEN') throw Object.assign(new Error('Phiếu nhập đã chốt hoặc đã hủy, không thể chỉnh sửa.'),{status:400});
     if(!data.supplier_id) throw new Error('Vui lòng chọn nhà cung cấp trước khi lưu lô nhập.');
-    const c=this.calc(data);
-    if(c.rawWeight<=0) throw new Error('Tổng kg thịt xô phải lớn hơn 0. Không thể lưu lô nhập trống.');
-    if(c.totalAnimals<=0) throw new Error('Tổng số con phải lớn hơn 0.');
-    if(c.totalWeight<=0) throw new Error('Kg tính tiền phải lớn hơn 0. Vui lòng kiểm tra lại số kg trừ.');
+    const priceMode=this._resolvePriceMode(data,user);
+    const c0=this.calc(data);
+    if(c0.rawWeight<=0) throw new Error('Tổng kg thịt xô phải lớn hơn 0. Không thể lưu lô nhập trống.');
+    if(c0.totalAnimals<=0) throw new Error('Tổng số con phải lớn hơn 0.');
+    if(c0.totalWeight<=0) throw new Error('Kg tính tiền phải lớn hơn 0. Vui lòng kiểm tra lại số kg trừ.');
     const conn=await pool.getConnection();
     try{
       await conn.beginTransaction();
@@ -307,6 +365,8 @@ class SupplierAgent {
       }
       const lunarDateText=calendarType==='LUNAR'?String(data.lunar_date_text||''):'';
       const purchaseBillDate=resolveBillSolarDate(calendarType,data.purchase_date,lunarDateText);
+      const priceFields=await this._resolvePriceFields(data,priceMode,c0,purchaseBillDate);
+      const c=this.calc({...data,...priceFields});
       const [result]=await conn.query(
         `UPDATE purchase_lots SET
           lot_name=?,supplier_id=?,purchase_date=?,calendar_type=?,lunar_date_text=?,

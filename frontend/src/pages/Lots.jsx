@@ -33,10 +33,14 @@ export default function Lots(){
     fat_weight:'',
     fragment_weight:'',
     other_deduct_weight:'',
-    male_price:200000,
-    female_price:195000,
-    fragment_price:100000,
-    purchase_price:200000
+    // price_mode is UI/request state only (no DB column) — CONFIGURED is the default
+    // authority: backend independently resolves the supplier price and ignores these
+    // fields. No hardcoded price defaults — blank until the resolver responds.
+    price_mode:'CONFIGURED',
+    male_price:'',
+    female_price:'',
+    fragment_price:'',
+    purchase_price:''
   });
   const[rows,setRows]=useState([]);
   const[s,setS]=useState([]);
@@ -73,26 +77,51 @@ export default function Lots(){
       purchase_date:purchaseDate,
       calendar_type:type,
       lunar_date_text:type==='LUNAR'?(lunarTextOverride!==undefined?lunarTextOverride:formatLunarDate(purchaseDate||today)):'',
-      // FIX-3: preserve historical snapshot prices in edit mode; in create mode, reset to new supplier's stored prices (no fallthrough to old supplier)
-      ...(editingLotId?{}:{
-        male_price:n(sp?.male_price),
-        female_price:n(sp?.female_price),
-        fragment_price:n(sp?.fragment_price)
+      // FIX-3: preserve historical snapshot prices in edit mode. In create mode with
+      // CONFIGURED pricing, clear until the authoritative resolver (below) responds —
+      // never optimistically pre-fill from suppliers.*_price directly here, that would
+      // bypass the partner-price-book priority the resolver/backend actually applies.
+      // MANUAL mode is left untouched — switching supplier must not wipe a price the
+      // user explicitly typed.
+      ...(editingLotId||f.price_mode==='MANUAL'?{}:{
+        male_price:'',
+        female_price:'',
+        fragment_price:''
       })
     }));
-    setPriceSource(null);
-    if(!supplierId||editingLotId) return;
+    if(f.price_mode!=='MANUAL') setPriceSource(null);
+    if(!supplierId||editingLotId||f.price_mode==='MANUAL') return;
     try{
       const res=await api.get(`/suppliers/${supplierId}/beef-prices`,{params:{purchase_date:purchaseDate||today}});
       const d=res.data;
+      const male=n(d.male_price),female=n(d.female_price),fragment=n(d.fragment_price);
       setF(prev=>({
         ...prev,
-        male_price:n(d.male_price),
-        female_price:n(d.female_price),
-        fragment_price:n(d.fragment_price)
+        male_price:male>0?male:'',
+        female_price:female>0?female:'',
+        fragment_price:fragment>0?fragment:''
       }));
-      setPriceSource(d.source||null);
-    }catch{/* silently keep fallback prices */}
+      // No configured price found for this supplier/date at all (all zero) — show the
+      // missing-price state explicitly rather than silently leaving fields looking blank
+      // with no explanation, and never fall back to a hardcoded number.
+      setPriceSource((male>0||female>0||fragment>0)?(d.source||null):'NOT_CONFIGURED');
+    }catch{
+      // Request failed (network/server error) — do not silently keep stale/fallback
+      // prices; surface the same missing-price state so the user isn't shown numbers
+      // that were never actually resolved for this supplier/date.
+      setPriceSource('NOT_CONFIGURED');
+    }
+  };
+
+  // "Nguồn giá" toggle: CONFIGURED (default) = backend-authoritative price from the
+  // supplier's price book/base rate, price fields shown read-only. MANUAL = explicit
+  // opt-in to the existing manual-entry capability (ADMIN/STAFF only, enforced
+  // server-side too) — switching back to CONFIGURED re-triggers the resolver.
+  const onPriceModeChange=(mode)=>{
+    setField('price_mode',mode);
+    if(mode==='CONFIGURED'&&f.supplier_id&&!editingLotId){
+      applySupplierCalendarToLot(f.supplier_id,f.purchase_date,f.lunar_date_text);
+    }
   };
 
   const onSupplierChange=(supplierId)=>{
@@ -301,11 +330,16 @@ export default function Lots(){
       damage_weight:String(r.damage_weight||''),
       fat_weight:String(r.fat_weight||''),
       fragment_weight:String(r.fragment_weight||''),
-      fragment_price:n(r.fragment_price)||100000,
+      // Historical facts for this saved lot — show exactly what was persisted, even if
+      // 0, never a hardcoded stand-in. price_mode defaults to MANUAL here because edit
+      // mode intentionally preserves the frozen snapshot (FIX-3, above) rather than
+      // re-resolving today's supplier price over a historical lot.
+      fragment_price:n(r.fragment_price),
       other_deduct_weight:String(r.other_deduct_weight||''),
-      male_price:n(r.male_price)||200000,
-      female_price:n(r.female_price)||195000,
-      purchase_price:n(r.purchase_price)||n(r.male_price)||200000,
+      male_price:n(r.male_price),
+      female_price:n(r.female_price),
+      purchase_price:n(r.purchase_price)||n(r.male_price),
+      price_mode:'MANUAL',
       note:r.note||'',
       deduct_note:r.deduct_note||''
     });
@@ -595,10 +629,12 @@ export default function Lots(){
           }
           <label><span className="muted">Tổng kg trừ xô đã tính</span><input className="input" readOnly value={`${formatQty(deductedWeight)} kg`}/></label>
 
-          <label><span className="muted">Giá bò xô đực / kg</span><MoneyInput placeholder="208,000" value={f.male_price??''} onChange={v=>setField('male_price',v)}/></label>
-          <label><span className="muted">Giá bò xô cái / kg</span><MoneyInput placeholder="195,000" value={f.female_price??''} onChange={v=>setField('female_price',v)}/></label>
-          <label><span className="muted">Giá thịt vụn / kg</span><MoneyInput placeholder="100,000" value={f.fragment_price??''} onChange={v=>setField('fragment_price',v)}/></label>
-          {priceSource&&<div className="muted" style={{fontSize:12,gridColumn:'1/-1',marginTop:-4}}>{priceSource==='PARTNER_PRICE'?'✓ Giá lấy từ bảng giá riêng của đối tác':'Giá lấy từ thông tin NCC cũ'}</div>}
+          <label><span className="muted">Nguồn giá</span><select className="select" value={f.price_mode||'CONFIGURED'} onChange={e=>onPriceModeChange(e.target.value)}><option value="CONFIGURED">Bảng giá NCC</option><option value="MANUAL">Nhập tay</option></select></label>
+          <label><span className="muted">Giá bò xô đực / kg</span><MoneyInput readOnly={f.price_mode!=='MANUAL'} placeholder={f.price_mode==='MANUAL'?'Nhập giá':''} value={f.male_price??''} onChange={v=>setField('male_price',v)}/></label>
+          <label><span className="muted">Giá bò xô cái / kg</span><MoneyInput readOnly={f.price_mode!=='MANUAL'} placeholder={f.price_mode==='MANUAL'?'Nhập giá':''} value={f.female_price??''} onChange={v=>setField('female_price',v)}/></label>
+          <label><span className="muted">Giá thịt vụn / kg</span><MoneyInput readOnly={f.price_mode!=='MANUAL'} placeholder={f.price_mode==='MANUAL'?'Nhập giá':''} value={f.fragment_price??''} onChange={v=>setField('fragment_price',v)}/></label>
+          {priceSource==='NOT_CONFIGURED'&&<div className="muted" style={{fontSize:12,gridColumn:'1/-1',marginTop:-4,color:'#b45309'}}>⚠ Nhà cung cấp chưa có bảng giá áp dụng cho ngày này</div>}
+          {priceSource&&priceSource!=='NOT_CONFIGURED'&&<div className="muted" style={{fontSize:12,gridColumn:'1/-1',marginTop:-4}}>{priceSource==='PARTNER_PRICE'?'✓ Giá lấy từ bảng giá riêng của đối tác':'✓ Giá lấy từ thông tin nhà cung cấp'}</div>}
           <label><span className="muted">Thịt vụn kg</span><input ref={setNavRef(5)} onKeyDown={e=>onLotNavKey(e,5)} className="input" placeholder="0 hoặc 2 + 1" value={f.fragment_weight??''} onChange={e=>setField('fragment_weight',e.target.value)}/><small className="muted">Tính tiền riêng, không trừ khỏi kg bò xô.</small></label>
         </div>
 

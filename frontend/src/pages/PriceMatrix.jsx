@@ -1,4 +1,4 @@
-import React,{useEffect,useMemo,useRef,useState}from'react';import {Trash2} from'lucide-react';import api from'../api/api';import SafePage from'../components/SafePage';import MoneyInput from'../components/MoneyInput';import {moneyVnd} from'../utils/money';import {handlePosInputKeyNavigation} from'../utils/focusNavigation';import EnterpriseAutocomplete from'../components/common/EnterpriseAutocomplete';import {showSuccess,showError,showWarning,showInfo} from'../utils/toast';
+import React,{useEffect,useMemo,useRef,useState}from'react';import {Trash2} from'lucide-react';import api from'../api/api';import SafePage from'../components/SafePage';import MoneyInput from'../components/MoneyInput';import {moneyVnd} from'../utils/money';import {handlePosInputKeyNavigation} from'../utils/focusNavigation';import {evalMoneyExpression} from'../utils/moneyExpression';import EnterpriseAutocomplete from'../components/common/EnterpriseAutocomplete';import {showSuccess,showError,showWarning,showInfo} from'../utils/toast';
 
 function isBusinessPartner(item){
   const t=Number(item.partner_type||0);
@@ -52,6 +52,15 @@ export default function PriceMatrix(){
   const[rowSearch,setRowSearch]=useState('');
   const[rowPage,setRowPage]=useState(1);
   const[rowPageSize,setRowPageSize]=useState(20);
+
+  // Keyboard fast entry (main private-price grid only): F2 -> rowSearch,
+  // Enter resolves a target product and focuses its price cell, price Enter
+  // evaluates/commits and returns to rowSearch. Same armed-ref pattern as
+  // CreateOrder.jsx's fastEntryFromSearchRef/qtyRefs — see there for the
+  // precedent this mirrors.
+  const rowSearchRef=useRef(null);
+  const priceInputRefs=useRef({}); // product_id -> price <input> DOM node
+  const fastEntryFromSearchRef=useRef(false);
 
   const loadCustomers=async()=>{
     const c=(await api.get('/customers')).data||[];
@@ -451,6 +460,58 @@ export default function PriceMatrix(){
   const rowTotalPages=Math.max(1,Math.ceil(filteredRows.length/rowPageSize));
   const rowCp=Math.min(rowPage,rowTotalPages);
   const visibleRows=filteredRows.slice((rowCp-1)*rowPageSize,rowCp*rowPageSize);
+
+  // Keyboard fast entry: rowSearch Enter resolves which product to jump to —
+  // same priority as CreateOrder.jsx's resolveSearchTargetProduct (exact
+  // code -> exact name -> first filtered result). No match -> null, caller
+  // stays in search (never focuses a random price cell).
+  const resolveSearchTarget=()=>{
+    const q=String(rowSearch||'').trim().toLowerCase();
+    if(!q)return filteredRows[0]||null;
+    const byCode=filteredRows.find(r=>String(r.product_code||'').trim().toLowerCase()===q);
+    if(byCode)return byCode;
+    const byName=filteredRows.find(r=>String(r.product_name||'').trim().toLowerCase()===q);
+    if(byName)return byName;
+    return filteredRows[0]||null;
+  };
+
+  // Target may be on a different pagination page than the one currently shown
+  // — jump rowPage first (using stable product_id identity within
+  // filteredRows, not fragile rendered DOM order), then focus once React has
+  // re-rendered that page (same 80ms settle pattern CreateOrder.jsx's
+  // focusFirstQtyInput uses for the identical reason).
+  const focusPriceForSearchTarget=(target)=>{
+    if(!target)return;
+    const idxInFiltered=filteredRows.findIndex(r=>r.product_id===target.product_id);
+    if(idxInFiltered<0)return;
+    const targetPage=Math.floor(idxInFiltered/rowPageSize)+1;
+    if(targetPage!==rowPage)setRowPage(targetPage);
+    setTimeout(()=>{
+      const el=priceInputRefs.current[target.product_id];
+      if(el){
+        el.focus();
+        el.select?.();
+        fastEntryFromSearchRef.current=true;
+      }
+    },80);
+  };
+
+  // F2 = jump to product search from anywhere on this screen — page-scoped,
+  // same pattern as CreateOrder.jsx's handleF2. Suppressed while any modal on
+  // this page is open, or while typing in a textarea.
+  useEffect(()=>{
+    const handleF2=(e)=>{
+      if(e.key!=='F2')return;
+      if(bookDetail||showPickModal||fileImport||editFlowCategory)return;
+      if(document.activeElement&&document.activeElement.tagName==='TEXTAREA')return;
+      e.preventDefault();
+      rowSearchRef.current?.focus();
+      rowSearchRef.current?.select?.();
+    };
+    window.addEventListener('keydown',handleF2);
+    return()=>window.removeEventListener('keydown',handleF2);
+  },[bookDetail,showPickModal,fileImport,editFlowCategory]);
+
   return <SafePage loading={loading} error={error}>
     <div className="grid">
       <div className="card price-matrix-table-card">
@@ -559,7 +620,7 @@ export default function PriceMatrix(){
         </div>
       )}
       <div className="card">
-        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:10}}><input className="input" style={{maxWidth:320}} placeholder="Tìm sản phẩm..." value={rowSearch} onChange={e=>{setRowSearch(e.target.value);setRowPage(1);}}/>{rowSearch&&<button className="btn secondary" onClick={()=>{setRowSearch('');setRowPage(1);}}>Xóa lọc</button>}<span className="muted">{filteredRows.length}/{rows.length} sản phẩm</span></div>
+        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:10}}><input ref={rowSearchRef} className="input" style={{maxWidth:320}} placeholder="Tìm sản phẩm... (F2)" value={rowSearch} onChange={e=>{setRowSearch(e.target.value);setRowPage(1);}} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();focusPriceForSearchTarget(resolveSearchTarget());}}}/>{rowSearch&&<button className="btn secondary" onClick={()=>{setRowSearch('');setRowPage(1);}}>Xóa lọc</button>}<span className="muted">{filteredRows.length}/{rows.length} sản phẩm</span></div>
         {rowsLoading&&<p className="notice">Đang tải danh sách mặt hàng...</p>}
         <table className="table">
           <thead><tr><th></th><th>Dùng trong bill</th><th>STT</th><th>Mặt hàng</th><th>Giá chung</th><th>Giá riêng khách này</th><th>Mode</th></tr></thead>
@@ -569,7 +630,39 @@ export default function PriceMatrix(){
             <td><input className="input" style={{width:70}} value={idx+1} readOnly/></td>
             <td><b>{r.product_name}</b><br/><span className="muted">{r.category_name} · {r.product_code}</span></td>
             <td>{moneyVnd(r.default_sale_price)}</td>
-            <td><MoneyInput value={r.private_price??0} onChange={v=>setRow(idx,{private_price:v,...(newBookMode&&{in_catalog:Number(v)>0})})} data-pos-nav="true" onKeyDown={handlePosInputKeyNavigation}/></td>
+            <td><MoneyInput
+              ref={el=>{priceInputRefs.current[r.product_id]=el;}}
+              value={r.private_price??0}
+              onChange={v=>setRow(idx,{private_price:v,...(newBookMode&&{in_catalog:Number(v)>0})})}
+              allowExpression
+              data-pos-nav="true"
+              onFocus={()=>{fastEntryFromSearchRef.current=false;}}
+              onKeyDown={e=>{
+                // Only the cell rowSearch's Enter just jumped to gets the
+                // evaluate-and-return-to-search behavior. A manual click +
+                // Enter (armed ref already cleared by onFocus above) keeps
+                // the existing handlePosInputKeyNavigation grid navigation —
+                // never forced back to search.
+                if(e.key==='Enter'&&!e.shiftKey&&fastEntryFromSearchRef.current){
+                  e.preventDefault();
+                  const result=evalMoneyExpression(e.target.value);
+                  if(!result.ok){
+                    showWarning('Giá không hợp lệ. Nhập số hoặc biểu thức, ví dụ 2000000/12.5.');
+                    return; // keep focus here, do not commit, do not return to search
+                  }
+                  fastEntryFromSearchRef.current=false;
+                  setRow(idx,{private_price:result.value,...(newBookMode&&{in_catalog:result.value>0})});
+                  setRowSearch('');
+                  setRowPage(1);
+                  requestAnimationFrame(()=>{
+                    rowSearchRef.current?.focus();
+                    rowSearchRef.current?.select?.();
+                  });
+                  return;
+                }
+                handlePosInputKeyNavigation(e);
+              }}
+            /></td>
             <td>{r.inventory_mode}</td>
           </tr>;})}</tbody>
         </table>

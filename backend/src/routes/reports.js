@@ -7,4 +7,8 @@ router.get('/revenue', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=
 router.get('/profit', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await ReportAgent.profit(req.query,req.user))}catch(e){next(e)}});
 router.get('/product-quantity', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await ReportAgent.productQuantity(req.query,req.user))}catch(e){next(e)}});
 router.get('/product-quantity/:productId/details', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await ReportAgent.productQuantityDetails(req.params.productId,req.query,req.user))}catch(e){next(e)}});
+// Customer Daily Billing Status Matrix — cross-customer monitoring screen,
+// ADMIN/STAFF only (unlike revenue/profit above, there is no "my own scoped
+// view" for a CUSTOMER here since every row is a different customer).
+router.get('/customer-billing-matrix', auth.staffOrAdmin(), async (req,res,next)=>{try{res.json(await ReportAgent.customerBillingMatrix(req.query,req.user))}catch(e){next(e)}});
 module.exports=router;

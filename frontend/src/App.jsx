@@ -20,6 +20,7 @@ import InventoryAdjustments from'./pages/InventoryAdjustments';
 import Revenue from'./pages/Revenue';
 import Profit from'./pages/Profit';
 import ProductQuantityReport from'./pages/ProductQuantityReport';
+import CustomerBillingMatrix from'./pages/CustomerBillingMatrix';
 import RetailDailySummary from'./pages/RetailDailySummary';
 import Agents from'./pages/Agents';
 import Trash from'./pages/Trash';
@@ -124,6 +125,7 @@ export default function App(){
     revenue:<Revenue/>,
     profit:<Profit/>,
     'product-quantity-report':<ProductQuantityReport/>,
+    'customer-billing-matrix':<CustomerBillingMatrix/>,
     'retail-daily-summary':<RetailDailySummary/>,
     agents:<Agents/>,
     trash:<Trash/>,

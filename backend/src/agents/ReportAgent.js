@@ -418,5 +418,166 @@ class ReportAgent {
     };
   }
 
+  // feat(report): Customer Daily Billing Status Matrix — monitoring only, no
+  // write path. "Tính tiền" here is a payment/debt concept, NOT product
+  // pricing (every order_item already has a resolved sale_price before
+  // OrderAgent.create() will ever insert it — see that guard). Status is
+  // derived purely from orders.total_amount/paid_amount/debt_amount, the same
+  // authoritative fields Orders.jsx already reports — no new column, no
+  // reuse of purchase_lots.price_status (a different, supplier-side concept).
+  //
+  // UNSETTLED / PRICED_WITH_DEBT / PRICED_PAID branches below are a sound
+  // partition of the day's SUMMED paid/debt across all its bills: since every
+  // individual order's debt_amount = GREATEST(0,total-paid) (recalcOrderTotals
+  // et al.), SUM(paid)=0 implies every bill's paid=0, and SUM(debt)<=0 implies
+  // every bill's debt=0 — so the three branches exactly match "all bills
+  // unpaid" / "all bills settled" / anything else (mixed).
+  _billingMatrixDayStatus(paid, debt) {
+    if (paid <= 0 && debt > 0) return 'UNSETTLED';
+    if (debt <= 0) return 'PRICED_PAID';
+    return 'PRICED_WITH_DEBT';
+  }
+
+  async customerBillingMatrix(query, user) {
+    const isoDateRe = /^\d{4}-\d{2}-\d{2}$/;
+    const from = String(query?.from || '').slice(0, 10);
+    const to = String(query?.to || '').slice(0, 10);
+    if (!isoDateRe.test(from) || !isoDateRe.test(to))
+      throw Object.assign(new Error('Từ ngày/Đến ngày phải là ngày hợp lệ (YYYY-MM-DD)'), { status: 400 });
+    if (from > to)
+      throw Object.assign(new Error('Từ ngày phải nhỏ hơn hoặc bằng Đến ngày'), { status: 400 });
+    const dayCount = Math.round((new Date(to) - new Date(from)) / 86400000) + 1;
+    if (dayCount > 62)
+      throw Object.assign(new Error('Khoảng ngày tối đa 62 ngày cho một lần xem ma trận'), { status: 400 });
+
+    const allowedFlows = ['ALL', 'CARCASS_POS', 'INVENTORY_SALE'];
+    const flow = String(query?.sales_flow || 'ALL').toUpperCase();
+    if (!allowedFlows.includes(flow))
+      throw Object.assign(new Error('Luồng bán hàng không hợp lệ (ALL, CARCASS_POS, INVENTORY_SALE)'), { status: 400 });
+
+    const allowedStatus = ['ALL', 'NO_BILL', 'UNSETTLED', 'PRICED_WITH_DEBT', 'PRICED_PAID'];
+    const statusFilter = String(query?.status || 'ALL').toUpperCase();
+    if (!allowedStatus.includes(statusFilter))
+      throw Object.assign(new Error('Trạng thái lọc không hợp lệ'), { status: 400 });
+
+    const where = [`o.status<>'CANCELLED'`, `o.order_date>=?`, `o.order_date<=?`];
+    const params = [from, to];
+    // Order-level sales_flow only (never split a MIXED order's single debt
+    // figure across its per-line order_items.sales_flow — there is no
+    // authoritative per-flow debt split for a mixed bill). A MIXED order is
+    // therefore only ever visible under "Tất cả".
+    if (flow !== 'ALL') { where.push('o.sales_flow=?'); params.push(flow); }
+    if (query?.customer_id) { where.push('o.customer_id=?'); params.push(Number(query.customer_id) || 0); }
+
+    const [rows] = await pool.query(
+      `SELECT o.customer_id, o.order_date,
+              COUNT(*) valid_bill_count,
+              SUM(o.total_amount) total_amount,
+              SUM(o.paid_amount) paid_amount,
+              SUM(o.debt_amount) outstanding_amount
+       FROM orders o
+       WHERE ${where.join(' AND ')}
+       GROUP BY o.customer_id, o.order_date`,
+      params
+    );
+    if (!rows.length) {
+      return { date_columns: this._billingMatrixDateColumns(from, to), customers: [], summary: { customers: 0, no_bill_days: 0, unsettled_days: 0, paid_days: 0, debt_days: 0 } };
+    }
+
+    const customerIds = Array.from(new Set(rows.map(r => r.customer_id)));
+    const [customerRows] = await pool.query(
+      `SELECT id, name, billing_calendar_type FROM customers WHERE id IN (${customerIds.map(() => '?').join(',')})`,
+      customerIds
+    );
+    const customerById = new Map(customerRows.map(c => [c.id, c]));
+
+    const byCustomer = new Map();
+    for (const r of rows) {
+      if (!byCustomer.has(r.customer_id)) byCustomer.set(r.customer_id, new Map());
+      const paid = Number(r.paid_amount || 0);
+      const debt = Number(r.outstanding_amount || 0);
+      byCustomer.get(r.customer_id).set(String(r.order_date).slice(0, 10), {
+        valid_bill_count: Number(r.valid_bill_count || 0),
+        total_amount: Number(r.total_amount || 0),
+        paid_amount: paid,
+        outstanding_amount: debt,
+        status: this._billingMatrixDayStatus(paid, debt),
+      });
+    }
+
+    // Build every customer row's full dense day grid first (dates with no
+    // bill filled in as NO_BILL), then decide row inclusion (status filter =
+    // "this customer has at least one matching day") — summary totals are
+    // computed in one final pass over only the rows actually kept, so a
+    // filtered-out customer's NO_BILL days never leak into the totals.
+    const dateColumns = this._billingMatrixDateColumns(from, to);
+    const customers = [];
+    for (const customerId of customerIds) {
+      const c = customerById.get(customerId);
+      if (!c) continue; // defensive: customer row missing/deleted between queries
+      const dayMap = byCustomer.get(customerId) || new Map();
+      const days = {};
+      let matchesStatusFilter = statusFilter === 'ALL';
+      for (const col of dateColumns) {
+        const cell = dayMap.get(col.date) || { valid_bill_count: 0, total_amount: 0, paid_amount: 0, outstanding_amount: 0, status: 'NO_BILL' };
+        days[col.date] = cell;
+        if (statusFilter !== 'ALL' && cell.status === statusFilter) matchesStatusFilter = true;
+      }
+      if (!matchesStatusFilter) continue;
+      customers.push({
+        customer_id: customerId,
+        customer_name: c.name,
+        calendar_type: String(c.billing_calendar_type || 'SOLAR').toUpperCase() === 'LUNAR' ? 'LUNAR' : 'SOLAR',
+        days,
+      });
+    }
+
+    const summary = { customers: customers.length, no_bill_days: 0, unsettled_days: 0, paid_days: 0, debt_days: 0 };
+    for (const cust of customers) {
+      for (const col of dateColumns) {
+        const s = cust.days[col.date].status;
+        if (s === 'NO_BILL') summary.no_bill_days++;
+        else if (s === 'UNSETTLED') summary.unsettled_days++;
+        else if (s === 'PRICED_PAID') summary.paid_days++;
+        else if (s === 'PRICED_WITH_DEBT') summary.debt_days++;
+      }
+    }
+
+    return { date_columns: dateColumns, customers, summary };
+  }
+
+  // Solar date columns for the requested range, each paired with its lunar
+  // equivalent via the same solarToLunar() conversion billCalendar.js uses —
+  // computed once per date, shared across every customer row (not
+  // recomputed per customer), independent of whether any bill exists that day.
+  _billingMatrixDateColumns(from, to) {
+    const { solarToLunar } = require('../utils/lunarDate');
+    const cols = [];
+    // Pure UTC epoch-millis stepping — never construct a Date from a local-
+    // time string and read it back with local accessors (getDate/setDate),
+    // which silently shifts by a day on any host whose local timezone isn't
+    // UTC (verified live on this dev host: 'YYYY-MM-DDT00:00:00' parses as
+    // local midnight, but toISOString() reports it back in UTC — a negative
+    // UTC-offset host reads that as the previous calendar day). Y/M/D parsed
+    // directly from the input strings and stepped via Date.UTC()+86400000ms
+    // is immune to that regardless of server timezone.
+    const [fy, fm, fd] = from.split('-').map(Number);
+    const [ty, tm, td] = to.split('-').map(Number);
+    let cur = Date.UTC(fy, fm - 1, fd);
+    const end = Date.UTC(ty, tm - 1, td);
+    while (cur <= end) {
+      const date = new Date(cur).toISOString().slice(0, 10);
+      const lunar = solarToLunar(date);
+      cols.push({
+        date,
+        lunar_day: lunar.day,
+        lunar_month: lunar.month,
+        lunar_label: `${String(lunar.day).padStart(2, '0')}/${String(lunar.month).padStart(2, '0')}`,
+      });
+      cur += 86400000;
+    }
+    return cols;
+  }
+
 }
 module.exports = new ReportAgent();

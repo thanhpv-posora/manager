@@ -469,13 +469,40 @@ class ReportAgent {
     if (flow !== 'ALL') { where.push('o.sales_flow=?'); params.push(flow); }
     if (query?.customer_id) { where.push('o.customer_id=?'); params.push(Number(query.customer_id) || 0); }
 
+    // BUG FIX (Hồng Hiền / BILL202607290001, 2026-07-27): orders.debt_amount
+    // is NOT reliable as a standalone read. applyPaymentToOrder() floors it
+    // via GREATEST(stored debt_amount, _ledgerDebtForOrder()) — a defensive
+    // correction for stale-LOW debt (e.g. after a Sales Return) — but any
+    // order whose debt_transactions ledger is itself incomplete (verified:
+    // a payment made before the Gate-3 multi-bill-ledger fix split its full
+    // amount into one lump PAYMENT row against a single order instead of one
+    // row per real payment_allocations split, leaving every OTHER order that
+    // payment partially settled with zero ledger rows for it) gets that same
+    // floor logic re-inflating its debt back up on the NEXT payment against
+    // it, even though orders.paid_amount/payment_allocations stayed correct
+    // throughout. payment_allocations is the one figure both the old and new
+    // payment code paths always wrote correctly per-order — the same source
+    // OrderAgent.get()'s payment_summary (Bill/POS "Dư nợ còn lại") already
+    // reduces to. Recomputing paid/outstanding from it here — instead of
+    // trusting orders.paid_amount/debt_amount — reuses that exact existing
+    // authority rather than inventing a second debt rule, and is inherently
+    // current: a payment made today against an old order's payment_allocations
+    // row is summed here regardless of which order_date it's grouped under,
+    // so a later payment against an older bill correctly updates that older
+    // business-date cell (business rule: cell = CURRENT settlement status of
+    // that business date's bill, not a snapshot frozen at bill-creation time).
     const [rows] = await pool.query(
       `SELECT o.customer_id, o.order_date,
               COUNT(*) valid_bill_count,
               SUM(o.total_amount) total_amount,
-              SUM(o.paid_amount) paid_amount,
-              SUM(o.debt_amount) outstanding_amount
+              SUM(COALESCE(pa.allocated_total,0)) paid_amount,
+              SUM(GREATEST(0, o.total_amount - COALESCE(pa.allocated_total,0))) outstanding_amount
        FROM orders o
+       LEFT JOIN (
+         SELECT order_id, SUM(amount) allocated_total
+         FROM payment_allocations
+         GROUP BY order_id
+       ) pa ON pa.order_id = o.id
        WHERE ${where.join(' AND ')}
        GROUP BY o.customer_id, o.order_date`,
       params

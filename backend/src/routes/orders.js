@@ -15,6 +15,9 @@ router.get('/public/:token/print', async (req,res,next)=>{try{res.setHeader('Con
 router.get('/public/:token/k80', async (req,res,next)=>{try{res.setHeader('Content-Type','text/html; charset=utf-8');res.send(await OrderAgent.printK80ByToken(req.params.token))}catch(e){next(e)}});
 router.get('/', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await OrderAgent.list(req.user,req.query))}catch(e){next(e)}});
 router.post('/', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await OrderAgent.create(req.body,req.user))}catch(e){next(e)}});
+// FEAT (same-day bill warning): registered before '/:id' — otherwise Express
+// would match this path as :id='existing-for-date'.
+router.get('/existing-for-date', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await OrderAgent.existingForDate(req.query,req.user))}catch(e){next(e)}});
 router.get('/:id', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await OrderAgent.get(req.params.id,req.user))}catch(e){next(e)}});
 function getPublicAppUrl(req){
   const envUrl=process.env.PUBLIC_APP_URL||process.env.FRONTEND_PUBLIC_URL||process.env.FRONTEND_URL||process.env.APP_URL||process.env.SITE_URL;

@@ -593,6 +593,35 @@ return await this.loadLegacyDirectPayments(orderId);
     return rows;
   }
 
+  // FEAT (same-day bill warning): bounded, one-query lookup of this
+  // customer's existing valid bills on one authoritative business date
+  // (orders.order_date — the same solar date every order is grouped/
+  // compared by elsewhere, e.g. ReportAgent.customerBillingMatrix()). Excludes
+  // CANCELLED only — orders.status has no other non-final value once
+  // create() persists a row (always inserts DELIVERED directly, see S1D
+  // audit note). Deliberately customer_id+date only, NOT +sales_flow — a
+  // CARCASS_POS bill and an INVENTORY_SALE bill the same day both count,
+  // since the warning is about accidental duplicate daily billing for this
+  // customer, not duplicate flow (no existing code treats same-day bills
+  // across flows as intentionally distinct for this purpose). Advisory only:
+  // never blocks/rejects, never a uniqueness constraint — a second caller
+  // racing this same check is expected and allowed.
+  async existingForDate(query, user) {
+    const customerId = Number(query.customer_id || 0);
+    const date = String(query.date || '').slice(0, 10);
+    if (!customerId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw Object.assign(new Error('Thiếu customer_id hoặc date hợp lệ'), { status: 400 });
+    }
+    await assertCustomerScope(user, customerId);
+    const [rows] = await pool.query(
+      `SELECT id, order_code, sales_flow, calendar_type, lunar_date_text
+       FROM orders WHERE customer_id=? AND order_date=? AND status<>'CANCELLED'
+       ORDER BY id ASC`,
+      [customerId, date]
+    );
+    return { count: rows.length, bills: rows };
+  }
+
   async get(id,user) {
     const [orders] = await pool.query(
       `SELECT o.*,c.name customer_name,c.phone,c.address FROM orders o JOIN customers c ON c.id=o.customer_id WHERE o.id=?`,

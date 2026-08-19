@@ -95,6 +95,16 @@ export default function Payments(){
  const calcPaymentMethod=(cash,bank)=>{const c=Number(cash||0),b=Number(bank||0);if(c>0&&b>0)return'MIXED';if(b>0)return'BANK_TRANSFER';return'CASH'};
  const changeBank=v=>setForm({...form,bank_amount:v,payment_method:calcPaymentMethod(form.cash_amount,v)});
  const changeCash=v=>setForm({...form,cash_amount:v,payment_method:calcPaymentMethod(v,form.bank_amount)});
+ // FEAT (Trả đủ): billTotal (form.current_bill_amount) is already the
+ // authoritative current-bill remaining — either autofilled from
+ // summary().unpaid_orders (fixed to the same payment_allocations-based
+ // figure the backend overpay guard enforces, commit a051bf4) when a bill
+ // was picked via "Chọn", or the operator's own manually typed figure when
+ // none was. Never a second/stale source, never an extra request here.
+ // cash = billTotal - bank (never negative) so cash+bank lands exactly on
+ // billTotal — matches the existing "Còn nợ = billTotal-paidTotal" mental
+ // model already on this screen; bank is read, never cleared or capped.
+ const payFull=()=>changeCash(String(Math.max(0,billTotal-Number(form.bank_amount||0))));
  const buildPayload=(allocateIds=[])=>({
   ...form,
   amount:paidTotal,
@@ -230,7 +240,7 @@ export default function Payments(){
     <b style={{fontSize:22}}>{money(periodData?.current_debt??summary?.current_debt??0)}</b>
    </div>}
    <div className="grid cols-2" style={{alignItems:'start',marginTop:14}}>
-    <div className="card" style={{boxShadow:'none',border:'1px solid #fee2e2'}}><h3>Tiền của khách</h3><div className="form-grid"><label className="field-label"><span>Tiền mặt</span><MoneyInput placeholder="Ví dụ: 10,000,000" value={form.cash_amount||''} onChange={changeCash}/></label><label className="field-label"><span>Chuyển khoản</span><MoneyInput placeholder="Ví dụ: 5,000,000" value={form.bank_amount||''} onChange={changeBank}/></label></div><div className="payment-total-box"><div>Tổng bill hôm nay</div><b>{money(billTotal)}</b>{form.selected_bill_date_label&&<span>Ngày bill đang thu: <b>{form.selected_bill_date_label}</b></span>}<span>Tiền mặt {money(form.cash_amount)} + chuyển khoản {money(form.bank_amount)} = {money(paidTotal)}</span><span>Còn nợ: {money(remainDebt)}</span></div><div className="actions" style={{marginTop:12}}><button type="button" className="btn" disabled={!form.customer_id||paidTotal<=0} onClick={save}>{editingPayment?'Lưu sửa phiếu thu':'Lưu thu tiền'}</button></div></div>
+    <div className="card" style={{boxShadow:'none',border:'1px solid #fee2e2'}}><h3>Tiền của khách</h3><div className="form-grid"><label className="field-label"><span>Tiền mặt <button type="button" className="btn tiny secondary" style={{marginLeft:6,padding:'1px 8px'}} disabled={billTotal<=0} title="Điền toàn bộ số tiền còn lại của bill vào Tiền mặt" onClick={payFull}>Trả đủ</button></span><MoneyInput placeholder="Ví dụ: 10,000,000" value={form.cash_amount||''} onChange={changeCash}/></label><label className="field-label"><span>Chuyển khoản</span><MoneyInput placeholder="Ví dụ: 5,000,000" value={form.bank_amount||''} onChange={changeBank}/></label></div><div className="payment-total-box"><div>Tổng bill hôm nay</div><b>{money(billTotal)}</b>{form.selected_bill_date_label&&<span>Ngày bill đang thu: <b>{form.selected_bill_date_label}</b></span>}<span>Tiền mặt {money(form.cash_amount)} + chuyển khoản {money(form.bank_amount)} = {money(paidTotal)}</span><span>Còn nợ: {money(remainDebt)}</span></div><div className="actions" style={{marginTop:12}}><button type="button" className="btn" disabled={!form.customer_id||paidTotal<=0} onClick={save}>{editingPayment?'Lưu sửa phiếu thu':'Lưu thu tiền'}</button></div></div>
     <div className="card" style={{boxShadow:'none',border:'1px solid #e5e7eb'}}><h3>Bill còn nợ</h3>{summary?.unpaid_orders?.length?<table className="table"><thead><tr><th>Bill</th><th>Ngày</th><th>Còn nợ</th><th></th></tr></thead><tbody>{summary.unpaid_orders.map(o=><tr key={o.id}><td>{o.order_code}</td><td>{billDateLabel(o)}</td><td><b>{money(o.debt_amount)}</b></td><td><button className="btn secondary" onClick={()=>fillOrder(o)}>Chọn</button></td></tr>)}</tbody></table>:<p className="muted">Khách này chưa có bill còn nợ.</p>}</div>
    </div>
    {form.customer_id&&<div className="card" style={{marginTop:18}}>

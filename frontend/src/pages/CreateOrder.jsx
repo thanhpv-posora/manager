@@ -29,6 +29,23 @@ const solarMonthYearLocal=(dateText)=>{
   const d=dateText?new Date(dateText):new Date();
   return {month:d.getMonth()+1,year:d.getFullYear()};
 };
+// FEAT (same-day bill warning): primary/secondary date text for the
+// confirm dialog, following the customer's own billing calendar — same
+// solarToLunar()/lunar-text convention every other calendar display in this
+// app uses (utils/lunarDate.js), never a second conversion implementation.
+// SOLAR customer: solar primary, lunar (ÂL) secondary in parens.
+// LUNAR customer: lunar (ÂL) primary, solar (DL) secondary in parens.
+const sameDayBillDateLabel=(solarDateIso,calendarType,lunarDateText)=>{
+  const m=String(solarDateIso||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const solarLabel=m?`${m[3]}/${m[2]}/${m[1]}`:String(solarDateIso||'');
+  if(String(calendarType).toUpperCase()==='LUNAR'){
+    const lunarLabel=lunarDateText||formatLunarDate(solarDateIso).replace(/^ÂL\s*/,'');
+    return `${lunarLabel} ÂL\n(${solarLabel} DL)`;
+  }
+  const l=solarToLunar(solarDateIso);
+  const lunarLabel=`${String(l.day).padStart(2,'0')}/${String(l.month).padStart(2,'0')}/${l.year}`;
+  return `${solarLabel}\n(${lunarLabel} ÂL)`;
+};
 
 
 export default function CreateOrder(){
@@ -949,6 +966,28 @@ export default function CreateOrder(){
     if(!checkedDate.ok)return;
     if(checkedDate.solarDate&&checkedDate.solarDate!==orderDate)setOrderDate(checkedDate.solarDate);
     if(!selected.length)return showWarning('Nhập số lượng ít nhất 1 mặt hàng');
+
+    // FEAT (same-day bill warning): one bounded backend check. Advisory
+    // only — never blocks (a failed check falls through to normal create
+    // rather than trap the user; two sessions racing this same check is
+    // expected/allowed, see OrderAgent.existingForDate()). window.appConfirm
+    // blocks this same save() call until answered, so "Vẫn tạo bill" simply
+    // lets execution continue straight into the one POST /orders below —
+    // no second create path, no re-submit, no extra dialog state.
+    {
+      const checkDate=checkedDate.solarDate||orderDate;
+      try{
+        const dup=(await api.get('/orders/existing-for-date',{params:{customer_id:cid,date:checkDate}})).data;
+        if(dup?.count>0){
+          const dateLabel=sameDayBillDateLabel(checkDate,billCalendarType,billLunarDateText);
+          const ok=await window.appConfirm(
+            `Khách hàng này đã có ${dup.count} bill trong ngày ${dateLabel}.\n\nBạn có muốn tiếp tục tạo thêm bill mới không?`,
+            {title:'Đã có bill trong ngày',confirmText:'Vẫn tạo bill',cancelText:'Hủy',variant:'warning'}
+          );
+          if(!ok)return;
+        }
+      }catch(e){ /* advisory only — never block bill creation on a failed check */ }
+    }
 
     // Non-blocking nudge only — row highlight + inline warning already show live in
     // POSProductTableAgent as the cashier types. Save is NEVER blocked here;

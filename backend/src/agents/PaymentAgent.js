@@ -342,6 +342,131 @@ class PaymentAgent {
     return pay;
   }
 
+  // FEAT (overpay guard, shared by create() AND update()): the SINGLE
+  // decision point for "how much of `amount` goes where" — never duplicated
+  // per caller. When orderId is set, it is the "current bill" and is paid
+  // first from its own authoritative remaining; any excess may only reach
+  // OTHER real outstanding bills the caller explicitly chose via
+  // allocateOrderIds (never auto-date-order, never unapplied credit) and
+  // only after confirming that excess is fully coverable by real debt —
+  // otherwise throws the same PAYMENT_EXCEEDS_AVAILABLE_DEBT /
+  // PAYMENT_ALLOCATION_CHOICE_REQUIRED business errors either caller
+  // surfaces identically. When orderId is not set (no bill pre-selected),
+  // behavior is unchanged from before the overpay guard existed —
+  // allocateCustomerOpenBillsByDate()'s auto-date-order allocation, with any
+  // leftover reported as unusedAmount for the caller's own existing
+  // unapplied-credit handling.
+  //
+  // IMPORTANT for update(): callers must call this AFTER reverting the
+  // payment's own previous effects (revertPaymentEffects()) — otherwise this
+  // payment's own prior allocations would still count against the bills it
+  // used to occupy, artificially shrinking their authoritative remaining and
+  // producing a false BLOCK/CHOICE-required result during an edit.
+  //
+  // Returns { orderAllocations, oldDebtAllocations, billApplied,
+  // remainingPaid, unusedAmount, autoAllocationRawNote } — DB writes
+  // (payments row, payment_allocations, debt_transactions,
+  // payment_unapplied_credits) stay in each caller, using its own note
+  // phrasing, so create()/update() text stays exactly as before.
+  async _validateAndApplyPaymentAllocation(conn, { customerId, orderId, amount, cashAmount, bankAmount, allocateOrderIds, currentOrderCode, currentOrderDate }) {
+    let orderAllocations = [];
+    let oldDebtAllocations = [];
+    let billApplied = 0;
+    let remainingPaid = amount;
+    let unusedAmount = 0;
+    let autoAllocationRawNote = '';
+
+    if (orderId) {
+      const currentBillRemaining = await this._authoritativeOrderRemaining(conn, orderId);
+      let chosenIds = [];
+      if (amount > currentBillRemaining + 0.01) {
+        const excess = amount - currentBillRemaining;
+        const otherBills = await this._authoritativeOtherOpenBills(conn, customerId, orderId);
+        const totalOtherEligible = otherBills.reduce((s, o) => s + Number(o.remaining || 0), 0);
+        if (totalOtherEligible <= 0) {
+          throw Object.assign(new Error(
+            'Số tiền thanh toán lớn hơn số tiền còn lại của bill.\nKhách hàng không còn bill nợ khác để phân bổ số tiền dư.'
+          ), {
+            status: 400, code: 'PAYMENT_EXCEEDS_AVAILABLE_DEBT',
+            details: { current_bill_remaining: currentBillRemaining, entered_amount: amount, surplus: excess }
+          });
+        }
+        if (excess > totalOtherEligible + 0.01) {
+          const totalAvailable = currentBillRemaining + totalOtherEligible;
+          throw Object.assign(new Error(
+            `Tổng công nợ có thể thanh toán: ${totalAvailable.toLocaleString('en-US')}\nTiền nhập: ${amount.toLocaleString('en-US')}\nVượt quá: ${(excess - totalOtherEligible).toLocaleString('en-US')}`
+          ), {
+            status: 400, code: 'PAYMENT_EXCEEDS_AVAILABLE_DEBT',
+            details: { total_available_debt: totalAvailable, entered_amount: amount, over_amount: excess - totalOtherEligible, current_bill_remaining: currentBillRemaining, other_eligible_total: totalOtherEligible, eligible_bills: otherBills }
+          });
+        }
+        chosenIds = Array.isArray(allocateOrderIds) ? allocateOrderIds.map(Number).filter(Boolean) : [];
+        if (!chosenIds.length) {
+          throw Object.assign(new Error(
+            'Có tiền dư sau khi thanh toán bill hiện tại. Vui lòng chọn bill khác để phân bổ số tiền dư.'
+          ), {
+            status: 400, code: 'PAYMENT_ALLOCATION_CHOICE_REQUIRED',
+            details: { current_bill_remaining: currentBillRemaining, entered_amount: amount, surplus: excess, eligible_bills: otherBills }
+          });
+        }
+        const eligibleById = new Map(otherBills.map(o => [o.id, o]));
+        for (const id of chosenIds) {
+          if (!eligibleById.has(id)) {
+            throw Object.assign(new Error('Bill được chọn để phân bổ không hợp lệ hoặc đã thay đổi.'), { status: 400, code: 'PAYMENT_ALLOCATION_CHOICE_REQUIRED' });
+          }
+        }
+      }
+
+      const rawAllocations = [];
+      const appliedToCurrent = await this._applyPaymentToOrderAuthoritative(conn, orderId, amount);
+      if (appliedToCurrent > 0) {
+        rawAllocations.push({ order_id: Number(orderId), order_code: currentOrderCode, order_date: currentOrderDate, applied_amount: appliedToCurrent });
+      }
+      let excessLeft = amount - appliedToCurrent;
+      if (excessLeft > 0.01 && chosenIds.length) {
+        const otherBills = await this._authoritativeOtherOpenBills(conn, customerId, orderId);
+        const eligibleById = new Map(otherBills.map(o => [o.id, o]));
+        for (const id of chosenIds) {
+          if (excessLeft <= 0.01) break;
+          const bill = eligibleById.get(id);
+          if (!bill) continue;
+          const applied = await this._applyPaymentToOrderAuthoritative(conn, id, excessLeft);
+          if (applied > 0) {
+            rawAllocations.push({ order_id: id, order_code: bill.order_code, order_date: bill.order_date, applied_amount: applied });
+            excessLeft -= applied;
+          }
+        }
+      }
+      if (excessLeft > 0.01) {
+        // Defensive — should be unreachable given the validation above
+        // already confirmed chosenIds cover the excess; if a chosen bill's
+        // remaining shrank between validation and here (a genuine
+        // concurrent payment on the same bill), fail closed instead of
+        // silently dropping the leftover as unapplied credit.
+        throw Object.assign(new Error('Không thể phân bổ hết số tiền dư vào các bill đã chọn. Vui lòng thử lại.'), { status: 400, code: 'PAYMENT_ALLOCATION_CHOICE_REQUIRED' });
+      }
+
+      orderAllocations = this.splitAllocationsByTender(rawAllocations, cashAmount, bankAmount);
+      oldDebtAllocations = orderAllocations.filter(a => Number(a.order_id) !== Number(orderId));
+      billApplied = appliedToCurrent;
+      remainingPaid = 0;
+      unusedAmount = 0;
+    } else {
+      // No pre-selected bill — unchanged auto-allocation by shipping date
+      // across every open bill (out of scope for the overpay guard, which
+      // only applies once a specific "current bill" is selected).
+      const allocResult = await this.allocateCustomerOpenBillsByDate(conn, customerId, remainingPaid);
+      orderAllocations = this.splitAllocationsByTender(allocResult.allocations, cashAmount, bankAmount);
+      oldDebtAllocations = orderAllocations;
+      billApplied = 0;
+      remainingPaid = allocResult.remaining;
+      autoAllocationRawNote = allocResult.note || '';
+      unusedAmount = remainingPaid;
+    }
+
+    return { orderAllocations, oldDebtAllocations, billApplied, remainingPaid, unusedAmount, autoAllocationRawNote };
+  }
+
   // GO-LIVE F7: allocate() (the pre-payment_allocations, note-string-only
   // helper) was removed here — its sole caller in create() now goes through
   // allocateCustomerOpenBillsByDate() unconditionally (see F7 comment at
@@ -868,114 +993,22 @@ class PaymentAgent {
         note = note ? `${note} / Góp nợ/ngày đã thu: ${installmentPaid}` : `Góp nợ/ngày đã thu: ${installmentPaid}`;
       }
 
-      let billApplied=0;
-      let remainingPaid=amount;
-      let orderAllocations=[];
-      let oldDebtAllocations=[];
-      let unusedAmount=0;
-      if (data.order_id) {
-        // FEAT (overpay guard): a specific "current bill" is selected — it
-        // must be paid first, and any excess beyond its own authoritative
-        // remaining may ONLY go to other real outstanding bills the operator
-        // explicitly chose (never silently auto-allocated, never dropped as
-        // unapplied credit). Reject the whole payment, before writing
-        // anything, if that excess can't be fully covered by real debt.
-        const currentBillRemaining = await this._authoritativeOrderRemaining(conn, data.order_id);
-        let chosenIds = [];
-        if (amount > currentBillRemaining + 0.01) {
-          const excess = amount - currentBillRemaining;
-          const otherBills = await this._authoritativeOtherOpenBills(conn, data.customer_id, data.order_id);
-          const totalOtherEligible = otherBills.reduce((s,o)=>s+Number(o.remaining||0),0);
-          if (totalOtherEligible <= 0) {
-            throw Object.assign(new Error(
-              'Số tiền thanh toán lớn hơn số tiền còn lại của bill.\nKhách hàng không còn bill nợ khác để phân bổ số tiền dư.'
-            ), {
-              status: 400, code: 'PAYMENT_EXCEEDS_AVAILABLE_DEBT',
-              details: { current_bill_remaining: currentBillRemaining, entered_amount: amount, surplus: excess }
-            });
-          }
-          if (excess > totalOtherEligible + 0.01) {
-            const totalAvailable = currentBillRemaining + totalOtherEligible;
-            throw Object.assign(new Error(
-              `Tổng công nợ có thể thanh toán: ${totalAvailable.toLocaleString('en-US')}\nTiền nhập: ${amount.toLocaleString('en-US')}\nVượt quá: ${(excess-totalOtherEligible).toLocaleString('en-US')}`
-            ), {
-              status: 400, code: 'PAYMENT_EXCEEDS_AVAILABLE_DEBT',
-              details: { total_available_debt: totalAvailable, entered_amount: amount, over_amount: excess-totalOtherEligible, current_bill_remaining: currentBillRemaining, other_eligible_total: totalOtherEligible, eligible_bills: otherBills }
-            });
-          }
-          chosenIds = Array.isArray(data.allocate_order_ids) ? data.allocate_order_ids.map(Number).filter(Boolean) : [];
-          if (!chosenIds.length) {
-            throw Object.assign(new Error(
-              'Có tiền dư sau khi thanh toán bill hiện tại. Vui lòng chọn bill khác để phân bổ số tiền dư.'
-            ), {
-              status: 400, code: 'PAYMENT_ALLOCATION_CHOICE_REQUIRED',
-              details: { current_bill_remaining: currentBillRemaining, entered_amount: amount, surplus: excess, eligible_bills: otherBills }
-            });
-          }
-          const eligibleById = new Map(otherBills.map(o=>[o.id,o]));
-          for (const id of chosenIds) {
-            if (!eligibleById.has(id)) {
-              throw Object.assign(new Error('Bill được chọn để phân bổ không hợp lệ hoặc đã thay đổi.'), { status: 400, code: 'PAYMENT_ALLOCATION_CHOICE_REQUIRED' });
-            }
-          }
-        }
-
-        const rawAllocations = [];
-        const appliedToCurrent = await this._applyPaymentToOrderAuthoritative(conn, data.order_id, amount);
-        if (appliedToCurrent > 0) {
-          rawAllocations.push({ order_id: Number(data.order_id), order_code: currentOrderCode, order_date: currentOrderDate, applied_amount: appliedToCurrent });
-        }
-        let excessLeft = amount - appliedToCurrent;
-        if (excessLeft > 0.01 && chosenIds.length) {
-          const otherBills = await this._authoritativeOtherOpenBills(conn, data.customer_id, data.order_id);
-          const eligibleById = new Map(otherBills.map(o=>[o.id,o]));
-          for (const id of chosenIds) {
-            if (excessLeft <= 0.01) break;
-            const bill = eligibleById.get(id);
-            if (!bill) continue;
-            const applied = await this._applyPaymentToOrderAuthoritative(conn, id, excessLeft);
-            if (applied > 0) {
-              rawAllocations.push({ order_id: id, order_code: bill.order_code, order_date: bill.order_date, applied_amount: applied });
-              excessLeft -= applied;
-            }
-          }
-        }
-        if (excessLeft > 0.01) {
-          // Defensive — should be unreachable given the validation above
-          // already confirmed chosenIds cover the excess; if a chosen bill's
-          // remaining shrank between validation and here (a genuine
-          // concurrent payment on the same bill), fail closed instead of
-          // silently dropping the leftover as unapplied credit.
-          throw Object.assign(new Error('Không thể phân bổ hết số tiền dư vào các bill đã chọn. Vui lòng thử lại.'), { status: 400, code: 'PAYMENT_ALLOCATION_CHOICE_REQUIRED' });
-        }
-
-        orderAllocations = this.splitAllocationsByTender(rawAllocations, cashAmount, bankAmount);
-        oldDebtAllocations = orderAllocations.filter(a=>Number(a.order_id)!==Number(data.order_id));
-        billApplied = appliedToCurrent;
-        remainingPaid = 0;
-        unusedAmount = 0;
-      } else {
-        // GO-LIVE F7: no pre-selected bill — unchanged auto-allocation by
-        // shipping date across every open bill (out of scope for the overpay
-        // guard above, which only applies once a specific "current bill" is
-        // selected — see PaymentAgent audit note for the overpay-guard task).
-        // - clear the remaining debt of BILL1 first
-        // - any remaining money must flow into BILL2, BILL3, ...
-        // - every receiving bill gets its own payment_allocations row so printing the bill
-        //   shows the amount actually applied to that bill.
-        const allocResult=await this.allocateCustomerOpenBillsByDate(conn,data.customer_id,remainingPaid);
-        orderAllocations=this.splitAllocationsByTender(allocResult.allocations, cashAmount, bankAmount);
-        oldDebtAllocations = orderAllocations;
-        billApplied = 0;
-        remainingPaid=allocResult.remaining;
-        if(allocResult.note){
-          note = note ? `${note} / Tự động phân bổ theo ngày xuất hàng: ${allocResult.note}` : `Tự động phân bổ theo ngày xuất hàng: ${allocResult.note}`;
-        }
-
-        unusedAmount=remainingPaid;
-        if(unusedAmount>0){
-          note = note ? `${note} / Tiền dư chưa phân bổ: ${unusedAmount}` : `Tiền dư chưa phân bổ: ${unusedAmount}`;
-        }
+      // FEAT (overpay guard, shared with update() via
+      // _validateAndApplyPaymentAllocation): a specific "current bill" is
+      // paid first from its own authoritative remaining; any excess may
+      // only reach other real outstanding bills the operator explicitly
+      // chose. Throws before any write if that excess can't be fully,
+      // explicitly accounted for.
+      const allocResult = await this._validateAndApplyPaymentAllocation(conn, {
+        customerId: data.customer_id, orderId: data.order_id || null, amount, cashAmount, bankAmount,
+        allocateOrderIds: data.allocate_order_ids, currentOrderCode, currentOrderDate
+      });
+      const { orderAllocations, oldDebtAllocations, billApplied, unusedAmount } = allocResult;
+      if (allocResult.autoAllocationRawNote) {
+        note = note ? `${note} / Tự động phân bổ theo ngày xuất hàng: ${allocResult.autoAllocationRawNote}` : `Tự động phân bổ theo ngày xuất hàng: ${allocResult.autoAllocationRawNote}`;
+      }
+      if (unusedAmount > 0) {
+        note = note ? `${note} / Tiền dư chưa phân bổ: ${unusedAmount}` : `Tiền dư chưa phân bổ: ${unusedAmount}`;
       }
 
       const method=(cashAmount>0 && bankAmount>0) ? 'MIXED' : (cashAmount>0?'CASH':(bankAmount>0?'BANK_TRANSFER':(data.payment_method||'CASH')));
@@ -1284,11 +1317,24 @@ class PaymentAgent {
       const paymentDate = String(data.payment_date || old.payment_date || new Date().toISOString().slice(0,10)).slice(0,10);
       let note = data.note || old.note || '';
 
-      const allocResult = await this.allocateCustomerOpenBillsByDate(conn, customerId, amount);
-      const split = this.splitAllocationsByTender(allocResult.allocations, cashAmount, bankAmount);
-      if (allocResult.note) note = note ? `${note} / Sửa phiếu thu, phân bổ lại: ${allocResult.note}` : `Sửa phiếu thu, phân bổ lại: ${allocResult.note}`;
-
-      let unusedAmount = Number(allocResult.remaining || 0);
+      // FEAT (overpay guard parity): orderId's own row was already reverted
+      // by revertPaymentEffects() above — its authoritative remaining here
+      // reflects "as if this payment never existed", never artificially
+      // shrunk by the payment being edited. Same shared validation/
+      // allocation decision create() uses — see
+      // _validateAndApplyPaymentAllocation for the business rules.
+      let currentOrderCode = null, currentOrderDate = null;
+      if (orderId) {
+        const [[o]] = await conn.query(`SELECT order_code, order_date FROM orders WHERE id=?`, [orderId]);
+        if (o) { currentOrderCode = o.order_code; currentOrderDate = o.order_date; }
+      }
+      const allocResult = await this._validateAndApplyPaymentAllocation(conn, {
+        customerId, orderId, amount, cashAmount, bankAmount,
+        allocateOrderIds: data.allocate_order_ids, currentOrderCode, currentOrderDate
+      });
+      const split = allocResult.orderAllocations;
+      const unusedAmount = allocResult.unusedAmount;
+      if (allocResult.autoAllocationRawNote) note = note ? `${note} / Sửa phiếu thu, phân bổ lại: ${allocResult.autoAllocationRawNote}` : `Sửa phiếu thu, phân bổ lại: ${allocResult.autoAllocationRawNote}`;
       if (unusedAmount > 0) note = note ? `${note} / Tiền dư chưa phân bổ: ${unusedAmount}` : `Tiền dư chưa phân bổ: ${unusedAmount}`;
 
       await conn.query(
@@ -1315,14 +1361,28 @@ class PaymentAgent {
         await this.insertUnappliedCredit(conn, paymentId, customerId, unusedAmount, Math.min(unusedAmount, unusedCash), Math.max(0, unusedAmount - Math.min(unusedAmount, unusedCash)), `Tiền dư sau khi sửa phiếu thu ${old.payment_code || ''}`, user?.id || null);
       }
 
-      await conn.query(
-        `INSERT INTO debt_transactions(customer_id,order_id,payment_id,transaction_date,type,amount,note,created_by)
-         VALUES(?,?,?,?, 'PAYMENT', ?, ?, ?)`,
-        [customerId, orderId, paymentId, paymentDate, amount, note || `Sửa phiếu thu ${old.payment_code || ''}`, user?.id || null]
-      );
+      // GATE 3 PARITY FIX: this used to post ONE lump debt_transactions row
+      // for the FULL amount against orderId regardless of how `split`
+      // actually divided the money across orders — the exact same
+      // ledger-misattribution defect create() already had fixed (see Gate 3
+      // comment in create()). One row per real allocation instead, so a
+      // later payment against any bill this edit touched re-derives its
+      // debt from a complete ledger, not a partially-blank one.
+      const paymentLedgerRows = (split || [])
+        .filter(a => Number(a.applied_amount || 0) > 0)
+        .map(a => ({ order_id: a.order_id, amount: Number(a.applied_amount || 0) }));
+      if (unusedAmount > 0) paymentLedgerRows.push({ order_id: null, amount: unusedAmount });
+      if (!paymentLedgerRows.length) paymentLedgerRows.push({ order_id: orderId, amount });
+      for (const row of paymentLedgerRows) {
+        await conn.query(
+          `INSERT INTO debt_transactions(customer_id,order_id,payment_id,transaction_date,type,amount,note,created_by)
+           VALUES(?,?,?,?, 'PAYMENT', ?, ?, ?)`,
+          [customerId, row.order_id, paymentId, paymentDate, row.amount, note || `Sửa phiếu thu ${old.payment_code || ''}`, user?.id || null]
+        );
+      }
 
       await conn.commit();
-      return { message:'Đã sửa phiếu thu và phân bổ lại công nợ', payment_id:Number(paymentId), amount, cash_amount:cashAmount, bank_amount:bankAmount, unused_amount:unusedAmount, allocations:split };
+      return { message:'Đã sửa phiếu thu và phân bổ lại công nợ', payment_id:Number(paymentId), amount, cash_amount:cashAmount, bank_amount:bankAmount, unused_amount:unusedAmount, allocations:split, old_debt_allocations: allocResult.oldDebtAllocations || [] };
     } catch(e) { await conn.rollback(); throw e; } finally { conn.release(); }
   }
 

@@ -149,6 +149,20 @@ export default function Payments(){
  // validation error (code PAYMENT_EXCEEDS_AVAILABLE_DEBT /
  // PAYMENT_ALLOCATION_CHOICE_REQUIRED) opens this dialog instead of the
  // generic alert; any other error keeps the previous alert-based handling.
+ //
+ // BUG FIX: paymentIdemKeyRef is deliberately preserved across a THROWN
+ // create() (see its own comment) so a genuine network-level retry of the
+ // exact same request dedupes correctly. But these two codes mean the user
+ // is about to resubmit a MATERIALLY DIFFERENT request (a chosen
+ // allocate_order_ids, or a corrected amount) — reusing the same key made
+ // PaymentAgent.create() short-circuit on the idempotency cache
+ // (getIdempotentResult() sees the prior FAILED row and throws
+ // PAYMENT_PREVIOUS_FAILED with that attempt's stale cached message,
+ // *never re-reading the new allocate_order_ids at all*). Confirmed live:
+ // resubmitting with the correct allocate_order_ids under the same key
+ // reproduced exactly this — the checkbox selection was correct and sent,
+ // the backend just never looked at it. Clearing the ref here treats the
+ // corrected resubmission as the new, distinct operation it actually is.
  const attemptSave=async(allocateIds=[])=>{
   try{
    await doSave(allocateIds);
@@ -157,10 +171,12 @@ export default function Payments(){
    const message=e.response?.data?.message||e.message||'Không lưu được phiếu thu.';
    const details=e.response?.data?.details||null;
    if(code==='PAYMENT_EXCEEDS_AVAILABLE_DEBT'){
+    paymentIdemKeyRef.current=null;
     setOverpayDialog({open:true,mode:'BLOCK',message,details,chosenIds:[]});
     return;
    }
    if(code==='PAYMENT_ALLOCATION_CHOICE_REQUIRED'){
+    paymentIdemKeyRef.current=null;
     setOverpayDialog({open:true,mode:'CHOICE',message,details,chosenIds:overpayDialog.chosenIds||[]});
     return;
    }

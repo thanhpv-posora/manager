@@ -86,9 +86,24 @@ class PaymentAgent {
     const [debtRows]=await pool.query(
       `SELECT COALESCE(SUM(CASE WHEN type IN ('SALE','ADJUSTMENT_INCREASE') THEN amount WHEN type IN ('PAYMENT','ADJUSTMENT_DECREASE') THEN -amount ELSE 0 END),0) current_debt
        FROM debt_transactions WHERE customer_id=?`, [customerId]);
+    // Overpay-guard consistency: debt_amount here must be the same
+    // authoritative GREATEST(0,total-SUM(payment_allocations)) figure
+    // create()'s overpay guard enforces (_authoritativeOrderRemaining) —
+    // never the stored orders.debt_amount column, which can go stale (see
+    // commit 1d9ed72). Otherwise this picker could show a bill as owing an
+    // amount the backend would then reject as already settled, or vice
+    // versa. Field name kept as debt_amount so no other consumer of this
+    // response shape needs to change.
     const [unpaid]=await pool.query(
-      `SELECT id,order_code,order_date,total_amount,paid_amount,debt_amount,payment_status,calendar_type,lunar_date_text,current_bill_amount,installment_amount,monthly_installment_id FROM orders
-       WHERE customer_id=? AND COALESCE(status,'CONFIRMED')<>'CANCELLED' AND debt_amount>0 ORDER BY order_date ASC,id ASC`, [customerId]);
+      `SELECT o.id,o.order_code,o.order_date,o.total_amount,
+              COALESCE(pa.allocated,0) paid_amount,
+              GREATEST(0, o.total_amount-COALESCE(pa.allocated,0)) debt_amount,
+              o.payment_status,o.calendar_type,o.lunar_date_text,o.current_bill_amount,o.installment_amount,o.monthly_installment_id
+       FROM orders o
+       LEFT JOIN (SELECT order_id, SUM(amount) allocated FROM payment_allocations GROUP BY order_id) pa ON pa.order_id=o.id
+       WHERE o.customer_id=? AND COALESCE(o.status,'CONFIRMED')<>'CANCELLED'
+       HAVING debt_amount>0
+       ORDER BY o.order_date ASC,o.id ASC`, [customerId]);
     const [split]=await pool.query(`SELECT payment_method,COALESCE(SUM(amount),0) total FROM payments WHERE customer_id=? GROUP BY payment_method`, [customerId]);
     const [cashBank]=await pool.query(`SELECT COALESCE(SUM(cash_amount),0) cash_total,COALESCE(SUM(bank_amount),0) bank_total,COALESCE(SUM(current_bill_amount),0) current_bill_total,COALESCE(SUM(installment_amount),0) installment_total FROM payments WHERE customer_id=?`, [customerId]);
     const [recent]=await pool.query(`SELECT p.*,o.order_code FROM payments p LEFT JOIN orders o ON o.id=p.order_id WHERE p.customer_id=? ORDER BY p.payment_date DESC,p.id DESC LIMIT 20`, [customerId]);
@@ -264,6 +279,66 @@ class PaymentAgent {
     const debt=Math.max(0, debtBefore-pay);
     const status=debt<=0?'PAID':newPaid>0?'PARTIAL':'UNPAID';
     await conn.query(`UPDATE orders SET paid_amount=?,debt_amount=?,payment_status=? WHERE id=?`, [newPaid,debt,status,orderId]);
+    return pay;
+  }
+
+  // FEAT (overpay guard): authoritative "how much of this order is still
+  // owed right now" — GREATEST(0, total_amount - SUM(payment_allocations)).
+  // Deliberately NOT applyPaymentToOrder()'s debtBefore=Math.max(stored
+  // debt_amount, _ledgerDebtForOrder()) — that ledger floor can itself be
+  // stale (verified live: a pre-Gate-3-ledger-fix payment split across bills
+  // wrote one lump debt_transactions row against a single order, leaving
+  // every OTHER order it partially settled with zero ledger rows — same root
+  // cause ReportAgent.customerBillingMatrix() hit and fixed, commit 1d9ed72).
+  // payment_allocations is the one figure every payment code path — old and
+  // new — always wrote correctly per real split, so it's the only safe basis
+  // for a hard block/allow decision on real money.
+  async _authoritativeOrderRemaining(conn, orderId) {
+    const [[row]] = await conn.query(
+      `SELECT o.total_amount total, COALESCE(SUM(pa.amount),0) allocated
+       FROM orders o LEFT JOIN payment_allocations pa ON pa.order_id=o.id
+       WHERE o.id=? GROUP BY o.id FOR UPDATE`,
+      [orderId]
+    );
+    if (!row) return 0;
+    return Math.max(0, Number(row.total || 0) - Number(row.allocated || 0));
+  }
+
+  // Every OTHER valid (non-cancelled) bill this customer still owes on, with
+  // the same authoritative remaining — excludes excludeOrderId (the "current
+  // bill" the caller already handles separately). Used both to validate the
+  // overpay guard and to hand the frontend's excess-allocation dialog its
+  // list of real eligible targets.
+  async _authoritativeOtherOpenBills(conn, customerId, excludeOrderId) {
+    const [rows] = await conn.query(
+      `SELECT o.id, o.order_code, o.order_date, o.calendar_type, o.lunar_date_text,
+              GREATEST(0, o.total_amount - COALESCE(pa.allocated,0)) remaining
+       FROM orders o
+       LEFT JOIN (SELECT order_id, SUM(amount) allocated FROM payment_allocations GROUP BY order_id) pa
+         ON pa.order_id=o.id
+       WHERE o.customer_id=? AND o.status<>'CANCELLED' AND o.id<>?
+       HAVING remaining>0
+       ORDER BY o.order_date ASC, o.id ASC
+       FOR UPDATE`,
+      [customerId, excludeOrderId || 0]
+    );
+    return rows;
+  }
+
+  // Applies `amount` to a single order, capped at that order's own
+  // authoritative remaining (never more, never resurrecting the ledger-floor
+  // bug applyPaymentToOrder() carries) — writes orders.paid_amount/
+  // debt_amount/payment_status directly from that same authoritative figure.
+  async _applyPaymentToOrderAuthoritative(conn, orderId, amount) {
+    const [[order]] = await conn.query(`SELECT total_amount,paid_amount FROM orders WHERE id=? FOR UPDATE`, [orderId]);
+    if (!order) return 0;
+    const remainingBefore = await this._authoritativeOrderRemaining(conn, orderId);
+    const pay = Math.min(Number(amount || 0), remainingBefore);
+    if (pay <= 0) return 0;
+    const newPaid = Number(order.paid_amount || 0) + pay;
+    const newDebt = Math.max(0, remainingBefore - pay);
+    const status = newDebt <= 0 ? 'PAID' : (newPaid > 0 ? 'PARTIAL' : 'UNPAID');
+    await conn.query(`UPDATE orders SET paid_amount=?,debt_amount=?,payment_status=? WHERE id=?`, [newPaid, newDebt, status, orderId]);
     return pay;
   }
 
@@ -717,13 +792,15 @@ class PaymentAgent {
       let paymentLunarDateText=data.payment_lunar_date_text||data.lunar_date_text||'';
       let paidBefore=0;
       let orderDebtBefore=0;
+      let currentOrderCode=null;
+      let currentOrderDate=null;
 
       // V6.51.11 final critical fix:
       // Backend must derive installment fields from the order when the UI sends 0.
       // This fixes Thu tiền screen and POS/statistics even if frontend payload is incomplete.
       if(data.order_id){
         const [orders]=await conn.query(
-          `SELECT id,total_amount,paid_amount,debt_amount,current_bill_amount,installment_amount,monthly_installment_id,calendar_type,lunar_date_text
+          `SELECT id,order_code,order_date,total_amount,paid_amount,debt_amount,current_bill_amount,installment_amount,monthly_installment_id,calendar_type,lunar_date_text
            FROM orders WHERE id=? FOR UPDATE`,
           [data.order_id]
         );
@@ -731,6 +808,8 @@ class PaymentAgent {
           const order=orders[0];
           paidBefore=Number(order.paid_amount||0);
           orderDebtBefore=Number(order.debt_amount||0);
+          currentOrderCode=order.order_code;
+          currentOrderDate=order.order_date;
           const orderInstallment=Number(order.installment_amount||0);
           const orderCurrentBill=Number(order.current_bill_amount||0)>0
             ? Number(order.current_bill_amount||0)
@@ -794,36 +873,100 @@ class PaymentAgent {
       let orderAllocations=[];
       let oldDebtAllocations=[];
       let unusedAmount=0;
-      {
-        // V65.41: Do not depend on manual checkbox selection anymore.
-        // When the customer has open bills, the payment must be allocated automatically
-        // from the oldest shipping/order date to the newest. This means:
+      if (data.order_id) {
+        // FEAT (overpay guard): a specific "current bill" is selected — it
+        // must be paid first, and any excess beyond its own authoritative
+        // remaining may ONLY go to other real outstanding bills the operator
+        // explicitly chose (never silently auto-allocated, never dropped as
+        // unapplied credit). Reject the whole payment, before writing
+        // anything, if that excess can't be fully covered by real debt.
+        const currentBillRemaining = await this._authoritativeOrderRemaining(conn, data.order_id);
+        let chosenIds = [];
+        if (amount > currentBillRemaining + 0.01) {
+          const excess = amount - currentBillRemaining;
+          const otherBills = await this._authoritativeOtherOpenBills(conn, data.customer_id, data.order_id);
+          const totalOtherEligible = otherBills.reduce((s,o)=>s+Number(o.remaining||0),0);
+          if (totalOtherEligible <= 0) {
+            throw Object.assign(new Error(
+              'Số tiền thanh toán lớn hơn số tiền còn lại của bill.\nKhách hàng không còn bill nợ khác để phân bổ số tiền dư.'
+            ), {
+              status: 400, code: 'PAYMENT_EXCEEDS_AVAILABLE_DEBT',
+              details: { current_bill_remaining: currentBillRemaining, entered_amount: amount, surplus: excess }
+            });
+          }
+          if (excess > totalOtherEligible + 0.01) {
+            const totalAvailable = currentBillRemaining + totalOtherEligible;
+            throw Object.assign(new Error(
+              `Tổng công nợ có thể thanh toán: ${totalAvailable.toLocaleString('en-US')}\nTiền nhập: ${amount.toLocaleString('en-US')}\nVượt quá: ${(excess-totalOtherEligible).toLocaleString('en-US')}`
+            ), {
+              status: 400, code: 'PAYMENT_EXCEEDS_AVAILABLE_DEBT',
+              details: { total_available_debt: totalAvailable, entered_amount: amount, over_amount: excess-totalOtherEligible, current_bill_remaining: currentBillRemaining, other_eligible_total: totalOtherEligible, eligible_bills: otherBills }
+            });
+          }
+          chosenIds = Array.isArray(data.allocate_order_ids) ? data.allocate_order_ids.map(Number).filter(Boolean) : [];
+          if (!chosenIds.length) {
+            throw Object.assign(new Error(
+              'Có tiền dư sau khi thanh toán bill hiện tại. Vui lòng chọn bill khác để phân bổ số tiền dư.'
+            ), {
+              status: 400, code: 'PAYMENT_ALLOCATION_CHOICE_REQUIRED',
+              details: { current_bill_remaining: currentBillRemaining, entered_amount: amount, surplus: excess, eligible_bills: otherBills }
+            });
+          }
+          const eligibleById = new Map(otherBills.map(o=>[o.id,o]));
+          for (const id of chosenIds) {
+            if (!eligibleById.has(id)) {
+              throw Object.assign(new Error('Bill được chọn để phân bổ không hợp lệ hoặc đã thay đổi.'), { status: 400, code: 'PAYMENT_ALLOCATION_CHOICE_REQUIRED' });
+            }
+          }
+        }
+
+        const rawAllocations = [];
+        const appliedToCurrent = await this._applyPaymentToOrderAuthoritative(conn, data.order_id, amount);
+        if (appliedToCurrent > 0) {
+          rawAllocations.push({ order_id: Number(data.order_id), order_code: currentOrderCode, order_date: currentOrderDate, applied_amount: appliedToCurrent });
+        }
+        let excessLeft = amount - appliedToCurrent;
+        if (excessLeft > 0.01 && chosenIds.length) {
+          const otherBills = await this._authoritativeOtherOpenBills(conn, data.customer_id, data.order_id);
+          const eligibleById = new Map(otherBills.map(o=>[o.id,o]));
+          for (const id of chosenIds) {
+            if (excessLeft <= 0.01) break;
+            const bill = eligibleById.get(id);
+            if (!bill) continue;
+            const applied = await this._applyPaymentToOrderAuthoritative(conn, id, excessLeft);
+            if (applied > 0) {
+              rawAllocations.push({ order_id: id, order_code: bill.order_code, order_date: bill.order_date, applied_amount: applied });
+              excessLeft -= applied;
+            }
+          }
+        }
+        if (excessLeft > 0.01) {
+          // Defensive — should be unreachable given the validation above
+          // already confirmed chosenIds cover the excess; if a chosen bill's
+          // remaining shrank between validation and here (a genuine
+          // concurrent payment on the same bill), fail closed instead of
+          // silently dropping the leftover as unapplied credit.
+          throw Object.assign(new Error('Không thể phân bổ hết số tiền dư vào các bill đã chọn. Vui lòng thử lại.'), { status: 400, code: 'PAYMENT_ALLOCATION_CHOICE_REQUIRED' });
+        }
+
+        orderAllocations = this.splitAllocationsByTender(rawAllocations, cashAmount, bankAmount);
+        oldDebtAllocations = orderAllocations.filter(a=>Number(a.order_id)!==Number(data.order_id));
+        billApplied = appliedToCurrent;
+        remainingPaid = 0;
+        unusedAmount = 0;
+      } else {
+        // GO-LIVE F7: no pre-selected bill — unchanged auto-allocation by
+        // shipping date across every open bill (out of scope for the overpay
+        // guard above, which only applies once a specific "current bill" is
+        // selected — see PaymentAgent audit note for the overpay-guard task).
         // - clear the remaining debt of BILL1 first
         // - any remaining money must flow into BILL2, BILL3, ...
         // - every receiving bill gets its own payment_allocations row so printing the bill
         //   shows the amount actually applied to that bill.
-        //
-        // GO-LIVE F7: this used to run only when data.order_id was set; a
-        // payment made with no pre-selected bill (customer_id only — reachable
-        // from Payments.jsx whenever the user pays down general debt without
-        // clicking a specific bill row) fell through to the older allocate()
-        // helper instead, which updated orders.paid_amount/debt_amount
-        // directly but wrote zero payment_allocations rows and dropped any
-        // leftover amount instead of tracking it as unapplied credit.
-        // revertPaymentEffects()'s fallback path requires payments.order_id
-        // (never set on this path), so that payment's debt effect was
-        // permanently unrecoverable on cancel/edit. Running the same
-        // allocateCustomerOpenBillsByDate() unconditionally makes every
-        // payment reversible the same way, whether or not a bill was
-        // pre-selected — "current bill" labeling below only applies when one was.
         const allocResult=await this.allocateCustomerOpenBillsByDate(conn,data.customer_id,remainingPaid);
         orderAllocations=this.splitAllocationsByTender(allocResult.allocations, cashAmount, bankAmount);
-        oldDebtAllocations = data.order_id
-          ? orderAllocations.filter(a=>Number(a.order_id)!==Number(data.order_id))
-          : orderAllocations;
-        billApplied = data.order_id
-          ? orderAllocations.filter(a=>Number(a.order_id)===Number(data.order_id)).reduce((sum,a)=>sum+Number(a.applied_amount||0),0)
-          : 0;
+        oldDebtAllocations = orderAllocations;
+        billApplied = 0;
         remainingPaid=allocResult.remaining;
         if(allocResult.note){
           note = note ? `${note} / Tự động phân bổ theo ngày xuất hàng: ${allocResult.note}` : `Tự động phân bổ theo ngày xuất hàng: ${allocResult.note}`;

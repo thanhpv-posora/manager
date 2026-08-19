@@ -22,7 +22,13 @@ export default function Payments(){
  const[historyPageSize,setHistoryPageSize]=useState(20);
  const[loading,setLoading]=useState(true);
  const[error,setError]=useState('');
- const[overpayDialog,setOverpayDialog]=useState({open:false,availableAmount:0,surplus:0,oldBills:[]});
+ // FEAT (overpay guard): the backend (PaymentAgent.create()) is the single
+ // authority on whether an overpay is allowed and, if so, exactly which
+ // other bills can receive the excess — this dialog only ever reflects what
+ // the backend's error response says (mode:'BLOCK' = cannot proceed at all,
+ // mode:'CHOICE' = pick which other bill(s) absorb the excess, in order).
+ // Never a frontend-only computation of what "should" be allowed.
+ const[overpayDialog,setOverpayDialog]=useState({open:false,mode:null,message:'',details:null,chosenIds:[]});
  // feat(debt): period contribution — "Đã góp trong kỳ" for the selected
  // customer, solar or lunar range. Calendar mode only changes which dates are
  // queried; it never touches accounting totals (LOCKED RULE H).
@@ -99,7 +105,7 @@ export default function Payments(){
   lunar_date_text:form.selected_bill_lunar_date_text||'',
   allocate_order_ids:allocateIds
  });
- const oldDebtBills=()=>((summary?.unpaid_orders)||[]).filter(o=>String(o.id)!==String(form.order_id||''));
+ const closeOverpayDialog=()=>setOverpayDialog({open:false,mode:null,message:'',details:null,chosenIds:[]});
  const doSave=async(allocateIds=[])=>{
   const payload=buildPayload(allocateIds);
   let res;
@@ -119,7 +125,7 @@ export default function Payments(){
   const unused=Number(res.data?.unused_amount||0);
   setForm({...form,cash_amount:'',bank_amount:'',current_bill_amount:'',order_id:''});
   setEditingPayment(null);
-  setOverpayDialog({open:false,availableAmount:0,surplus:0,oldBills:[]});
+  closeOverpayDialog();
   await loadSummary(form.customer_id);
   await loadPayments();
   await loadPeriod(form.customer_id);
@@ -128,32 +134,62 @@ export default function Payments(){
   if(unused>0) msg += `\nTiền dư chưa phân bổ: ${money(unused)}`;
   alert(msg);
  };
- const save=async()=>{
-  const surplus=Math.max(0,paidTotal-billTotal);
-  const bills=oldDebtBills();
-  // V65.33: Nếu khách còn bill nợ cũ thì luôn hỏi chọn bill muốn ưu tiên thanh toán,
-  // dù tiền khách đưa nhỏ hơn bill đang thu. Tiền sẽ trừ bill đã chọn trước, còn dư mới trừ bill đang thu.
-  if(form.customer_id && paidTotal>0 && bills.length){
-   setOverpayDialog({open:true,availableAmount:paidTotal,surplus,oldBills:summary?.unpaid_orders||[]});
-   return;
+ // FEAT (overpay guard): PaymentAgent.create() is the sole authority on
+ // whether an excess-over-current-bill amount is allowed. A business
+ // validation error (code PAYMENT_EXCEEDS_AVAILABLE_DEBT /
+ // PAYMENT_ALLOCATION_CHOICE_REQUIRED) opens this dialog instead of the
+ // generic alert; any other error keeps the previous alert-based handling.
+ const attemptSave=async(allocateIds=[])=>{
+  try{
+   await doSave(allocateIds);
+  }catch(e){
+   const code=e.response?.data?.code;
+   const message=e.response?.data?.message||e.message||'Không lưu được phiếu thu.';
+   const details=e.response?.data?.details||null;
+   if(code==='PAYMENT_EXCEEDS_AVAILABLE_DEBT'){
+    setOverpayDialog({open:true,mode:'BLOCK',message,details,chosenIds:[]});
+    return;
+   }
+   if(code==='PAYMENT_ALLOCATION_CHOICE_REQUIRED'){
+    setOverpayDialog({open:true,mode:'CHOICE',message,details,chosenIds:overpayDialog.chosenIds||[]});
+    return;
+   }
+   alert(message);
   }
-  await doSave([]);
  };
- const confirmOverpay=async()=>{
-  // V65.41: backend auto-allocates all open bills by Ngày xuất hàng old -> new.
-  // No checkbox ids are needed anymore.
-  await doSave([]);
+ const save=async()=>{
+  if(!form.customer_id||paidTotal<=0)return;
+  await attemptSave([]);
  };
- const autoAllocationPreview=useMemo(()=>{
-  let left=Number(overpayDialog.availableAmount||paidTotal||0);
-  return (overpayDialog.oldBills||[]).map(b=>{
-    const debt=Number(b.debt_amount||0);
-    const applied=Math.min(left,debt);
-    left=Math.max(0,left-applied);
-    return {...b,preview_applied:applied,preview_after:Math.max(0,debt-applied)};
-  }).filter(b=>Number(b.preview_applied||0)>0 || String(b.id)===String(form.order_id||''));
- },[overpayDialog,paidTotal,form.order_id]);
- const selectedOldDebtTotal=useMemo(()=>autoAllocationPreview.reduce((sum,b)=>sum+Number(b.preview_applied||0),0),[autoAllocationPreview]);
+ // Click order = allocation order (business rule: operator decides which old
+ // bill(s) absorb the excess, not automatic date order) — clicking an
+ // already-chosen bill removes it; a later click always appends to the end.
+ const toggleChosenBill=id=>setOverpayDialog(d=>({
+  ...d,
+  chosenIds:d.chosenIds.includes(id)?d.chosenIds.filter(x=>x!==id):[...d.chosenIds,id]
+ }));
+ // Mirrors the backend's own greedy in-chosen-order allocation
+ // (_applyPaymentToOrderAuthoritative loop in PaymentAgent.create()) so the
+ // preview always matches what a confirm will actually do.
+ const choicePreview=useMemo(()=>{
+  const eligible=overpayDialog.details?.eligible_bills||[];
+  const byId=new Map(eligible.map(b=>[b.id,b]));
+  let left=Number(overpayDialog.details?.surplus||0);
+  const rows=[];
+  for(const id of (overpayDialog.chosenIds||[])){
+   const bill=byId.get(id);
+   if(!bill)continue;
+   const remaining=Number(bill.remaining||0);
+   const applied=Math.min(left,remaining);
+   left=Math.max(0,left-applied);
+   rows.push({...bill,preview_applied:applied,preview_after:Math.max(0,remaining-applied)});
+  }
+  return {rows,coveredTotal:Number(overpayDialog.details?.surplus||0)-left,remainingUncovered:left};
+ },[overpayDialog.chosenIds,overpayDialog.details]);
+ const confirmChoice=async()=>{
+  if(choicePreview.remainingUncovered>0.01)return;
+  await attemptSave(overpayDialog.chosenIds);
+ };
  const editPayment=p=>{
   if(Number(p.is_locked||0)===1||p.locked_at){alert('Phiếu thu đã chốt, không thể sửa');return;}
   if(String(p.status||'').toUpperCase()==='CANCELLED'){alert('Phiếu thu đã hủy');return;}
@@ -249,26 +285,60 @@ export default function Payments(){
    </div>}
    <div style={{marginTop:18}}><h3>Lịch sử thu tiền</h3><div className="form-grid" style={{gridTemplateColumns:'1fr 1fr 1.4fr auto',marginBottom:12}}><label className="field-label"><span>Từ ngày</span><input className="input" type="date" value={historyFilter.from} onChange={e=>changeHistoryFilter('from',e.target.value)}/></label><label className="field-label"><span>Đến ngày</span><input className="input" type="date" value={historyFilter.to} onChange={e=>changeHistoryFilter('to',e.target.value)}/></label><label className="field-label"><span>Tên khách hàng</span><input className="input" placeholder="Nhập tên khách" value={historyFilter.customer} onChange={e=>changeHistoryFilter('customer',e.target.value)}/></label><button className="btn secondary" style={{alignSelf:'end'}} onClick={()=>{setHistoryFilter({from:'',to:'',customer:''});setHistoryPage(1)}}>Xóa lọc</button></div><table className="table"><thead><tr><th>Mã thu</th><th>Khách hàng</th><th>Ngày</th><th>Tiền mặt</th><th>Chuyển khoản</th><th>Tổng thu</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>{visibleHistory.map(p=><tr key={p.id}><td>{p.payment_code}</td><td>{p.customer_name}</td><td>{ymd(p.payment_date)}</td><td>{money(p.cash_amount)}</td><td>{money(p.bank_amount)}</td><td><b>{money(p.amount)}</b></td><td>{String(p.status||'ACTIVE')}{(Number(p.is_locked||0)===1||p.locked_at)?' / Đã chốt':''}</td><td><div style={{display:'flex',flexWrap:'nowrap',gap:6,alignItems:'center',justifyContent:'center'}}><button className="btn secondary" title="Sửa" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} disabled={Number(p.is_locked||0)===1||p.locked_at||String(p.status||'').toUpperCase()==='CANCELLED'} onClick={()=>editPayment(p)}><Pencil size={14}/></button><button className="btn secondary" title="Hủy" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} disabled={Number(p.is_locked||0)===1||p.locked_at||String(p.status||'').toUpperCase()==='CANCELLED'} onClick={()=>cancelPayment(p)}><XCircle size={14}/></button><button className="btn" title="Chốt" style={{padding:0,width:32,height:32,display:'inline-flex',alignItems:'center',justifyContent:'center'}} disabled={Number(p.is_locked||0)===1||p.locked_at||String(p.status||'').toUpperCase()==='CANCELLED'} onClick={()=>lockPayment(p)}><CheckCircle2 size={14}/></button></div></td></tr>)}</tbody></table><div style={{display:'flex',justifyContent:'flex-end',alignItems:'center',gap:8,marginTop:12,flexWrap:'wrap'}}><select className="select" value={historyPageSize} onChange={e=>{setHistoryPageSize(Number(e.target.value));setHistoryPage(1);}} style={{width:'auto'}}><option value={10}>10 / trang</option><option value={20}>20 / trang</option><option value={50}>50 / trang</option><option value={100}>100 / trang</option></select><span className="muted">Trang {currentHistoryPage} / {historyPages}</span><button className="btn secondary" disabled={currentHistoryPage<=1} onClick={()=>setHistoryPage(p=>Math.max(1,p-1))}>Trước</button><button className="btn secondary" disabled={currentHistoryPage>=historyPages} onClick={()=>setHistoryPage(p=>Math.min(historyPages,p+1))}>Sau</button></div></div>
   </div>
-  {overpayDialog.open&&<div className="payment-overpay-overlay">
+  {overpayDialog.open&&overpayDialog.mode==='BLOCK'&&<div className="payment-overpay-overlay">
    <div className="card payment-overpay-dialog">
     <div className="payment-overpay-head">
-     <div><h3>Xem trước phân bổ thanh toán</h3><p className="muted">Hệ thống tự phân bổ theo ngày xuất hàng cũ đến mới. Bill cũ được thanh toán trước; tiền dư tự chuyển sang bill kế tiếp.</p></div>
-     <button className="btn secondary" onClick={()=>setOverpayDialog({open:false,availableAmount:0,surplus:0,oldBills:[]})}>Đóng</button>
+     <div><h3>Không thể lưu thu tiền</h3><p className="muted" style={{whiteSpace:'pre-line'}}>{overpayDialog.message}</p></div>
+     <button className="btn secondary" onClick={closeOverpayDialog}>Đóng</button>
     </div>
     <div className="payment-overpay-summary">
-     <span>Bill đang thu: <b>{money(billTotal)}</b></span>
-     <span>Khách đưa: <b>{money(paidTotal)}</b></span>
-     <span>Tiền có thể phân bổ: <b>{money(overpayDialog.availableAmount||paidTotal)}</b></span>
-     <span>Dự kiến phân bổ: <b>{money(Math.min(selectedOldDebtTotal,overpayDialog.availableAmount||paidTotal))}</b></span>
+     {overpayDialog.details?.current_bill_remaining!==undefined&&overpayDialog.details?.total_available_debt===undefined&&<>
+      <span>Bill còn lại: <b>{money(overpayDialog.details.current_bill_remaining)}</b></span>
+      <span>Tiền nhập: <b>{money(overpayDialog.details.entered_amount)}</b></span>
+      <span>Tiền dư: <b>{money(overpayDialog.details.surplus)}</b></span>
+     </>}
+     {overpayDialog.details?.total_available_debt!==undefined&&<>
+      <span>Tổng công nợ có thể thanh toán: <b>{money(overpayDialog.details.total_available_debt)}</b></span>
+      <span>Tiền nhập: <b>{money(overpayDialog.details.entered_amount)}</b></span>
+      <span>Vượt quá: <b>{money(overpayDialog.details.over_amount)}</b></span>
+     </>}
+    </div>
+    <div className="actions" style={{justifyContent:'flex-end',marginTop:12}}>
+     <button className="btn" onClick={closeOverpayDialog}>Sửa số tiền</button>
+    </div>
+   </div>
+  </div>}
+  {overpayDialog.open&&overpayDialog.mode==='CHOICE'&&<div className="payment-overpay-overlay">
+   <div className="card payment-overpay-dialog">
+    <div className="payment-overpay-head">
+     <div><h3>Chọn bill nhận tiền dư</h3><p className="muted">Bill đang thu đã đủ tiền. Chọn (các) bill khác sẽ nhận phần tiền dư — theo đúng thứ tự bạn chọn.</p></div>
+     <button className="btn secondary" onClick={closeOverpayDialog}>Đóng</button>
+    </div>
+    <div className="payment-overpay-summary">
+     <span>Bill đang thu còn lại: <b>{money(overpayDialog.details?.current_bill_remaining)}</b></span>
+     <span>Khách đưa: <b>{money(overpayDialog.details?.entered_amount)}</b></span>
+     <span>Tiền dư cần phân bổ: <b>{money(overpayDialog.details?.surplus)}</b></span>
+     <span>Đã chọn đủ: <b>{money(choicePreview.coveredTotal)}</b>{choicePreview.remainingUncovered>0.01&&<span style={{color:'#b91c1c'}}> (còn thiếu {money(choicePreview.remainingUncovered)})</span>}</span>
     </div>
     <div className="payment-overpay-table-wrap">
-     <table className="table payment-overpay-table"><thead><tr><th>Thứ tự</th><th>Bill</th><th>Ngày xuất hàng</th><th>Còn nợ trước</th><th>Sẽ thanh toán</th><th>Còn nợ sau</th></tr></thead><tbody>{autoAllocationPreview.map((o,idx)=><tr key={o.id}>
-      <td>{idx+1}</td><td>{o.order_code}</td><td>{billDateLabel(o)}</td><td><b>{money(o.debt_amount)}</b></td><td><b>{money(o.preview_applied)}</b></td><td>{money(o.preview_after)}</td>
-     </tr>)}</tbody></table>
+     <table className="table payment-overpay-table"><thead><tr><th>Thứ tự</th><th></th><th>Bill</th><th>Ngày xuất hàng</th><th>Còn nợ</th><th>Sẽ nhận</th></tr></thead><tbody>
+      {(overpayDialog.details?.eligible_bills||[]).map(b=>{
+       const order=overpayDialog.chosenIds.indexOf(b.id);
+       const preview=choicePreview.rows.find(r=>r.id===b.id);
+       return <tr key={b.id} style={{cursor:'pointer',background:order>=0?'#f0fdf4':undefined}} onClick={()=>toggleChosenBill(b.id)}>
+        <td>{order>=0?order+1:''}</td>
+        <td><input type="checkbox" checked={order>=0} onChange={()=>toggleChosenBill(b.id)} onClick={e=>e.stopPropagation()}/></td>
+        <td>{b.order_code}</td>
+        <td>{billDateLabel(b)}</td>
+        <td><b>{money(b.remaining)}</b></td>
+        <td>{preview?money(preview.preview_applied):''}</td>
+       </tr>;
+      })}
+     </tbody></table>
     </div>
     <div className="actions" style={{justifyContent:'space-between',marginTop:12}}>
-     <button className="btn secondary" onClick={()=>setOverpayDialog({open:false,availableAmount:0,surplus:0,oldBills:[]})}>Hủy</button>
-     <button className="btn" onClick={confirmOverpay}>Lưu theo phân bổ tự động</button>
+     <button className="btn secondary" onClick={closeOverpayDialog}>Hủy</button>
+     <button className="btn" disabled={choicePreview.remainingUncovered>0.01||!overpayDialog.chosenIds.length} onClick={confirmChoice}>Xác nhận phân bổ</button>
     </div>
    </div>
   </div>}

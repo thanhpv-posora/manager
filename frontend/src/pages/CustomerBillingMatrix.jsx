@@ -4,15 +4,12 @@ import SafePage from'../components/SafePage';
 import EnterpriseAutocomplete from'../components/common/EnterpriseAutocomplete';
 
 const money=n=>Number(n||0).toLocaleString('en-US')+'đ';
-// Compact "5tr"/"800k" form for the small debt line inside a cell — this
-// page's own presentational helper, not a shared util (nowhere else in the
-// app needs a triệu-abbreviated money string).
-const shortMoney=n=>{
- const v=Number(n||0);
- if(v>=1000000)return `${Math.round(v/100000)/10}tr`;
- if(v>=1000)return `${Math.round(v/1000)}k`;
- return String(Math.round(v));
-};
+// Exact debt figure for the in-cell tag — no "5tr"/"1tr" rounding. This is
+// operational debt-collection data (e.g. Hồng Hiền 2026-07-27: rounding
+// 1,018,500 to "1tr" reads as "~1,000,000 owed", hiding the real 1,018,500),
+// so cell width (bumped alongside this — see .billing-matrix-cell) is sized
+// to fit the exact comma-grouped number instead of abbreviating it away.
+const debtAmount=n=>Number(n||0).toLocaleString('en-US');
 const today=()=>new Date().toISOString().slice(0,10);
 const addDays=(d,n)=>{const t=new Date(d+'T00:00:00');t.setDate(t.getDate()+n);return t.toISOString().slice(0,10)};
 
@@ -188,7 +185,7 @@ export default function CustomerBillingMatrix(){
           <div className="billing-matrix-primary-date">{d.primary}</div>
           <div className="billing-matrix-secondary-date">{d.secondary}</div>
           {cell.status==='UNSETTLED'&&<div className="billing-matrix-tag">Chưa tính</div>}
-          {cell.status==='PRICED_WITH_DEBT'&&<div className="billing-matrix-tag">Nợ {shortMoney(cell.outstanding_amount)}</div>}
+          {cell.status==='PRICED_WITH_DEBT'&&<div className="billing-matrix-tag">Nợ {debtAmount(cell.outstanding_amount)}</div>}
          </td>;
         })}
        </tr>

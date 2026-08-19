@@ -3075,8 +3075,10 @@ button,.btn,.menu-item,.input,.select,textarea{
 .billing-matrix-table th,.billing-matrix-table td{border:1px solid #e2e8f0}
 .billing-matrix-sticky-col{position:sticky;left:0;z-index:2;background:#fff}
 .billing-matrix-head-col{min-width:190px;max-width:220px;padding:10px 12px;text-align:left;box-shadow:2px 0 4px rgba(15,23,42,.05)}
-.billing-matrix-date-head{min-width:78px;padding:8px 4px;text-align:center;font-size:12px;color:#475569;background:#f8fafc}
-.billing-matrix-cell{min-width:78px;padding:6px 4px;text-align:center;vertical-align:middle}
-.billing-matrix-primary-date{font-weight:700;font-size:14px;color:#0f172a}
-.billing-matrix-secondary-date{font-size:10px;color:#64748b}
-.billing-matrix-tag{font-size:10px;font-weight:600;color:#7f1d1d;margin-top:2px}
+.billing-matrix-date-head{min-width:92px;padding:6px 4px;text-align:center;font-size:11px;font-weight:500;color:#475569;background:#f8fafc}
+/* Cell width sized to fit an exact comma-grouped debt amount (e.g.
+   "Nợ 1,018,500") on one line — see debtAmount() in CustomerBillingMatrix.jsx. */
+.billing-matrix-cell{min-width:92px;padding:4px 4px;text-align:center;vertical-align:middle;line-height:1.2}
+.billing-matrix-primary-date{font-weight:500;font-size:15px;line-height:1.15;color:#0f172a}
+.billing-matrix-secondary-date{font-weight:400;font-size:11px;line-height:1.2;color:#64748b}
+.billing-matrix-tag{font-size:11px;font-weight:600;color:#7f1d1d;margin-top:1px;line-height:1.2;white-space:nowrap}

@@ -83,30 +83,48 @@ class PaymentAgent {
     await assertCustomerScope(user, customerId);
     const [customers]=await pool.query(`SELECT id,name,phone,address FROM customers WHERE id=?`, [customerId]);
     if (!customers.length) throw new Error('Không tìm thấy khách');
-    const [debtRows]=await pool.query(
-      `SELECT COALESCE(SUM(CASE WHEN type IN ('SALE','ADJUSTMENT_INCREASE') THEN amount WHEN type IN ('PAYMENT','ADJUSTMENT_DECREASE') THEN -amount ELSE 0 END),0) current_debt
-       FROM debt_transactions WHERE customer_id=?`, [customerId]);
-    // Overpay-guard consistency: debt_amount here must be the same
-    // authoritative GREATEST(0,total-SUM(payment_allocations)) figure
-    // create()'s overpay guard enforces (_authoritativeOrderRemaining) —
-    // never the stored orders.debt_amount column, which can go stale (see
-    // commit 1d9ed72). Otherwise this picker could show a bill as owing an
-    // amount the backend would then reject as already settled, or vice
-    // versa. Field name kept as debt_amount so no other consumer of this
-    // response shape needs to change.
-    const [unpaid]=await pool.query(
-      `SELECT o.id,o.order_code,o.order_date,o.total_amount,
-              COALESCE(pa.allocated,0) paid_amount,
-              GREATEST(0, o.total_amount-COALESCE(pa.allocated,0)) debt_amount,
-              o.payment_status,o.calendar_type,o.lunar_date_text,o.current_bill_amount,o.installment_amount,o.monthly_installment_id
-       FROM orders o
-       LEFT JOIN (SELECT order_id, SUM(amount) allocated FROM payment_allocations GROUP BY order_id) pa ON pa.order_id=o.id
-       WHERE o.customer_id=? AND COALESCE(o.status,'CONFIRMED')<>'CANCELLED'
-       HAVING debt_amount>0
-       ORDER BY o.order_date ASC,o.id ASC`, [customerId]);
-    const [split]=await pool.query(`SELECT payment_method,COALESCE(SUM(amount),0) total FROM payments WHERE customer_id=? GROUP BY payment_method`, [customerId]);
-    const [cashBank]=await pool.query(`SELECT COALESCE(SUM(cash_amount),0) cash_total,COALESCE(SUM(bank_amount),0) bank_total,COALESCE(SUM(current_bill_amount),0) current_bill_total,COALESCE(SUM(installment_amount),0) installment_total FROM payments WHERE customer_id=?`, [customerId]);
-    const [recent]=await pool.query(`SELECT p.*,o.order_code FROM payments p LEFT JOIN orders o ON o.id=p.order_id WHERE p.customer_id=? ORDER BY p.payment_date DESC,p.id DESC LIMIT 20`, [customerId]);
+    // PERF: the 5 queries below are read-only and mutually independent (none
+    // consumes another's result) — run them concurrently instead of one
+    // sequential await chain. The customer-existence check above stays
+    // first and un-parallelized on purpose, so an invalid customerId still
+    // fails fast without paying for any of these five.
+    const [[debtRows],[unpaid],[split],[cashBank],[recent]] = await Promise.all([
+      // Overpay-guard consistency: debt_amount here must be the same
+      // authoritative GREATEST(0,total-SUM(payment_allocations)) figure
+      // create()'s overpay guard enforces (_authoritativeOrderRemaining) —
+      // never the stored orders.debt_amount column, which can go stale (see
+      // commit 1d9ed72). Otherwise this picker could show a bill as owing an
+      // amount the backend would then reject as already settled, or vice
+      // versa. Field name kept as debt_amount so no other consumer of this
+      // response shape needs to change.
+      pool.query(
+        `SELECT COALESCE(SUM(CASE WHEN type IN ('SALE','ADJUSTMENT_INCREASE') THEN amount WHEN type IN ('PAYMENT','ADJUSTMENT_DECREASE') THEN -amount ELSE 0 END),0) current_debt
+         FROM debt_transactions WHERE customer_id=?`, [customerId]),
+      // PERF: the pa subquery used to aggregate SUM(amount) GROUP BY
+      // order_id over the ENTIRE payment_allocations table, unfiltered —
+      // same provable full-table-scan pattern EXPLAIN caught in
+      // ReportAgent.customerBillingMatrix() (growing forever regardless of
+      // which customer is being summarized). payment_allocations already
+      // carries its own customer_id column (written by
+      // insertPaymentAllocationSafe() on every allocation, always the
+      // order's own customer), so filtering the subquery by it directly —
+      // via idx_payment_allocations_customer_id — bounds the scan to this
+      // one customer's own allocation rows without a join. Same numbers,
+      // same accounting: still payment_allocations, never orders.debt_amount.
+      pool.query(
+        `SELECT o.id,o.order_code,o.order_date,o.total_amount,
+                COALESCE(pa.allocated,0) paid_amount,
+                GREATEST(0, o.total_amount-COALESCE(pa.allocated,0)) debt_amount,
+                o.payment_status,o.calendar_type,o.lunar_date_text,o.current_bill_amount,o.installment_amount,o.monthly_installment_id
+         FROM orders o
+         LEFT JOIN (SELECT order_id, SUM(amount) allocated FROM payment_allocations WHERE customer_id=? GROUP BY order_id) pa ON pa.order_id=o.id
+         WHERE o.customer_id=? AND COALESCE(o.status,'CONFIRMED')<>'CANCELLED'
+         HAVING debt_amount>0
+         ORDER BY o.order_date ASC,o.id ASC`, [customerId, customerId]),
+      pool.query(`SELECT payment_method,COALESCE(SUM(amount),0) total FROM payments WHERE customer_id=? GROUP BY payment_method`, [customerId]),
+      pool.query(`SELECT COALESCE(SUM(cash_amount),0) cash_total,COALESCE(SUM(bank_amount),0) bank_total,COALESCE(SUM(current_bill_amount),0) current_bill_total,COALESCE(SUM(installment_amount),0) installment_total FROM payments WHERE customer_id=?`, [customerId]),
+      pool.query(`SELECT p.*,o.order_code FROM payments p LEFT JOIN orders o ON o.id=p.order_id WHERE p.customer_id=? ORDER BY p.payment_date DESC,p.id DESC LIMIT 20`, [customerId]),
+    ]);
     return {customer:customers[0], current_debt:debtRows[0].current_debt, unpaid_orders:unpaid, payment_split:split, cash_bank_summary:cashBank[0], recent_payments:recent};
   }
 

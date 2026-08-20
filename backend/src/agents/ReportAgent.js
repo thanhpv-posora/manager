@@ -507,6 +507,20 @@ class ReportAgent {
     // so a later payment against an older bill correctly updates that older
     // business-date cell (business rule: cell = CURRENT settlement status of
     // that business date's bill, not a snapshot frozen at bill-creation time).
+    //
+    // PERF: the pa subquery used to aggregate SUM(amount) GROUP BY order_id
+    // over the ENTIRE payment_allocations table, unfiltered — EXPLAIN
+    // confirmed a full index scan of every historical row on every Matrix
+    // request regardless of the requested date range (rows: <total table
+    // size>, growing forever). Only rows whose order_id belongs to an order
+    // already matched by `where` below can ever contribute to a result row
+    // (the outer LEFT JOIN's ON pa.order_id=o.id discards the rest anyway),
+    // so restricting the subquery to those same orders first — via the
+    // identical `where` predicate re-applied against o2 — returns the exact
+    // same numbers while bounding the scan to this request's date range
+    // (idx_payment_allocations_order_id backs the JOIN). No accounting
+    // semantics changed: still payment_allocations, never orders.debt_amount.
+    const innerWhere = where.map(cond => cond.replace(/^o\./, 'o2.'));
     const [rows] = await pool.query(
       `SELECT o.customer_id, o.order_date,
               COUNT(*) valid_bill_count,
@@ -515,13 +529,15 @@ class ReportAgent {
               SUM(GREATEST(0, o.total_amount - COALESCE(pa.allocated_total,0))) outstanding_amount
        FROM orders o
        LEFT JOIN (
-         SELECT order_id, SUM(amount) allocated_total
-         FROM payment_allocations
-         GROUP BY order_id
+         SELECT pa.order_id, SUM(pa.amount) allocated_total
+         FROM payment_allocations pa
+         JOIN orders o2 ON o2.id = pa.order_id
+         WHERE ${innerWhere.join(' AND ')}
+         GROUP BY pa.order_id
        ) pa ON pa.order_id = o.id
        WHERE ${where.join(' AND ')}
        GROUP BY o.customer_id, o.order_date`,
-      params
+      [...params, ...params]
     );
     const dateColumns = this._billingMatrixDateColumns(from, to);
     const emptyPagination = { page: pageNum, page_size: pageSize, total_customers: 0, total_pages: 1 };

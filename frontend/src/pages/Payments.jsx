@@ -60,17 +60,26 @@ export default function Payments(){
   }catch(e){setPeriodError(e.response?.data?.message||e.message);setPeriodData(null)}
  };
  const loadPayments=async()=>setRows((await api.get('/payments')).data||[]);
+ // PERF: loadPayments() and the /partners fetch depend on nothing but the
+ // page mounting — Promise.all instead of a sequential await chain so both
+ // fire together. Likewise, once initId is known, loadSummary(initId) and
+ // loadPeriod(initId,...) don't depend on each other's result either — same
+ // treatment. What loads and when relative to customer selection is
+ // unchanged (still auto-selects the first customer and still loads that
+ // customer's own summary/period right away, same as before) — this only
+ // removes accidental serialization between calls that were never actually
+ // dependent on one another.
  const load=async()=>{try{
-  const user=JSON.parse(localStorage.getItem('user')||'{}');await loadPayments();
-  const cs=(await api.get('/partners',{params:{role:'customer'}})).data||[];setCustomers(cs);
+  const user=JSON.parse(localStorage.getItem('user')||'{}');
+  const [,csRes]=await Promise.all([loadPayments(),api.get('/partners',{params:{role:'customer'}})]);
+  const cs=csRes.data||[];setCustomers(cs);
   const initId=user.role!=='CUSTOMER'?(!form.customer_id&&cs.length?String(cs[0].id):''):(user.customer_id?String(user.customer_id):'');
   if(initId){
    setForm(f=>({...f,customer_id:initId}));
-   await loadSummary(initId);
    const c=cs.find(x=>String(x.id)===initId);
    const ct=String(c?.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
    setPeriodCalendarType(ct);
-   await loadPeriod(initId,ct,periodFrom,periodTo,periodFromLunar,periodToLunar);
+   await Promise.all([loadSummary(initId),loadPeriod(initId,ct,periodFrom,periodTo,periodFromLunar,periodToLunar)]);
   }
  }catch(e){setError(e.response?.data?.message||e.message)}finally{setLoading(false)}};
  useEffect(()=>{load()},[]);

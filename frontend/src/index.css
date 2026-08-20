@@ -3064,6 +3064,11 @@ button,.btn,.menu-item,.input,.select,textarea{
 /* Customer Daily Billing Status Matrix — scoped classes only, no shared
    .grid-4/.stat-card reuse (those classes exist elsewhere with no CSS rule
    backing them; adding one here would change other report pages too). */
+/* Legend moved into the same horizontal band as the summary cards (was a
+   separate full-width card block) — one row where space permits, wrapping
+   naturally below the cards on a narrow viewport rather than forcing
+   horizontal overflow. */
+.billing-matrix-summary-row{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:14px 20px}
 .billing-matrix-summary{display:flex;flex-wrap:wrap;gap:14px}
 .billing-matrix-stat{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:12px 18px;min-width:150px;display:flex;flex-direction:column;gap:4px}
 .billing-matrix-stat span{color:#64748b;font-size:12px}

@@ -460,6 +460,22 @@ class ReportAgent {
     if (!allowedStatus.includes(statusFilter))
       throw Object.assign(new Error('Trạng thái lọc không hợp lệ'), { status: 400 });
 
+    // feat(report): server-side customer pagination. page_size is a closed
+    // set (matches the page-size selector already used on Orders.jsx/
+    // Payments.jsx history tables) — validated the same way flow/status
+    // above are, not silently coerced, so a bad value fails loudly instead
+    // of quietly serving a different page size than the caller asked for.
+    const allowedPageSizes = [10, 20, 50, 100];
+    let pageSize = 20;
+    if (query?.page_size !== undefined && query?.page_size !== '') {
+      const ps = Number(query.page_size);
+      if (!allowedPageSizes.includes(ps))
+        throw Object.assign(new Error('Kích thước trang không hợp lệ (10, 20, 50, 100)'), { status: 400 });
+      pageSize = ps;
+    }
+    const pageNum = Math.max(1, Math.trunc(Number(query?.page)) || 1);
+    const offset = (pageNum - 1) * pageSize;
+
     const where = [`o.status<>'CANCELLED'`, `o.order_date>=?`, `o.order_date<=?`];
     const params = [from, to];
     // Order-level sales_flow only (never split a MIXED order's single debt
@@ -507,17 +523,19 @@ class ReportAgent {
        GROUP BY o.customer_id, o.order_date`,
       params
     );
+    const dateColumns = this._billingMatrixDateColumns(from, to);
+    const emptyPagination = { page: pageNum, page_size: pageSize, total_customers: 0, total_pages: 1 };
+    const emptySummary = { customers: 0, no_bill_days: 0, unsettled_days: 0, paid_days: 0, debt_days: 0 };
     if (!rows.length) {
-      return { date_columns: this._billingMatrixDateColumns(from, to), customers: [], summary: { customers: 0, no_bill_days: 0, unsettled_days: 0, paid_days: 0, debt_days: 0 } };
+      return { date_columns: dateColumns, customers: [], pagination: emptyPagination, summary: emptySummary };
     }
 
-    const customerIds = Array.from(new Set(rows.map(r => r.customer_id)));
-    const [customerRows] = await pool.query(
-      `SELECT id, name, billing_calendar_type FROM customers WHERE id IN (${customerIds.map(() => '?').join(',')})`,
-      customerIds
-    );
-    const customerById = new Map(customerRows.map(c => [c.id, c]));
-
+    // byCustomer: customer_id -> Map(date -> day cell). Sparse — only dates
+    // that actually have an order — bounded by real order volume in the
+    // requested range, same cost the pre-pagination version already paid.
+    // This ONE query result is reused for three things below: (1) the
+    // candidate customer set, (2) status-filter matching, (3) the GLOBAL
+    // summary — never re-queried per customer/page.
     const byCustomer = new Map();
     for (const r of rows) {
       if (!byCustomer.has(r.customer_id)) byCustomer.set(r.customer_id, new Map());
@@ -532,45 +550,82 @@ class ReportAgent {
       });
     }
 
-    // Build every customer row's full dense day grid first (dates with no
-    // bill filled in as NO_BILL), then decide row inclusion (status filter =
-    // "this customer has at least one matching day") — summary totals are
-    // computed in one final pass over only the rows actually kept, so a
-    // filtered-out customer's NO_BILL days never leak into the totals.
-    const dateColumns = this._billingMatrixDateColumns(from, to);
-    const customers = [];
-    for (const customerId of customerIds) {
-      const c = customerById.get(customerId);
-      if (!c) continue; // defensive: customer row missing/deleted between queries
-      const dayMap = byCustomer.get(customerId) || new Map();
-      const days = {};
-      let matchesStatusFilter = statusFilter === 'ALL';
+    // Candidate set = every customer with >=1 matching order in range (same
+    // membership rule as before pagination existed), narrowed by the status
+    // filter using only each candidate's own SPARSE day map — never the
+    // dense customers×days grid — so this stays bounded by actual order
+    // activity, not customer_count × day_count.
+    const matchesStatus = (dayMap) => {
+      if (statusFilter === 'ALL') return true;
+      if (statusFilter === 'NO_BILL') return dayMap.size < dateColumns.length;
+      for (const cell of dayMap.values()) if (cell.status === statusFilter) return true;
+      return false;
+    };
+    const candidateIds = Array.from(byCustomer.keys()).filter(id => matchesStatus(byCustomer.get(id)));
+
+    // CRITICAL (req. 9): summary must represent the FULL filtered set, not
+    // just the page about to be returned — computed here over every
+    // candidate, before pagination narrows `customers` below. Same O(candidates
+    // x days) cost the original single-page implementation already paid to
+    // produce this same summary; pagination does not add to it.
+    const summary = { customers: candidateIds.length, no_bill_days: 0, unsettled_days: 0, paid_days: 0, debt_days: 0 };
+    for (const id of candidateIds) {
+      const dayMap = byCustomer.get(id);
       for (const col of dateColumns) {
-        const cell = dayMap.get(col.date) || { valid_bill_count: 0, total_amount: 0, paid_amount: 0, outstanding_amount: 0, status: 'NO_BILL' };
-        days[col.date] = cell;
-        if (statusFilter !== 'ALL' && cell.status === statusFilter) matchesStatusFilter = true;
+        const status = dayMap.get(col.date)?.status || 'NO_BILL';
+        if (status === 'NO_BILL') summary.no_bill_days++;
+        else if (status === 'UNSETTLED') summary.unsettled_days++;
+        else if (status === 'PRICED_PAID') summary.paid_days++;
+        else if (status === 'PRICED_WITH_DEBT') summary.debt_days++;
       }
-      if (!matchesStatusFilter) continue;
-      customers.push({
-        customer_id: customerId,
+    }
+
+    const totalCustomers = candidateIds.length;
+    const totalPages = Math.max(1, Math.ceil(totalCustomers / pageSize));
+    if (!totalCustomers) {
+      return { date_columns: dateColumns, customers: [], pagination: { page: pageNum, page_size: pageSize, total_customers: 0, total_pages: totalPages }, summary };
+    }
+
+    // Query B — the actual page: sort + paginate happens in SQL, over the
+    // already-known candidate id set (never the full customers table), so
+    // "ORDER BY name,id LIMIT/OFFSET" runs BEFORE any per-customer detail is
+    // built. customers.name is the same authoritative display-name column
+    // every other customer picker in this app already sorts/searches by
+    // (EnterpriseAutocomplete displayField="name") — no other "display name"
+    // column exists on this table, and no COLLATE override is applied here:
+    // reuses the column's existing default collation rather than introducing
+    // a new one.
+    const [pageCustomerRows] = await pool.query(
+      `SELECT id, name, billing_calendar_type FROM customers
+       WHERE id IN (${candidateIds.map(() => '?').join(',')})
+       ORDER BY name ASC, id ASC
+       LIMIT ? OFFSET ?`,
+      [...candidateIds, pageSize, offset]
+    );
+
+    // Detail — page-bounded (req. 13): the dense per-day grid (NO_BILL filled
+    // in for dates with no order) is only ever built for THIS page's
+    // customers, from the sparse data already in memory — no extra query.
+    const customers = pageCustomerRows.map(c => {
+      const dayMap = byCustomer.get(c.id) || new Map();
+      const days = {};
+      for (const col of dateColumns) {
+        days[col.date] = dayMap.get(col.date) || { valid_bill_count: 0, total_amount: 0, paid_amount: 0, outstanding_amount: 0, status: 'NO_BILL' };
+      }
+      return {
+        customer_id: c.id,
         customer_name: c.name,
         calendar_type: String(c.billing_calendar_type || 'SOLAR').toUpperCase() === 'LUNAR' ? 'LUNAR' : 'SOLAR',
         days,
-      });
-    }
+      };
+    });
 
-    const summary = { customers: customers.length, no_bill_days: 0, unsettled_days: 0, paid_days: 0, debt_days: 0 };
-    for (const cust of customers) {
-      for (const col of dateColumns) {
-        const s = cust.days[col.date].status;
-        if (s === 'NO_BILL') summary.no_bill_days++;
-        else if (s === 'UNSETTLED') summary.unsettled_days++;
-        else if (s === 'PRICED_PAID') summary.paid_days++;
-        else if (s === 'PRICED_WITH_DEBT') summary.debt_days++;
-      }
-    }
-
-    return { date_columns: dateColumns, customers, summary };
+    return {
+      date_columns: dateColumns,
+      customers,
+      pagination: { page: pageNum, page_size: pageSize, total_customers: totalCustomers, total_pages: totalPages },
+      summary,
+    };
   }
 
   // Solar date columns for the requested range, each paired with its lunar

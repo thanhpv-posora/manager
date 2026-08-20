@@ -1,4 +1,4 @@
-import React,{useEffect,useMemo,useState}from'react';
+import React,{useEffect,useState}from'react';
 import api from'../api/api';
 import SafePage from'../components/SafePage';
 import EnterpriseAutocomplete from'../components/common/EnterpriseAutocomplete';
@@ -19,6 +19,8 @@ const STATUS_LABEL={
  PRICED_WITH_DEBT:'Đã tính - Còn nợ',
  PRICED_PAID:'Đã tính - Hết nợ',
 };
+
+const PAGE_SIZES=[10,20,50,100];
 
 // Solar primary/secondary date text for one cell, driven by the customer
 // row's own billing_calendar_type — never the same solar header for every
@@ -59,6 +61,7 @@ export default function CustomerBillingMatrix(){
  const[salesFlow,setSalesFlow]=useState('ALL');
  const[customerId,setCustomerId]=useState('');
  const[status,setStatus]=useState('ALL');
+ const[pageSize,setPageSize]=useState(20);
  const[customers,setCustomers]=useState([]);
  const[data,setData]=useState(null);
  const[loading,setLoading]=useState(false);
@@ -71,31 +74,41 @@ export default function CustomerBillingMatrix(){
  const selectedCustomer=customers.find(c=>String(c.id)===String(customerId))||null;
 
  // One dedicated report call for the whole grid — never one request per
- // customer or per cell. Re-fires only on explicit "Lọc", not per keystroke.
- const load=async()=>{
+ // customer or per cell. `page`/`page_size` are explicit call arguments
+ // (not read from React state inside the function) so the caller always
+ // controls exactly which page a given click requests, with no stale-
+ // closure races between e.g. a page-size change and the page number.
+ const load=async(page=1,size=pageSize)=>{
   setLoading(true);setError('');
   try{
-   const params={from,to,sales_flow:salesFlow,status};
+   const params={from,to,sales_flow:salesFlow,status,page,page_size:size};
    if(customerId)params.customer_id=customerId;
    setData((await api.get('/reports/customer-billing-matrix',{params})).data);
   }catch(e){setError(e.response?.data?.message||e.message)}
   finally{setLoading(false)}
  };
- useEffect(()=>{load()},[]);
+ useEffect(()=>{load(1,pageSize)},[]);
 
+ // FEAT (pagination): every filter is applied together via "Lọc" (existing
+ // convention on this page — filters are staged in state, not auto-applied
+ // per keystroke/select). Applying a filter always requests page 1, since a
+ // changed filter can change which page even makes sense (req. 6).
+ const applyFilters=()=>load(1,pageSize);
  const reset=()=>{
-  setFrom(addDays(today(),-13));setTo(today());setSalesFlow('ALL');setCustomerId('');setStatus('ALL');
-  setTimeout(load,0);
+  setFrom(addDays(today(),-13));setTo(today());setSalesFlow('ALL');setCustomerId('');setStatus('ALL');setPageSize(20);
+  setTimeout(()=>load(1,20),0);
  };
+ const changePageSize=size=>{setPageSize(size);load(1,size)};
+ const goToPage=p=>load(p,pageSize);
 
  const dateColumns=data?.date_columns||[];
  const rows=data?.customers||[];
+ const pagination=data?.pagination||{page:1,page_size:pageSize,total_customers:0,total_pages:1};
  const summary=data?.summary||{customers:0,no_bill_days:0,unsettled_days:0,paid_days:0,debt_days:0};
 
  return <SafePage loading={false} error={error}><div className="grid">
   <div className="card">
-   <h3>Theo dõi tính tiền khách hàng</h3>
-   <p className="muted">Theo dõi tình trạng tính tiền và công nợ theo ngày</p>
+   <h3>Theo dõi tính tiền Khách hàng</h3>
    <div className="actions" style={{alignItems:'flex-start',flexWrap:'wrap'}}>
     <div style={{display:'flex',flexDirection:'column',gap:2}}>
      <span className="muted" style={{fontSize:12}}>Từ ngày</span>
@@ -139,26 +152,25 @@ export default function CustomerBillingMatrix(){
       <option value="PRICED_PAID">Đã tính - Hết nợ</option>
      </select>
     </div>
-    <button className="btn" onClick={load} style={{marginTop:20}}>Lọc</button>
+    <button className="btn" onClick={applyFilters} style={{marginTop:20}}>Lọc</button>
     <button className="btn secondary" onClick={reset} style={{marginTop:20}}>Đặt lại</button>
    </div>
   </div>
 
-  <div className="card">
+  <div className="billing-matrix-summary-row">
+   <div className="billing-matrix-summary">
+    <div className="billing-matrix-stat"><span>Khách hàng</span><b>{summary.customers}</b></div>
+    <div className="billing-matrix-stat"><span>Không có bill</span><b>{summary.no_bill_days} ngày</b></div>
+    <div className="billing-matrix-stat"><span>Chưa tính tiền</span><b>{summary.unsettled_days} ngày</b></div>
+    <div className="billing-matrix-stat"><span>Đã tính - Hết nợ</span><b>{summary.paid_days} ngày</b></div>
+    <div className="billing-matrix-stat"><span>Đã tính - Còn nợ</span><b>{summary.debt_days} ngày</b></div>
+   </div>
    <div className="billing-matrix-legend">
     <span><i className="billing-matrix-swatch" style={{background:'#f8fafc',border:'1px solid #e2e8f0'}}/>Không có bill</span>
     <span><i className="billing-matrix-swatch" style={{background:'#fee2e2'}}/>Chưa tính tiền</span>
     <span><i className="billing-matrix-swatch" style={{background:'#dcfce7'}}/>Đã tính - Hết nợ</span>
     <span><i className="billing-matrix-swatch" style={{background:'linear-gradient(90deg,#fee2e2 0%,#fee2e2 50%,#dcfce7 50%,#dcfce7 100%)'}}/>Đã tính - Còn nợ</span>
    </div>
-  </div>
-
-  <div className="billing-matrix-summary">
-   <div className="billing-matrix-stat"><span>Khách hàng</span><b>{summary.customers}</b></div>
-   <div className="billing-matrix-stat"><span>Không có bill</span><b>{summary.no_bill_days} ngày</b></div>
-   <div className="billing-matrix-stat"><span>Chưa tính tiền</span><b>{summary.unsettled_days} ngày</b></div>
-   <div className="billing-matrix-stat"><span>Đã tính - Hết nợ</span><b>{summary.paid_days} ngày</b></div>
-   <div className="billing-matrix-stat"><span>Đã tính - Còn nợ</span><b>{summary.debt_days} ngày</b></div>
   </div>
 
   <div className="card">
@@ -194,6 +206,17 @@ export default function CustomerBillingMatrix(){
      </tbody>
     </table>
    </div>}
+   {/* FEAT (server-side customer pagination, req. 3/4): pagination is over
+       CUSTOMERS (rows), never over date columns/cells — date_columns above
+       always renders in full regardless of page. */}
+   <div style={{display:'flex',justifyContent:'flex-end',alignItems:'center',gap:8,marginTop:12,flexWrap:'wrap'}}>
+    <select className="select" value={pageSize} onChange={e=>changePageSize(Number(e.target.value))} style={{width:'auto'}}>
+     {PAGE_SIZES.map(s=><option key={s} value={s}>{s} / trang</option>)}
+    </select>
+    <span className="muted">Trang {pagination.page} / {pagination.total_pages} ({pagination.total_customers} khách hàng)</span>
+    <button className="btn secondary" disabled={pagination.page<=1} onClick={()=>goToPage(pagination.page-1)}>Trước</button>
+    <button className="btn secondary" disabled={pagination.page>=pagination.total_pages} onClick={()=>goToPage(pagination.page+1)}>Sau</button>
+   </div>
   </div>
  </div></SafePage>;
 }

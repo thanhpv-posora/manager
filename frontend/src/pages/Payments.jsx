@@ -15,6 +15,9 @@ export default function Payments(){
  const[customers,setCustomers]=useState([]);
  const[rows,setRows]=useState([]);
  const[summary,setSummary]=useState(null);
+ // FEAT (hotfix): 15 most recent outstanding bills across customers, shown
+ // as the Payments screen's initial view before any customer is picked.
+ const[recentBills,setRecentBills]=useState([]);
  const[form,setForm]=useState({payment_date:today,payment_method:'CASH',cash_amount:'',bank_amount:'',current_bill_amount:''});
  const[editingPayment,setEditingPayment]=useState(null);
  const[historyFilter,setHistoryFilter]=useState({from:'',to:'',customer:''});
@@ -60,6 +63,7 @@ export default function Payments(){
   }catch(e){setPeriodError(e.response?.data?.message||e.message);setPeriodData(null)}
  };
  const loadPayments=async()=>setRows((await api.get('/payments')).data||[]);
+ const loadRecentBills=async()=>setRecentBills((await api.get('/payments/recent-outstanding-bills')).data||[]);
  // PERF: loadPayments() and the /partners fetch depend on nothing but the
  // page mounting — Promise.all instead of a sequential await chain so both
  // fire together. Likewise, once initId is known, loadSummary(initId) and
@@ -73,13 +77,19 @@ export default function Payments(){
   const user=JSON.parse(localStorage.getItem('user')||'{}');
   const [,csRes]=await Promise.all([loadPayments(),api.get('/partners',{params:{role:'customer'}})]);
   const cs=csRes.data||[];setCustomers(cs);
-  const initId=user.role!=='CUSTOMER'?(!form.customer_id&&cs.length?String(cs[0].id):''):(user.customer_id?String(user.customer_id):'');
+  // Initial state: ADMIN/STAFF land on the recent-outstanding-bills list
+  // with no customer pre-selected (picking a bill there drives the same
+  // per-customer workflow below via pickRecentBill); CUSTOMER always
+  // auto-scopes to themselves, unchanged from before.
+  const initId=user.role==='CUSTOMER'?(user.customer_id?String(user.customer_id):''):'';
   if(initId){
    setForm(f=>({...f,customer_id:initId}));
    const c=cs.find(x=>String(x.id)===initId);
    const ct=String(c?.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
    setPeriodCalendarType(ct);
    await Promise.all([loadSummary(initId),loadPeriod(initId,ct,periodFrom,periodTo,periodFromLunar,periodToLunar)]);
+  }else{
+   await loadRecentBills();
   }
  }catch(e){setError(e.response?.data?.message||e.message)}finally{setLoading(false)}};
  useEffect(()=>{load()},[]);
@@ -92,6 +102,11 @@ export default function Payments(){
  const changeCustomer=e=>{
   const id=e.target.value;
   setForm({...form,customer_id:id,order_id:'',current_bill_amount:'',cash_amount:'',bank_amount:''});
+  if(!id){
+   // Clearing the customer returns to the initial recent-bills view.
+   setSummary(null);setPeriodData(null);loadRecentBills();
+   return;
+  }
   loadSummary(id);
   // Default period calendar follows the customer's own billing calendar,
   // same convention as Installments.jsx — user can still toggle it.
@@ -99,6 +114,19 @@ export default function Payments(){
   const ct=String(c?.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
   setPeriodCalendarType(ct);
   loadPeriod(id,ct,periodFrom,periodTo,periodFromLunar,periodToLunar);
+ };
+ // FEAT (hotfix): clicking a bill in the recent-outstanding-bills initial
+ // view selects its customer AND fills the bill, in one atomic setForm —
+ // deliberately not a changeCustomer()+fillOrder() combo, since those each
+ // call setForm off the same (stale, pre-batch) `form` closure and the
+ // second call would overwrite the first's customer_id.
+ const pickRecentBill=async o=>{
+  const id=String(o.customer_id);
+  setForm(f=>({...f,customer_id:id,order_id:o.id,current_bill_amount:o.debt_amount,cash_amount:'',bank_amount:'',payment_method:'CASH',selected_bill_calendar_type:o.calendar_type||'SOLAR',selected_bill_lunar_date_text:o.lunar_date_text||'',selected_bill_date_label:billDateLabel(o)}));
+  const c=customers.find(x=>String(x.id)===id);
+  const ct=String(c?.billing_calendar_type||'SOLAR').toUpperCase()==='LUNAR'?'LUNAR':'SOLAR';
+  setPeriodCalendarType(ct);
+  await Promise.all([loadSummary(id),loadPeriod(id,ct,periodFrom,periodTo,periodFromLunar,periodToLunar)]);
  };
  const fillOrder=o=>setForm({...form,order_id:o.id,current_bill_amount:o.debt_amount,cash_amount:'',bank_amount:'',payment_method:'CASH',selected_bill_calendar_type:o.calendar_type||'SOLAR',selected_bill_lunar_date_text:o.lunar_date_text||'',selected_bill_date_label:billDateLabel(o)});
  const calcPaymentMethod=(cash,bank)=>{const c=Number(cash||0),b=Number(bank||0);if(c>0&&b>0)return'MIXED';if(b>0)return'BANK_TRANSFER';return'CASH'};
@@ -148,7 +176,7 @@ export default function Payments(){
   await loadSummary(form.customer_id);
   await loadPayments();
   await loadPeriod(form.customer_id);
-  let msg=editingPayment?'Đã sửa phiếu thu và phân bổ lại':'Đã lưu thu tiền';
+  let msg=editingPayment?'Cập nhật thanh toán thành công':'Thanh toán thành công';
   if(allocs.length) msg += `\nĐã phân bổ bill khác: ${allocs.map(a=>`${a.order_code}: ${money(a.applied_amount)}`).join(', ')}`;
   if(unused>0) msg += `\nTiền dư chưa phân bổ: ${money(unused)}`;
   alert(msg);
@@ -264,10 +292,15 @@ export default function Payments(){
     <div>TỔNG DƯ NỢ HIỆN TẠI</div>
     <b style={{fontSize:22}}>{money(periodData?.current_debt??summary?.current_debt??0)}</b>
    </div>}
-   <div className="grid cols-2" style={{alignItems:'start',marginTop:14}}>
-    <div className="card" style={{boxShadow:'none',border:'1px solid #fee2e2'}}><h3>Tiền của khách</h3><div className="form-grid"><label className="field-label"><span>Tiền mặt <button type="button" className="btn tiny secondary" style={{marginLeft:6,padding:'1px 8px'}} disabled={billTotal<=0} title="Điền toàn bộ số tiền còn lại của bill vào Tiền mặt" onClick={payFull}>Trả đủ</button></span><MoneyInput placeholder="Ví dụ: 10,000,000" value={form.cash_amount||''} onChange={changeCash}/></label><label className="field-label"><span>Chuyển khoản</span><MoneyInput placeholder="Ví dụ: 5,000,000" value={form.bank_amount||''} onChange={changeBank}/></label></div><div className="payment-total-box"><div>Tổng bill hôm nay</div><b>{money(billTotal)}</b>{form.selected_bill_date_label&&<span>Ngày bill đang thu: <b>{form.selected_bill_date_label}</b></span>}<span>Tiền mặt {money(form.cash_amount)} + chuyển khoản {money(form.bank_amount)} = {money(paidTotal)}</span><span>Còn nợ: {money(remainDebt)}</span></div><div className="actions" style={{marginTop:12}}><button type="button" className="btn" disabled={!form.customer_id||paidTotal<=0} onClick={save}>{editingPayment?'Lưu sửa phiếu thu':'Lưu thu tiền'}</button></div></div>
+   {form.customer_id?<div className="grid cols-2" style={{alignItems:'start',marginTop:14}}>
+    <div className="card" style={{boxShadow:'none',border:'1px solid #fee2e2'}}><h3>Tiền của khách</h3><div className="form-grid"><label className="field-label"><span>Tiền mặt</span><MoneyInput placeholder="Ví dụ: 10,000,000" value={form.cash_amount||''} onChange={changeCash}/></label><label className="field-label"><span>Chuyển khoản</span><MoneyInput placeholder="Ví dụ: 5,000,000" value={form.bank_amount||''} onChange={changeBank}/></label></div><div className="payment-total-box"><div>Tổng bill hôm nay</div><b>{money(billTotal)}</b>{form.selected_bill_date_label&&<span>Ngày bill đang thu: <b>{form.selected_bill_date_label}</b></span>}<span>Tiền mặt {money(form.cash_amount)} + chuyển khoản {money(form.bank_amount)} = {money(paidTotal)}</span><span>Còn nợ: {money(remainDebt)}</span></div><div className="actions" style={{marginTop:12}}><button type="button" className="btn secondary" disabled={billTotal<=0} title="Điền toàn bộ số tiền còn lại của bill vào Tiền mặt" onClick={payFull}>Trả đủ</button><button type="button" className="btn" disabled={!form.customer_id||paidTotal<=0} onClick={save}>{editingPayment?'Cập nhật':'Thanh toán'}</button></div></div>
     <div className="card" style={{boxShadow:'none',border:'1px solid #e5e7eb'}}><h3>Bill còn nợ</h3>{summary?.unpaid_orders?.length?<table className="table"><thead><tr><th>Bill</th><th>Ngày</th><th>Còn nợ</th><th></th></tr></thead><tbody>{summary.unpaid_orders.map(o=><tr key={o.id}><td>{o.order_code}</td><td>{billDateLabel(o)}</td><td><b>{money(o.debt_amount)}</b></td><td><button className="btn secondary" onClick={()=>fillOrder(o)}>Chọn</button></td></tr>)}</tbody></table>:<p className="muted">Khách này chưa có bill còn nợ.</p>}</div>
-   </div>
+   </div>:
+   <div className="card" style={{marginTop:14,boxShadow:'none',border:'1px solid #e5e7eb'}}>
+    <h3>Bill còn nợ gần đây (15 bill mới nhất)</h3>
+    <p className="muted">Chưa chọn khách hàng — bấm Chọn trên một bill bên dưới để vào thẳng luồng thu tiền cho bill đó, hoặc tìm khách hàng ở ô phía trên.</p>
+    {recentBills.length?<table className="table"><thead><tr><th>Bill</th><th>Khách hàng</th><th>Ngày</th><th>Tổng bill</th><th>Còn nợ</th><th></th></tr></thead><tbody>{recentBills.map(o=><tr key={o.id}><td>{o.order_code}</td><td>{o.customer_name}</td><td>{billDateLabel(o)}</td><td>{money(o.total_amount)}</td><td><b>{money(o.debt_amount)}</b></td><td><button className="btn secondary" onClick={()=>pickRecentBill(o)}>Chọn</button></td></tr>)}</tbody></table>:<p className="muted">Không có bill nào còn nợ.</p>}
+   </div>}
    {form.customer_id&&<div className="card" style={{marginTop:18}}>
     <h3>Đã góp trong kỳ</h3>
     <p className="muted">Chỉ tính các phiếu thu thực tế (không tính lịch góp chưa thu, đã loại phiếu hủy). Đổi loại lịch chỉ đổi cách chọn khoảng ngày, không đổi số liệu công nợ.</p>
@@ -353,7 +386,7 @@ export default function Payments(){
      <span>Bill đang thu còn lại: <b>{money(overpayDialog.details?.current_bill_remaining)}</b></span>
      <span>Khách đưa: <b>{money(overpayDialog.details?.entered_amount)}</b></span>
      <span>Tiền dư cần phân bổ: <b>{money(overpayDialog.details?.surplus)}</b></span>
-     <span>Đã chọn đủ: <b>{money(choicePreview.coveredTotal)}</b>{choicePreview.remainingUncovered>0.01&&<span style={{color:'#b91c1c'}}> (còn thiếu {money(choicePreview.remainingUncovered)})</span>}</span>
+     <span>{choicePreview.remainingUncovered>0.01?<>Còn dư: <b style={{color:'#92400e'}}>{money(choicePreview.remainingUncovered)}</b></>:<b className="success">Đã phân bổ đủ</b>}</span>
     </div>
     <div className="payment-overpay-table-wrap">
      <table className="table payment-overpay-table"><thead><tr><th>Thứ tự</th><th></th><th>Bill</th><th>Ngày xuất hàng</th><th>Còn nợ</th><th>Sẽ nhận</th></tr></thead><tbody>

@@ -2578,7 +2578,7 @@ button,.btn,.menu-item,.input,.select,textarea{
 .payment-overpay-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;}
 .payment-overpay-head h3{margin:0 0 4px 0;}
 .payment-overpay-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:12px 0;}
-.payment-overpay-summary span{background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;padding:10px;}
+.payment-overpay-summary span{background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;padding:10px;overflow-wrap:anywhere;word-break:break-word;}
 .payment-overpay-table-wrap{max-height:48vh;overflow:auto;border:1px solid #e5e7eb;border-radius:12px;}
 .payment-overpay-table{margin:0;}
 .payment-overpay-table thead th{position:sticky;top:0;background:#fff;z-index:1;}

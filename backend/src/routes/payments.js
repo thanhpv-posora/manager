@@ -3,6 +3,7 @@ const { auth }=require('../middleware/auth');
 const PaymentAgent=require('../agents/PaymentAgent');
 const router=express.Router();
 router.get('/', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await PaymentAgent.list(req.user,req.query))}catch(e){next(e)}});
+router.get('/recent-outstanding-bills', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await PaymentAgent.recentOutstandingBills(req.user))}catch(e){next(e)}});
 router.get('/transaction/:key', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await PaymentAgent.transactionStatus(req.params.key))}catch(e){next(e)}});
 router.get('/customer/:customerId/summary', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await PaymentAgent.summary(req.params.customerId,req.user))}catch(e){next(e)}});
 router.get('/customer/:customerId/period-contribution', auth(['ADMIN','STAFF','CUSTOMER']), async (req,res,next)=>{try{res.json(await PaymentAgent.periodContribution(req.params.customerId,req.query,req.user))}catch(e){next(e)}});

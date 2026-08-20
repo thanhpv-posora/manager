@@ -79,6 +79,45 @@ class PaymentAgent {
     return rows;
   }
 
+  // FEAT (hotfix): initial "recent outstanding bills" list for the Payments
+  // screen before any customer is picked — lets an operator jump straight
+  // into collecting for whichever bill is in hand instead of finding the
+  // customer first. Bounded/set-based, single round trip: the outer scan
+  // rides idx_orders_date_status (order_date DESC — see perf(db) 270cbdc) so
+  // MySQL can walk rows in order and stop at LIMIT 15 without a filesort,
+  // and the per-row remaining-debt figure is one indexed
+  // (idx_payment_allocations_order_id) correlated lookup per candidate row —
+  // not an app-level loop, so no N+1. Same authoritative-debt rule as the
+  // rest of this agent: computed from payment_allocations, never the stale
+  // orders.debt_amount column (see summary()'s own comment on this).
+  // Does NOT feed, replace, or reorder the "Bill còn nợ" picker
+  // (summary().unpaid_orders, per-customer/ASC) or the overpay
+  // eligible_bills allocation-choice query (_authoritativeOtherOpenBills) —
+  // both are untouched by this method.
+  async recentOutstandingBills(user) {
+    const where = [`o.status<>'CANCELLED'`];
+    const params = [];
+    if (user?.role === 'CUSTOMER') {
+      const scope = await customerScopeWhere(user, 'o.customer_id');
+      if (scope.clause) { where.push(scope.clause); params.push(...scope.params); }
+    }
+    const [rows] = await pool.query(
+      `SELECT o.id, o.order_code, o.customer_id, c.name customer_name,
+              o.order_date, o.calendar_type, o.lunar_date_text, o.total_amount,
+              GREATEST(0, o.total_amount - COALESCE(
+                (SELECT SUM(pa.amount) FROM payment_allocations pa WHERE pa.order_id=o.id), 0
+              )) debt_amount
+       FROM orders o
+       JOIN customers c ON c.id=o.customer_id
+       WHERE ${where.join(' AND ')}
+       HAVING debt_amount>0
+       ORDER BY o.order_date DESC, o.id DESC
+       LIMIT 15`,
+      params
+    );
+    return rows;
+  }
+
   async summary(customerId, user) {
     await assertCustomerScope(user, customerId);
     const [customers]=await pool.query(`SELECT id,name,phone,address FROM customers WHERE id=?`, [customerId]);

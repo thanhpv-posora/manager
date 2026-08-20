@@ -1565,6 +1565,25 @@ CREATE TABLE IF NOT EXISTS customer_price_book_items (
     // it (legacy clients, AI order path) — purely additive, no behavior change.
     await safeAddColumn(conn, 'orders', 'sales_flow', 'sales_flow VARCHAR(30) NULL');
 
+    // PERF (schema drift fix): orders(order_date, status) was already present
+    // on the live/test DB — documented as pre-existing in
+    // docs/performance/MYSQL_INDEX_AUDIT.md (committed 2026-07-30, before
+    // this line existed) — but had never actually been captured in this
+    // idempotent schema file, so a genuinely fresh install never got it.
+    // safeAddIndex() no-ops here on any DB that already has it under this
+    // exact name (verified: current live/test DB does) and only creates it
+    // on one that doesn't. Column order matches every consumer's actual
+    // predicate shape: order_date is always the range filter (Customer
+    // Billing Matrix, Orders list), status is a low-selectivity `<>` check
+    // that rides along as a covering second column rather than a genuine
+    // seek key — never widened to include sales_flow or customer_id.
+    // sales_flow is optional on these queries and low-cardinality (3
+    // values) — not worth the write-overhead of indexing. customer_id, when
+    // present as a filter, is already served by the existing
+    // idx_orders_customer_date(customer_id, order_date) — adding it here too
+    // would just duplicate that coverage, not add any.
+    await safeAddIndex(conn, 'orders', 'idx_orders_date_status', 'INDEX idx_orders_date_status (order_date, status)');
+
     // GATE 4 FIX (schema parity): order_items.price_book_id — live in
     // production (`bigint DEFAULT NULL`, no FK, confirmed via SHOW CREATE
     // TABLE on meat_business_db) since before this migration file started

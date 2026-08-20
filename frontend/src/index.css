@@ -3079,6 +3079,6 @@ button,.btn,.menu-item,.input,.select,textarea{
 /* Cell width sized to fit an exact comma-grouped debt amount (e.g.
    "Nợ 1,018,500") on one line — see debtAmount() in CustomerBillingMatrix.jsx. */
 .billing-matrix-cell{min-width:92px;padding:4px 4px;text-align:center;vertical-align:middle;line-height:1.2}
-.billing-matrix-primary-date{font-weight:500;font-size:15px;line-height:1.15;color:#0f172a}
-.billing-matrix-secondary-date{font-weight:400;font-size:11px;line-height:1.2;color:#64748b}
+.billing-matrix-primary-date{font-weight:500;font-size:13px;line-height:1.15;color:#0f172a}
+.billing-matrix-secondary-date{font-weight:400;font-size:10px;line-height:1.2;color:#64748b}
 .billing-matrix-tag{font-size:11px;font-weight:600;color:#7f1d1d;margin-top:1px;line-height:1.2;white-space:nowrap}

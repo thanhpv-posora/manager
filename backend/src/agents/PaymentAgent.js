@@ -19,19 +19,54 @@ class PaymentAgent {
     return { ...row, response_json: undefined, response };
   }
 
+  // PERF (A6, perf-bill-contribution): was an unbounded SELECT p.* — full
+  // payment history on every Payments.jsx mount. Same additive/opt-in
+  // convention as OrderAgent.list() (A3): pagination only activates when the
+  // caller explicitly sends page or page_size. Orders.jsx's own "payment
+  // report" tab also calls plain GET /payments (with from/to/customer but
+  // no page params) expecting the full filtered array back for its own
+  // full-range totals/print, unrelated to this feature and untouched —
+  // stays on that exact path. Only Payments.jsx (updated alongside this)
+  // opts into pagination for its "Lịch sử thu tiền" table.
   async list(user, query={}) {
     const where=[], params=[];
     if (user.role==='CUSTOMER') {
       const scope=await customerScopeWhere(user,'p.customer_id');
       where.push(scope.clause); params.push(...scope.params);
     }
-    if (query.from_date || query.from) { where.push('DATE(p.payment_date)>=?'); params.push(String(query.from_date||query.from).slice(0,10)); }
-    if (query.to_date || query.to) { where.push('DATE(p.payment_date)<=?'); params.push(String(query.to_date||query.to).slice(0,10)); }
+    // PERF (A4, perf-bill-contribution): payment_date is a plain DATE column
+    // (bootstrap.js) — the DATE() wrapper was pure non-sargable noise, never
+    // semantically required (no DATETIME component to strip). Same fix as
+    // OrderAgent.list()'s order_date filter.
+    if (query.from_date || query.from) { where.push('p.payment_date>=?'); params.push(String(query.from_date||query.from).slice(0,10)); }
+    if (query.to_date || query.to) { where.push('p.payment_date<=?'); params.push(String(query.to_date||query.to).slice(0,10)); }
     if (query.customer_name || query.customer) { where.push('c.name LIKE ?'); params.push('%'+String(query.customer_name||query.customer).trim()+'%'); }
-    const [rows]=await pool.query(
-      `SELECT p.*,c.name customer_name,o.order_code FROM payments p JOIN customers c ON c.id=p.customer_id
-       LEFT JOIN orders o ON o.id=p.order_id ${where.length?'WHERE '+where.join(' AND '):''}
-       ORDER BY p.payment_date DESC,p.id DESC`, params);
+    const whereSql = where.length ? 'WHERE '+where.join(' AND ') : '';
+
+    const paginationRequested = query.page !== undefined || query.page_size !== undefined || query.pageSize !== undefined;
+    let pagination = null;
+    let rows;
+    if (!paginationRequested) {
+      [rows] = await pool.query(
+        `SELECT p.*,c.name customer_name,o.order_code FROM payments p JOIN customers c ON c.id=p.customer_id
+         LEFT JOIN orders o ON o.id=p.order_id ${whereSql}
+         ORDER BY p.payment_date DESC,p.id DESC`, params);
+    } else {
+      const page = Math.max(1, Number(query.page) || 1);
+      const pageSize = Math.min(200, Math.max(1, Number(query.page_size || query.pageSize) || 20));
+      const offset = (page - 1) * pageSize;
+      const [[{ total }]] = await pool.query(
+        `SELECT COUNT(*) total FROM payments p JOIN customers c ON c.id=p.customer_id ${whereSql}`,
+        params
+      );
+      [rows] = await pool.query(
+        `SELECT p.*,c.name customer_name,o.order_code FROM payments p JOIN customers c ON c.id=p.customer_id
+         LEFT JOIN orders o ON o.id=p.order_id ${whereSql}
+         ORDER BY p.payment_date DESC,p.id DESC LIMIT ? OFFSET ?`,
+        [...params, pageSize, offset]
+      );
+      pagination = { page, page_size: pageSize, total: Number(total), total_pages: Math.max(1, Math.ceil(Number(total) / pageSize)) };
+    }
 
     // V65.42: enrich each real receipt with allocation details so customer-bill reports
     // can show exactly how much cash/bank the customer gave each time and which bills
@@ -76,7 +111,7 @@ class PaymentAgent {
         }
       }
     }
-    return rows;
+    return pagination ? { items: rows, pagination } : rows;
   }
 
   // FEAT (hotfix): initial "recent outstanding bills" list for the Payments

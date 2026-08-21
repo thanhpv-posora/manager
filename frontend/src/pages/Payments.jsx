@@ -62,7 +62,26 @@ export default function Payments(){
    setPeriodData((await api.get('/payments/customer/'+id+'/period-contribution',{params})).data);
   }catch(e){setPeriodError(e.response?.data?.message||e.message);setPeriodData(null)}
  };
- const loadPayments=async()=>setRows((await api.get('/payments')).data||[]);
+ // PERF (A6, perf-bill-contribution): "Lịch sử thu tiền" used to load every
+ // payment ever made, then filter+paginate with Array.filter()/.slice() —
+ // rows here has no other consumer on this page (unlike Orders.jsx's
+ // report/print section, which has its own separate, still-unbounded
+ // GET /payments call and stays untouched). Real SQL LIMIT/OFFSET now, same
+ // additive/opt-in backend contract as Orders.jsx (PaymentAgent.list()).
+ const[historyPagination,setHistoryPagination]=useState({page:1,page_size:20,total:0,total_pages:1});
+ // Explicit args only (no default-parameter closure state) — every call
+ // site below passes the exact page/size/filter it means, so the function's
+ // behavior never depends on whatever historyPage/historyPageSize/historyFilter
+ // happen to be at call time.
+ const loadPayments=async(pg,sz,filter)=>{
+  const params={page:pg,page_size:sz};
+  if(filter.from)params.from=filter.from;
+  if(filter.to)params.to=filter.to;
+  if(filter.customer)params.customer=filter.customer;
+  const r=await api.get('/payments',{params});
+  setRows(r.data?.items||[]);
+  setHistoryPagination(r.data?.pagination||{page:pg,page_size:sz,total:0,total_pages:1});
+ };
  const loadRecentBills=async()=>setRecentBills((await api.get('/payments/recent-outstanding-bills')).data||[]);
  // PERF: loadPayments() and the /partners fetch depend on nothing but the
  // page mounting — Promise.all instead of a sequential await chain so both
@@ -75,7 +94,7 @@ export default function Payments(){
  // dependent on one another.
  const load=async()=>{try{
   const user=JSON.parse(localStorage.getItem('user')||'{}');
-  const [,csRes]=await Promise.all([loadPayments(),api.get('/partners',{params:{role:'customer'}})]);
+  const [,csRes]=await Promise.all([loadPayments(1,historyPageSize,historyFilter),api.get('/partners',{params:{role:'customer'}})]);
   const cs=csRes.data||[];setCustomers(cs);
   // Initial state: ADMIN/STAFF land on the recent-outstanding-bills list
   // with no customer pre-selected (picking a bill there drives the same
@@ -93,10 +112,20 @@ export default function Payments(){
   }
  }catch(e){setError(e.response?.data?.message||e.message)}finally{setLoading(false)}};
  useEffect(()=>{load()},[]);
- const historyRows=useMemo(()=>{const name=String(historyFilter.customer||'').trim().toLowerCase();return(rows||[]).filter(p=>{const d=isoDate(p.payment_date);if(historyFilter.from&&d<historyFilter.from)return false;if(historyFilter.to&&d>historyFilter.to)return false;if(name&&!String(p.customer_name||'').toLowerCase().includes(name))return false;return true})},[rows,historyFilter]);
- const historyPages=Math.max(1,Math.ceil(historyRows.length/historyPageSize));
- const currentHistoryPage=Math.min(historyPage,historyPages);
- const visibleHistory=historyRows.slice((currentHistoryPage-1)*historyPageSize,currentHistoryPage*historyPageSize);
+ // Debounced (150ms, same convention as Orders.jsx) so typing in the
+ // "Tên khách hàng" history filter doesn't fire one request per keystroke
+ // now that filtering happens server-side. First run (mount) is already
+ // covered by load()'s own loadPayments() call above, so it's skipped here.
+ const historyFirstRunRef=useRef(true);
+ useEffect(()=>{
+  if(historyFirstRunRef.current){historyFirstRunRef.current=false;return}
+  const t=setTimeout(()=>{loadPayments(historyPage,historyPageSize,historyFilter)},150);
+  return ()=>clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+ },[historyPage,historyPageSize,historyFilter.from,historyFilter.to,historyFilter.customer]);
+ const historyPages=historyPagination.total_pages;
+ const currentHistoryPage=historyPagination.page;
+ const visibleHistory=rows;
  const changeHistoryFilter=(k,v)=>{setHistoryFilter(f=>({...f,[k]:v}));setHistoryPage(1)};
  const setBillTotal=v=>setForm({...form,current_bill_amount:v});
  const changeCustomer=e=>{
@@ -174,7 +203,7 @@ export default function Payments(){
   setEditingPayment(null);
   closeOverpayDialog();
   await loadSummary(form.customer_id);
-  await loadPayments();
+  await loadPayments(historyPage,historyPageSize,historyFilter);
   await loadPeriod(form.customer_id);
   let msg=editingPayment?'Cập nhật thanh toán thành công':'Thanh toán thành công';
   if(allocs.length) msg += `\nĐã phân bổ bill khác: ${allocs.map(a=>`${a.order_code}: ${money(a.applied_amount)}`).join(', ')}`;
@@ -274,13 +303,13 @@ export default function Payments(){
  const cancelPayment=async p=>{
   if(!await window.appConfirm(`Hủy phiếu thu ${p.payment_code}?\nCông nợ sẽ được tính lại.`,{title:'Hủy phiếu thu',confirmText:'Hủy phiếu',variant:'danger'}))return;
   await api.post('/payments/'+p.id+'/cancel',{note:'Hủy phiếu thu nhập sai'});
-  await loadPayments(); if(form.customer_id){await loadSummary(form.customer_id);await loadPeriod(form.customer_id);}
+  await loadPayments(historyPage,historyPageSize,historyFilter); if(form.customer_id){await loadSummary(form.customer_id);await loadPeriod(form.customer_id);}
   alert('Đã hủy phiếu thu và trả lại công nợ');
  };
  const lockPayment=async p=>{
   if(!await window.appConfirm(`Chốt phiếu thu ${p.payment_code}?\nSau khi chốt sẽ không sửa/xóa được.`,{title:'Chốt phiếu thu',confirmText:'Chốt phiếu thu',variant:'warning'}))return;
   await api.post('/payments/'+p.id+'/lock',{});
-  await loadPayments(); if(form.customer_id){await loadSummary(form.customer_id);await loadPeriod(form.customer_id);}
+  await loadPayments(historyPage,historyPageSize,historyFilter); if(form.customer_id){await loadSummary(form.customer_id);await loadPeriod(form.customer_id);}
   alert('Đã chốt phiếu thu');
  };
  return <SafePage loading={loading} error={error}>

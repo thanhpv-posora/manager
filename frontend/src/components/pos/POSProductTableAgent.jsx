@@ -1,4 +1,4 @@
-import React from 'react';
+import React, {useMemo} from 'react';
 import {calcQtyExpression} from '../../utils/qtyExpression';
 import {movePosGridFocus} from '../../utils/posKeyboard';
 import {formatQty, formatQtyTrim, isOverStock} from '../../utils/quantity';
@@ -39,6 +39,17 @@ export default function POSProductTableAgent({
   onOpenImportDialog,
 }){
   const hasStockColumn = shown.some(i => String(i.inventory_mode || '').toUpperCase() === 'TRACK_STOCK');
+  // PERF: was items.findIndex(...) inside the .map() render loop below — O(n)
+  // per row, O(n*m) per render of the whole table. Build the product_id->index
+  // lookup once per items-array change instead; same result for every row
+  // (findIndex's own semantics preserved exactly — String() normalizes both
+  // sides identically, it can't turn a prior match into a miss or vice versa
+  // since shown is always derived from this same items array).
+  const itemIndexByProductId = useMemo(() => {
+    const m = new Map();
+    items.forEach((it, idx) => { m.set(String(it.product_id), idx); });
+    return m;
+  }, [items]);
   return (
     <div className="card pos-agent-products-card">
       <div className="actions pos-agent-products-toolbar">
@@ -107,7 +118,7 @@ export default function POSProductTableAgent({
           </thead>
           <tbody>
             {shown.map((i, rowNo) => {
-              const rowIndex = items.findIndex(x => x.product_id === i.product_id);
+              const rowIndex = itemIndexByProductId.get(String(i.product_id)) ?? -1;
               const qty = Number(calcQtyExpression(i.quantity_expr) || 0);
               const rowKey = String(i.product_id);
               const overStock = i.quantity_expr && isOverStock(i.inventory_mode, i.allow_negative_stock, i.stock_quantity, qty);

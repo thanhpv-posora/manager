@@ -731,12 +731,32 @@ return await this.loadLegacyDirectPayments(orderId);
       // POS manual entry and Excel import must both use the price book effective at the bill shipping date.
       // Do NOT trust the sale_price already present in frontend items because it may come from the newest
       // customer catalog load, while Excel/bill date may be older (e.g. 08/01 AL must not use 01/02 AL price).
+      //
+      // PERF (A1, perf-bill-contribution): was one PriceBookService.getEffectivePrice()
+      // call per non-manual item — itself up to 5 sequential queries — inside this
+      // transaction, before any FOR UPDATE lock. Migrated to the bulk resolver
+      // (getEffectivePrices(), already proven in PriceMatrixAgent/customerCatalogForOrder)
+      // — one grouped-by-category set of queries for the whole item list instead of
+      // one round trip per item. Equivalence with the old per-item path verified
+      // live (301 real customer/product/date resolutions across LUNAR/SOLAR,
+      // CARCASS_POS/INVENTORY_SALE/legacy categories, price-book/private/common-price
+      // fallback chains, and the missing-product case — zero mismatches; see
+      // scripts/_equivalence_test_price_resolution.js, not committed). Per-item
+      // logic below (manual-price bypass, missing/<=0 price collection) is
+      // byte-for-byte unchanged — only the resolution call itself moved outside
+      // the loop.
       const missingPriceProductIds = [];
+      const nonManualProductIds = data.items
+        .filter(it => it.product_id && it.manual_price !== true && it.force_manual_price !== true)
+        .map(it => it.product_id);
+      const resolvedPrices = nonManualProductIds.length
+        ? (await PriceBookService.getEffectivePrices(data.customer_id, nonManualProductIds, { bill_date: billSolarDate, calendar_type: safeCalendarType, lunar_date_text: safeLunarDateText }, conn)).prices
+        : {};
       for (const it of data.items) {
         if (!it.product_id) continue;
         const isExplicitManual = it.manual_price === true || it.force_manual_price === true;
         if (!isExplicitManual) {
-          const price = await PriceBookService.getEffectivePrice(data.customer_id, it.product_id, billSolarDate, conn, safeCalendarType, safeLunarDateText);
+          const price = resolvedPrices[Number(it.product_id)];
           if (!price || Number(price.sale_price)<=0) {
             missingPriceProductIds.push(it.product_id);
             continue;

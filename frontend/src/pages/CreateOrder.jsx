@@ -103,6 +103,22 @@ export default function CreateOrder(){
   const[bankAmount,setBankAmount]=useState(0);
   const[monthlyInstallment,setMonthlyInstallment]=useState(0);
   const[monthlyInstallmentId,setMonthlyInstallmentId]=useState(null);
+  // FEAT (manual góp bill, per-bill contribution override): monthlyInstallment
+  // above stays exactly what it always was — the customer's CONFIGURED daily
+  // default, loaded read-only via loadMonthlyInstallment(). billInstallmentAmount
+  // is the ACTUAL amount that will be saved on THIS bill's orders.installment_amount
+  // — normally mirrors the default, but the operator may edit it for exceptions
+  // (e.g. covering a missed day). Editing it never writes back to the customer's
+  // configured default (no PUT/POST to /installments/monthly/* happens here).
+  // installmentManuallyEditedRef tracks whether the operator has touched the
+  // field for the bill currently being entered, mirroring the existing
+  // manual_price/force_manual_price convention used for line-item prices
+  // elsewhere in this file — a manual entry survives an unrelated re-render,
+  // but is cleared (falls back to auto-sync with the default) on customer
+  // switch or after a successful save, so the NEXT bill always starts from
+  // the configured default again.
+  const[billInstallmentAmount,setBillInstallmentAmount]=useState(0);
+  const installmentManuallyEditedRef=useRef(false);
   const[msg,setMsg]=useState('');
   const[loading,setLoading]=useState(true);
   const[error,setError]=useState('');
@@ -292,24 +308,64 @@ export default function CreateOrder(){
 
   useEffect(()=>{loadMonthlyInstallment(cid,orderDate,billCalendarType,billLunarDateText)},[cid,orderDate,billCalendarType,billLunarDateText]);
 
+  // FEAT (manual góp bill): keep the editable billInstallmentAmount in sync
+  // with the loaded configured default UNLESS the operator has explicitly
+  // edited it for the bill currently being entered (installmentManuallyEditedRef).
+  useEffect(()=>{
+    if(!installmentManuallyEditedRef.current)setBillInstallmentAmount(monthlyInstallment);
+  },[monthlyInstallment]);
+
+  // Switching customer starts a fresh bill context — any manual override
+  // belonged to the previous customer's bill, so drop it and let the new
+  // customer's own configured default apply as soon as it loads.
+  useEffect(()=>{installmentManuallyEditedRef.current=false},[cid]);
+
+  const changeBillInstallmentAmount=v=>{
+    // Never let a negative number reach the payload/total (see backend guard
+    // in OrderAgent.create() too) — clamp instead of silently accepting it.
+    const n=Math.max(0,Number(v||0));
+    installmentManuallyEditedRef.current=true;
+    setBillInstallmentAmount(n);
+  };
+
   useEffect(()=>{
     if(cid&&items.length)refreshCurrentItemPrices();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[cid,orderDate,billCalendarType,billLunarDateText]);
 
+  // PERF (A5, perf-bill-contribution): GET /products (full, unfiltered,
+  // all-columns product table) used to load on EVERY POS mount, before a
+  // customer is even selected — audited to have exactly one consumer on
+  // this screen, previewHandwriting()'s category-scoped OCR-alias matching,
+  // a deliberate low-frequency action (operator explicitly opens the
+  // handwriting-import tool). Deferred instead of loaded eagerly:
+  // ensureAllProductsLoaded() below fetches it lazily, once, only when that
+  // tool is actually used. Every OTHER consumer of GET /products in this
+  // codebase (Products.jsx, InventoryAdjustments.jsx, InventoryPurchases.jsx,
+  // StockLedger.jsx) has its OWN separate api.get('/products') call — this
+  // endpoint itself is untouched, still returns the full shape for them.
+  const ensureAllProductsLoaded=async()=>{
+    if(allProducts.length)return allProducts;
+    try{
+      const r=await api.get('/products');
+      setAllProducts(r.data||[]);
+      return r.data||[];
+    }catch(e){
+      return allProducts;
+    }
+  };
+
   useEffect(()=>{
     let mounted=true;
     (async()=>{
       try{
-        const [c,cat,prod]=await Promise.all([
+        const [c,cat]=await Promise.all([
           api.get('/partners',{params:{role:'customer'}}),
-          api.get('/products/categories'),
-          api.get('/products')
+          api.get('/products/categories')
         ]);
         if(mounted){
           setCustomers(c.data||[]);
           setCategories(cat.data||[]);
-          setAllProducts(prod.data||[]);
         }
       }catch(e){
         if(mounted)setError(e.response?.data?.message||e.message);
@@ -1037,8 +1093,14 @@ export default function CreateOrder(){
         calendar_type:billCalendarType,
         lunar_date_text:billCalendarType==='LUNAR'?billLunarDateText:'',
         current_bill_amount:total,
-        monthly_installment_amount:monthlyInstallment,
-        installment_amount:monthlyInstallment,
+        // FEAT (manual góp bill): send the operator's ACTUAL amount for this
+        // bill, not the raw configured default — billInstallmentAmount starts
+        // equal to monthlyInstallment and only diverges from it if the
+        // operator explicitly edited the field (see effects above).
+        // monthly_installment_id still points at the config the default was
+        // resolved from, for traceability, even when the amount was overridden.
+        monthly_installment_amount:billInstallmentAmount,
+        installment_amount:billInstallmentAmount,
         monthly_installment_id:monthlyInstallmentId,
         paid_amount:0,
         items:payloadItems,
@@ -1057,6 +1119,11 @@ export default function CreateOrder(){
       setPaid(0);
       setCashAmount(0);
       setBankAmount(0);
+      // FEAT (manual góp bill): this bill is done — the NEXT bill (same
+      // customer, "keep going" flow above) must start from the configured
+      // default again, not silently reuse this bill's manual override.
+      installmentManuallyEditedRef.current=false;
+      setBillInstallmentAmount(monthlyInstallment);
       if(excelBillQueue.length&&excelBillIndex>=0){
         await goNextExcelSheetAfterSave();
       }else{
@@ -1778,12 +1845,13 @@ export default function CreateOrder(){
     }
   };
 
-  const previewHandwriting=()=>{
+  const previewHandwriting=async()=>{
     if(!cid)return showWarning('Chọn khách trước');
     if(!selectedCategoryId)return showWarning('Chọn danh mục hàng hóa trước');
     // Only match against products in the selected category — never let handwriting OCR
     // pull a product from another category into this bill.
-    const categoryProducts=allProducts.filter(p=>String(p.category_id)===String(selectedCategoryId));
+    const products=await ensureAllProductsLoaded();
+    const categoryProducts=products.filter(p=>String(p.category_id)===String(selectedCategoryId));
     const rows=parseHandwritingText(importText,items,categoryProducts,ocrAliases);
     setImportPreview(rows);
     setImportMsg(`Viết tay: đọc ${rows.length} dòng, OK ${rows.filter(x=>x.status==='OK').length}, vàng ${rows.filter(x=>x.status==='WARN').length}, đỏ ${rows.filter(x=>x.status==='ERROR').length}`);
@@ -2151,6 +2219,9 @@ export default function CreateOrder(){
             totalQty={totalQty}
             total={total}
             monthlyInstallment={currentCustomer?.monthlyInstallment}
+            billInstallmentAmount={billInstallmentAmount}
+            showInstallment={Boolean(monthlyInstallmentId)||Number(billInstallmentAmount)>0}
+            onInstallmentChange={changeBillInstallmentAmount}
             saving={saving}
             cid={cid}
             selectedCategoryId={selectedCategoryId}

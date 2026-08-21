@@ -821,7 +821,19 @@ return await this.loadLegacyDirectPayments(orderId);
       const itemTotal = data.items.reduce((s,it)=>s+Number(it.quantity||0)*Number(it.sale_price||0),0);
       // V6.51 critical fix: order total must include the effective daily installment.
       // Otherwise a bill paid only for today's items is incorrectly marked PAID and the installment debt disappears.
+      // FEAT (manual góp bill): this value may now be an operator-entered override
+      // (CreateOrder.jsx's "Tiền góp bill này"), not just the auto-loaded configured
+      // default — the client already clamps negative input, but the backend is the
+      // single authority (same "never trust the client" posture as the overpay
+      // guard elsewhere in this codebase), so a negative value is rejected here too
+      // rather than silently producing a negative total/debt.
       const installmentAmount = Number(data.monthly_installment_amount ?? data.installment_amount ?? 0);
+      if (installmentAmount < 0) {
+        const err = new Error('Tiền góp bill không được âm');
+        err.statusCode = 400;
+        err.code = 'INVALID_INSTALLMENT_AMOUNT';
+        throw err;
+      }
       const total = itemTotal + installmentAmount;
       const paid = 0; // V65.47: Bill không xử lý tiền. Tiền chỉ ghi ở menu Thu tiền.
       const debt = Math.max(0,total-paid);

@@ -2926,7 +2926,12 @@ button,.btn,.menu-item,.input,.select,textarea{
 }
 .pos-summary-row-sl b{color:#1A73E8}
 .pos-summary-row-total b{color:#dc2626}
-.pos-summary-row-installment b{color:#16a34a}
+.pos-summary-row-grandtotal{border-bottom:none;padding-top:10px;margin-top:2px;border-top:1px dashed #cbd5e1}
+.pos-summary-row-grandtotal b{color:#dc2626;font-size:18px}
+.pos-summary-installment-block{padding:8px 0;border-bottom:1px solid #eef2f7}
+.pos-summary-installment-header{display:flex;justify-content:space-between;align-items:baseline;font-size:14px;margin-bottom:4px}
+.pos-summary-installment-default{font-size:11px;color:#94a3b8}
+.pos-summary-row-installment-input{padding:0;border-bottom:none;font-size:14px}
 .pos-summary-actions{
   display:flex;
   gap:8px;

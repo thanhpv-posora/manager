@@ -576,21 +576,64 @@ return await this.loadLegacyDirectPayments(orderId);
     }
   }
 
+  // PERF (A3+A4, perf-bill-contribution): was an unbounded SELECT o.* — full
+  // order history on every Orders.jsx mount, paginated only client-side via
+  // Array.slice() (the page-size selector was real, the pagination behind it
+  // wasn't). Now supports real SQL LIMIT/OFFSET, same {items,pagination}
+  // shape as ReportAgent.customerBillingMatrix()'s existing pagination
+  // convention (this codebase's most recently-established one — see
+  // e3006cc). Additive/opt-in, NOT a breaking contract change: pagination
+  // only activates when the caller explicitly sends page or page_size —
+  // NewReturnDialog.jsx (Sales Return flow, unrelated to this feature) also
+  // calls plain GET /orders with no params expecting the full raw array back
+  // to filter client-side by customer+status, and stays on that exact path,
+  // untouched. Only Orders.jsx (updated alongside this) opts into pagination.
+  // Existing filters (from/to date, customer_name) and CUSTOMER-role scope
+  // are unchanged in meaning either way, only in how the date filter is
+  // expressed: A4 also drops the DATE(o.order_date) wrapper — order_date is
+  // already a plain DATE column (bootstrap.js), so the function call was
+  // pure non-sargable noise, never semantically required (no DATETIME
+  // component to strip). EXPLAIN before: type=ALL (no key possible with
+  // DATE(col) wrapped). EXPLAIN after (with a date filter applied):
+  // type=range, key=idx_orders_date_status — verified live.
   async list(user, query={}) {
     const where=[], params=[];
     if (user.role==='CUSTOMER') {
       const scope=await customerScopeWhere(user,'o.customer_id');
       where.push(scope.clause); params.push(...scope.params);
     }
-    if (query.from_date || query.from) { where.push('DATE(o.order_date)>=?'); params.push(String(query.from_date||query.from).slice(0,10)); }
-    if (query.to_date || query.to) { where.push('DATE(o.order_date)<=?'); params.push(String(query.to_date||query.to).slice(0,10)); }
+    if (query.from_date || query.from) { where.push('o.order_date>=?'); params.push(String(query.from_date||query.from).slice(0,10)); }
+    if (query.to_date || query.to) { where.push('o.order_date<=?'); params.push(String(query.to_date||query.to).slice(0,10)); }
     if (query.customer_name || query.customer) { where.push('c.name LIKE ?'); params.push('%'+String(query.customer_name||query.customer).trim()+'%'); }
-    const [rows] = await pool.query(
-      `SELECT o.*,c.name customer_name FROM orders o JOIN customers c ON c.id=o.customer_id
-       ${where.length?'WHERE '+where.join(' AND '):''} ORDER BY o.order_date DESC,o.id DESC`,
+    const whereSql = where.length ? 'WHERE '+where.join(' AND ') : '';
+
+    const paginationRequested = query.page !== undefined || query.page_size !== undefined || query.pageSize !== undefined;
+    if (!paginationRequested) {
+      const [rows] = await pool.query(
+        `SELECT o.*,c.name customer_name FROM orders o JOIN customers c ON c.id=o.customer_id
+         ${whereSql} ORDER BY o.order_date DESC,o.id DESC`,
+        params
+      );
+      return rows;
+    }
+
+    const page = Math.max(1, Number(query.page) || 1);
+    const pageSize = Math.min(200, Math.max(1, Number(query.page_size || query.pageSize) || 20));
+    const offset = (page - 1) * pageSize;
+
+    const [[{ total }]] = await pool.query(
+      `SELECT COUNT(*) total FROM orders o JOIN customers c ON c.id=o.customer_id ${whereSql}`,
       params
     );
-    return rows;
+    const [rows] = await pool.query(
+      `SELECT o.*,c.name customer_name FROM orders o JOIN customers c ON c.id=o.customer_id
+       ${whereSql} ORDER BY o.order_date DESC,o.id DESC LIMIT ? OFFSET ?`,
+      [...params, pageSize, offset]
+    );
+    return {
+      items: rows,
+      pagination: { page, page_size: pageSize, total: Number(total), total_pages: Math.max(1, Math.ceil(Number(total) / pageSize)) }
+    };
   }
 
   // FEAT (same-day bill warning): bounded, one-query lookup of this

@@ -1,4 +1,4 @@
-import React,{useEffect,useMemo,useState}from'react';
+import React,{useEffect,useMemo,useRef,useState}from'react';
 import {Eye,Printer,CheckCircle2,Lock}from'lucide-react';
 import api from'../api/api';
 import SafePage from'../components/SafePage';
@@ -52,8 +52,50 @@ export default function Orders(){
  const[summaryPage,setSummaryPage]=useState(1);
  const[summaryPageSize,setSummaryPageSize]=useState(20);
  const base=import.meta.env.VITE_API_URL||(typeof window !== 'undefined' ? `${window.location.origin}/api` : '/api');
+ // PERF (A3, perf-bill-contribution): `rows` below stays exactly what it
+ // always was — the full filtered order history this page's OWN "Thống kê
+ // bill bán hàng theo khách hàng" report/summary/print section needs (it
+ // aggregates and prints the ENTIRE filtered range, not one page — a
+ // different, pre-existing requirement this task does not touch). The
+ // "Danh sách bill" table above it gets its own independent, truly
+ // server-paginated data source instead (billListRows/billListPagination,
+ // loaded via GET /orders?page=&page_size=... — additive/opt-in on the
+ // backend, see OrderAgent.list()) so THAT table no longer needs the full
+ // history in memory just to slice() one page out of it client-side.
+ const[billListRows,setBillListRows]=useState([]);
+ const[billListPagination,setBillListPagination]=useState({page:1,page_size:20,total:0,total_pages:1});
+ // Explicit args only (no default-parameter closure state) — every call
+ // site below passes the exact page/size it means.
+ const loadBillList=async(pg,sz)=>{
+  try{
+   const params={page:pg,page_size:sz};
+   if(filters.from)params.from=filters.from;
+   if(filters.to)params.to=filters.to;
+   if(filters.customer)params.customer=filters.customer;
+   const r=await api.get('/orders',{params});
+   setBillListRows(r.data?.items||[]);
+   setBillListPagination(r.data?.pagination||{page:pg,page_size:sz,total:0,total_pages:1});
+  }catch(e){/* the full-history load() below still surfaces a page-level error if the API is down */}
+ };
  const load=async()=>{try{setRows((await api.get('/orders')).data||[])}catch(e){setError(e.response?.data?.message||e.message)}finally{setLoading(false)}};
  useEffect(()=>{load()},[]);
+ // Debounced (150ms — same convention as InventoryAdjustments.jsx's proven
+ // pattern) so typing in the "Tên khách hàng" filter doesn't fire one
+ // network request per keystroke now that this table's filtering happens
+ // server-side instead of the old instant in-memory Array.filter(). The
+ // very first run (mount) skips the delay so the bill list doesn't flash
+ // empty for 150ms+ after the page's other data has already loaded.
+ const billListFirstRunRef=useRef(true);
+ useEffect(()=>{
+  if(billListFirstRunRef.current){
+   billListFirstRunRef.current=false;
+   loadBillList(page,billPageSize);
+   return;
+  }
+  const t=setTimeout(()=>{loadBillList(page,billPageSize)},150);
+  return ()=>clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+ },[page,billPageSize,filters.from,filters.to,filters.customer]);
  const loadPaymentReport=async()=>{
   try{
    const params={};
@@ -74,9 +116,9 @@ export default function Orders(){
    return true;
   });
  },[rows,filters]);
- const totalPages=Math.max(1,Math.ceil(filtered.length/billPageSize));
- const currentPage=Math.min(page,totalPages);
- const pageRows=filtered.slice((currentPage-1)*billPageSize,currentPage*billPageSize);
+ const totalPages=billListPagination.total_pages;
+ const currentPage=billListPagination.page;
+ const pageRows=billListRows;
  const changeFilter=(k,v)=>{setFilters(f=>({...f,[k]:v}));setPage(1)};
  const open=async id=>{const d=(await api.get('/orders/'+id)).data;const q=(await api.get('/orders/'+id+'/qrcode')).data;setDetail(d);setQr(q);setAddLine({product_id:'',product_name:'',quantity:'',sale_price:'',unit:'kg'})};
  const getToken=async order=>{let token=qr?.token;if(!token||detail?.id!==order.id){token=(await api.get('/orders/'+order.id+'/qrcode')).data.token}return token};
@@ -86,7 +128,7 @@ export default function Orders(){
  const confirmPrintA4=async()=>{if(!printOptDlg)return;await print(printOptDlg,{showUnpaid:printShowUnpaid});setPrintOptDlg(null)};
  const isLocked=o=>Number(o?.is_locked||0)===1||!!o?.locked_at;
  const isCancelled=o=>String(o?.status||'').toUpperCase()==='CANCELLED';
- const lockOrder=async o=>{if(!await window.appConfirm(`Chốt sổ bill ${o.order_code}?\nSau khi chốt sẽ không sửa/thêm hàng.`,{title:'Chốt sổ bill',confirmText:'Chốt bill',variant:'warning'}))return;await api.post('/orders/'+o.id+'/lock',{});await load();if(detail?.id===o.id)await refreshDetail();showToast('success','Đã chốt bill','Bill chỉ còn xem/in.');};
+ const lockOrder=async o=>{if(!await window.appConfirm(`Chốt sổ bill ${o.order_code}?\nSau khi chốt sẽ không sửa/thêm hàng.`,{title:'Chốt sổ bill',confirmText:'Chốt bill',variant:'warning'}))return;await api.post('/orders/'+o.id+'/lock',{});await Promise.all([load(),loadBillList(page,billPageSize)]);if(detail?.id===o.id)await refreshDetail();showToast('success','Đã chốt bill','Bill chỉ còn xem/in.');};
  const openCancelDlg=()=>setCancelDlg({reason:''});
  const cancelOrder=async()=>{
   if(!detail||cancelSaving)return;
@@ -109,7 +151,7 @@ export default function Orders(){
   }catch(e){showToast('error','Hủy bill thất bại',e.response?.data?.message||e.message||'Không hủy được bill.');}
   finally{setCancelSaving(false);}
  };
- const refreshDetail=async()=>{const d=(await api.get('/orders/'+detail.id)).data;setDetail(d);load()};
+ const refreshDetail=async()=>{const d=(await api.get('/orders/'+detail.id)).data;setDetail(d);load();loadBillList(page,billPageSize)};
  const showToast=(type,title,message)=>{setToast({type,title,message});setTimeout(()=>setToast(null),2600)};
  const focusBillInput=(row,col)=>{setTimeout(()=>document.querySelector(`[data-bill-input="${row}-${col}"]`)?.focus(),0)};
  const handleBillKeyDown=(row,col,e)=>{
